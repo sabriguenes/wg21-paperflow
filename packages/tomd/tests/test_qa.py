@@ -326,6 +326,7 @@ class TestTableParseErrors:
         assert m.table_parse_errors == 0
 
 
+
 class TestMojibake:
     """Mojibake detection: broken encoding, not valid Unicode.
 
@@ -459,6 +460,7 @@ class TestMojibake:
         m = compute_metrics(md)
         assert m.mojibake_count >= 1
 
+
     def test_single_unusual_char_not_flagged(self):
         """A single unusual but valid Unicode char should not trigger.
 
@@ -563,6 +565,7 @@ class TestHeadingSkips:
         m = compute_metrics(_GOOD_MD, file="test.pdf")
         assert m.heading_level_skips == 0
         assert m.score == 100, f"expected 100, got {m.score}: {m.issues}"
+
 
 
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "reference"

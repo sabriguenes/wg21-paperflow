@@ -21,3 +21,4 @@ build/
 .VolumeIcon.icns
 .fseventsd
 data/
+.cursor/

@@ -162,19 +162,13 @@ _MOJIBAKE_BADNESS_THRESHOLD = 3
 
 _CODE_FENCE_RE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 
-# Strip inline code spans (single and double backtick) before U+FFFD counting.
-# Must run AFTER _CODE_FENCE_RE to avoid consuming triple-backtick fences.
 _INLINE_CODE_RE = re.compile(r"``[^`]+``|`[^`]+`")
 
-# Papers whose title matches this regex discuss Unicode encoding and may
-# intentionally use U+FFFD as demonstration content, not corruption.
-# Design tradeoff: introduces topic-awareness into a format-agnostic scorer.
-# Justified because U+FFFD is the paper's SUBJECT, not extraction damage.
-# ftfy.badness() still runs independently as a safety net for real corruption.
 _UNICODE_TOPIC_RE = re.compile(
     r"utf|unicode|transcod|encoding|charconv|replacement.character",
     re.IGNORECASE,
 )
+
 
 
 def _count_mojibake(md_text: str) -> int:
@@ -202,6 +196,7 @@ def _count_mojibake(md_text: str) -> int:
     U+FFFD counting is suppressed entirely since the replacement
     character is the paper's subject matter. ftfy.badness() still
     provides an independent safety net for real encoding corruption.
+
 
     Decision: ftfy over custom regex. See plans/QA-001-extend-qa-scoring.md,
     Research Finding #1. Custom byte-pattern regex (e.g. [\\xc0-\\xdf][\\x80-\\xbf])
@@ -273,6 +268,7 @@ def _count_table_parse_errors(tokens: list[dict]) -> int:
     return errors
 
 
+
 def compute_metrics(md_text: str, file: str = "") -> QAMetrics:
     """Compute QA metrics by parsing the Markdown output with mistune.
 
@@ -322,6 +318,7 @@ def compute_metrics(md_text: str, file: str = "") -> QAMetrics:
 
     m.wording_section_count = len(_WORDING_DIV_RE.findall(md_text))
     m.table_parse_errors = _count_table_parse_errors(tokens)
+
 
     m.score, m.issues = _score(m)
     return m
