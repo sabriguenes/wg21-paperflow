@@ -164,6 +164,7 @@ _CODE_FENCE_RE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 
 _INLINE_CODE_RE = re.compile(r"``[^`]+``|`[^`]+`")
 
+
 _UNICODE_TOPIC_RE = re.compile(
     r"utf|unicode|transcod|encoding|charconv|replacement.character",
     re.IGNORECASE,
@@ -196,7 +197,6 @@ def _count_mojibake(md_text: str) -> int:
     U+FFFD counting is suppressed entirely since the replacement
     character is the paper's subject matter. ftfy.badness() still
     provides an independent safety net for real encoding corruption.
-
 
     Decision: ftfy over custom regex. See plans/QA-001-extend-qa-scoring.md,
     Research Finding #1. Custom byte-pattern regex (e.g. [\\xc0-\\xdf][\\x80-\\xbf])
@@ -318,7 +318,6 @@ def compute_metrics(md_text: str, file: str = "") -> QAMetrics:
 
     m.wording_section_count = len(_WORDING_DIV_RE.findall(md_text))
     m.table_parse_errors = _count_table_parse_errors(tokens)
-
 
     m.score, m.issues = _score(m)
     return m

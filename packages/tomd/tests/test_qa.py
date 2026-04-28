@@ -460,7 +460,6 @@ class TestMojibake:
         m = compute_metrics(md)
         assert m.mojibake_count >= 1
 
-
     def test_single_unusual_char_not_flagged(self):
         """A single unusual but valid Unicode char should not trigger.
 
