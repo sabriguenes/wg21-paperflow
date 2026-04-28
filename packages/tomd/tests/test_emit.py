@@ -217,3 +217,55 @@ class TestRenderWordingLine:
 
     def test_empty_line(self):
         assert _render_wording_line(Line(spans=[])) == ""
+
+
+from tomd.lib import sanitize_metadata as _sanitize_metadata
+
+
+class TestSanitizeMetadata:
+    """Tests for sanitize_metadata post-processing."""
+
+    def test_title_with_metadata_labels(self):
+        md = _sanitize_metadata({
+            "title": "Paper Number: P1068R11 Title: Vector API Authors: Bob"
+        })
+        assert md["title"] == "Vector API"
+
+    def test_title_with_newlines(self):
+        md = _sanitize_metadata({
+            "title": "Unicode in the Library, Part\n1: UTF Transcoding"
+        })
+        assert "\n" not in md["title"]
+        assert md["title"] == "Unicode in the Library, Part 1: UTF Transcoding"
+
+    def test_title_without_labels_unchanged(self):
+        md = _sanitize_metadata({"title": "A Normal Title"})
+        assert md["title"] == "A Normal Title"
+
+    def test_reply_to_double_angle_bracket(self):
+        md = _sanitize_metadata({
+            "reply-to": ["Mingxin Wang < <mingxwa@microsoft.com>"]
+        })
+        assert md["reply-to"] == ["Mingxin Wang <mingxwa@microsoft.com>"]
+
+    def test_reply_to_non_author_filtered(self):
+        md = _sanitize_metadata({
+            "reply-to": [
+                "Bob <bob@email.com>",
+                "Target: C++26",
+                "Proposed Wording for Concurrent Data",
+                "Structures: Read-Copy-Update RCU",
+            ]
+        })
+        assert md["reply-to"] == ["Bob <bob@email.com>"]
+
+    def test_reply_to_all_filtered_removes_key(self):
+        md = _sanitize_metadata({
+            "reply-to": ["Target: C++26"]
+        })
+        assert "reply-to" not in md
+
+    def test_no_mutation_of_input(self):
+        original = {"title": "Good Title", "reply-to": ["Author <a@b.com>"]}
+        result = _sanitize_metadata(original)
+        assert result is not original

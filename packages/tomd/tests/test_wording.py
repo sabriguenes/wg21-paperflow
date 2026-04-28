@@ -220,3 +220,42 @@ class TestCollectLineDrawings:
         drawing = {"items": [("l", p1, p2)], "color": None}
         page = self._make_page([drawing])
         assert collect_line_drawings(page) == []
+
+
+class TestTwoPassDeletion:
+    """Two-pass del classification: red without strikethrough promoted when ins present."""
+
+    def test_del_classified_without_strikethrough_when_ins_present(self):
+        """Red spans without strikethrough are promoted to del when enough green ins exist."""
+        green_spans = [Span(text=f"added {i}", color=_GREEN, bbox=(10, 50, 200, 60))
+                       for i in range(6)]
+        red_spans = [Span(text=f"removed {i}", color=_RED, bbox=(10, 70, 200, 80))
+                     for i in range(3)]
+        green_lines = [Line(spans=[s]) for s in green_spans]
+        red_lines = [Line(spans=[s]) for s in red_spans]
+        block = Block(lines=green_lines + red_lines, page_num=0)
+
+        classify_wording([block], {})
+
+        for s in green_spans:
+            assert s.wording_role == "ins"
+        for s in red_spans:
+            assert s.wording_role == "del", (
+                "red without strikethrough should be promoted to del "
+                "when sufficient ins context exists"
+            )
+
+    def test_del_not_classified_without_strikethrough_when_no_ins(self):
+        """Red spans without strikethrough are dropped when no green ins exist."""
+        red_spans = [Span(text=f"removed {i}", color=_RED, bbox=(10, 50, 200, 60))
+                     for i in range(6)]
+        lines = [Line(spans=[s]) for s in red_spans]
+        block = Block(lines=lines, page_num=0)
+
+        classify_wording([block], {})
+
+        for s in red_spans:
+            assert s.wording_role is None, (
+                "red without strikethrough should NOT be classified "
+                "when no ins context exists"
+            )

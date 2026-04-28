@@ -21,6 +21,30 @@ def test_keyword_source_code_pro():
     assert classify_monospace("SourceCodePro")
 
 
+def test_keyword_inconsolata():
+    assert classify_monospace("Inconsolata-Regular")
+
+
+def test_keyword_iosevka():
+    assert classify_monospace("Iosevka")
+
+
+def test_keyword_hack():
+    assert classify_monospace("Hack-Bold")
+
+
+def test_keyword_lmtt():
+    assert classify_monospace("LMTT10")
+
+
+def test_keyword_lmtt_variant():
+    assert classify_monospace("LMTT8")
+
+
+def test_keyword_fira():
+    assert classify_monospace("FiraMono-Regular")
+
+
 def test_no_keyword_no_data():
     assert not classify_monospace("Arial")
 

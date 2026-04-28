@@ -451,6 +451,136 @@ class TestTransparentInline:
         assert "m" in md and "k" in md
 
 
+class TestSchultkeCustomElements:
+    """Tests for Jan Schultke's custom HTML generator elements."""
+
+    def test_code_block_fenced(self):
+        html = '<code-block><h- data-h="kw">const</h-> <h- data-h="kw_type">int</h-> x = 42;</code-block>'
+        md = render_body(parse_html(html), "schultke")
+        assert "```cpp" in md
+        assert "const int x = 42;" in md
+        assert "```" in md.split("```cpp")[1]
+
+    def test_code_block_multiline(self):
+        html = (
+            "<code-block>"
+            '<h- data-h="kw">void</h-> <h- data-h="id">foo</h->() {\n'
+            '  <h- data-h="kw">return</h->;\n'
+            "}"
+            "</code-block>"
+        )
+        md = render_body(parse_html(html), "schultke")
+        assert "```cpp" in md
+        assert "void foo()" in md
+        assert "return" in md
+
+    def test_code_block_works_with_any_generator(self):
+        html = "<code-block>int x;</code-block>"
+        md = render_body(parse_html(html), "unknown")
+        assert "```cpp" in md
+        assert "int x;" in md
+
+    def test_example_block_becomes_blockquote(self):
+        html = "<example-block><p>Example text</p></example-block>"
+        md = render_body(parse_html(html), "schultke")
+        assert "> Example text" in md
+
+    def test_note_block_becomes_blockquote(self):
+        html = "<note-block><p>Note content</p></note-block>"
+        md = render_body(parse_html(html), "schultke")
+        assert "> Note content" in md
+
+    def test_bug_block_becomes_blockquote(self):
+        html = "<bug-block><p>Bug report</p></bug-block>"
+        md = render_body(parse_html(html), "schultke")
+        assert "> Bug report" in md
+
+    def test_tt_becomes_inline_code(self):
+        html = "<p>Use <tt->std::vector</tt-> here</p>"
+        md = render_body(parse_html(html), "schultke")
+        assert "`std::vector`" in md
+
+    def test_h_inline_passthrough(self):
+        html = '<p>The <h- data-h="kw">const</h-> keyword</p>'
+        md = render_body(parse_html(html), "schultke")
+        assert "const" in md
+
+    def test_f_serif_passthrough(self):
+        html = "<p><f-serif>Some text</f-serif></p>"
+        md = render_body(parse_html(html), "schultke")
+        assert "Some text" in md
+
+
+class TestDascandyFietsCodeBlock:
+    """Tests for dascandy/fiets generator div.code pattern."""
+
+    def test_div_code_fenced(self):
+        html = '<div class="code">int main() { return 0; }</div>'
+        md = render_body(parse_html(html), "dascandy/fiets")
+        assert "```cpp" in md
+        assert "int main()" in md
+
+    def test_div_code_with_spans(self):
+        html = (
+            '<div class="code">'
+            '<span class="keyword">const</span> '
+            '<span class="special">&amp;</span>x'
+            "</div>"
+        )
+        md = render_body(parse_html(html), "dascandy/fiets")
+        assert "```cpp" in md
+        assert "const" in md
+
+    def test_code_wrapping_div_code(self):
+        """dascandy/fiets uses <code><div class='code'>...</div></code>."""
+        html = '<code><div class="code">void f() {}</div></code>'
+        md = render_body(parse_html(html), "dascandy/fiets")
+        assert "```cpp" in md
+        assert "void f()" in md
+
+
+class TestCodeTable:
+    """Tables containing <pre> blocks should extract code, not build pipe tables."""
+
+    def test_table_with_pre_extracts_code_blocks(self):
+        html = (
+            "<table><tr>"
+            '<td><pre class="highlight">int x = 1;</pre></td>'
+            '<td><pre class="highlight">mov eax, 1</pre></td>'
+            "</tr></table>"
+        )
+        md = render_body(parse_html(html), "bikeshed")
+        assert "```cpp" in md
+        assert "int x = 1;" in md
+        assert "mov eax, 1" in md
+        assert "|" not in md
+
+    def test_code_table_preserves_all_pre_blocks(self):
+        """Every <pre> in a table is emitted, even if content is identical."""
+        html = (
+            "<table><tr>"
+            '<td><pre class="highlight">void f();</pre></td>'
+            '<td><pre class="highlight">void f();</pre></td>'
+            "</tr></table>"
+        )
+        md = render_body(parse_html(html), "bikeshed")
+        assert md.count("void f();") == 2
+
+    def test_table_without_pre_stays_pipe(self):
+        html = "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>"
+        md = render_body(parse_html(html), "bikeshed")
+        assert "| A | B |" in md
+
+
+class TestBikeshedInlineElements:
+    """Bikeshed <c-> syntax highlight spans should pass through inline."""
+
+    def test_c_dash_inside_code(self):
+        html = '<p><code class="highlight"><c->std</c-><c->::</c-><c->vector</c-></code></p>'
+        md = render_body(parse_html(html), "bikeshed")
+        assert "`std::vector`" in md
+
+
 class TestHtmlComments:
     def test_comment_content_not_rendered(self):
         """HTML comments must never appear in Markdown output."""
@@ -500,3 +630,113 @@ class TestHtmlComments:
         md = render_body(parse_html(html), "mpark")
         assert "## Real Title" in md
         assert "draft annotation" not in md
+
+
+class TestListCodeExtraction:
+    """<pre> and <code-block> inside <li> should be fenced, not flattened."""
+
+    def test_li_with_pre_emits_fenced_code(self):
+        html = "<ul><li>Description<pre>int x = 42;</pre></li></ul>"
+        md = render_body(parse_html(html), "bikeshed")
+        assert "- Description" in md
+        assert "```" in md
+        assert "int x = 42;" in md
+
+    def test_li_with_code_block_emits_fenced_code(self):
+        html = "<ul><li>Example<code-block>void f();</code-block></li></ul>"
+        md = render_body(parse_html(html), "schultke")
+        assert "- Example" in md
+        assert "```cpp" in md
+        assert "void f();" in md
+
+    def test_li_without_code_stays_inline(self):
+        html = "<ul><li>Plain text only</li></ul>"
+        md = render_body(parse_html(html), "mpark")
+        assert "- Plain text only" in md
+        assert "```" not in md
+
+
+class TestDlCodeExtraction:
+    """<pre> and <code-block> inside <dd> should be fenced, not flattened."""
+
+    def test_dd_with_pre_emits_fenced_code(self):
+        html = "<dl><dt>Term</dt><dd>Def<pre>int x = 1;</pre></dd></dl>"
+        md = render_body(parse_html(html), "bikeshed")
+        assert "**Term**" in md
+        assert ": Def" in md
+        assert "```" in md
+        assert "int x = 1;" in md
+
+    def test_dd_with_code_block_emits_fenced_code(self):
+        html = "<dl><dt>API</dt><dd>Usage:<code-block>f();</code-block></dd></dl>"
+        md = render_body(parse_html(html), "schultke")
+        assert "**API**" in md
+        assert ": Usage:" in md
+        assert "```cpp" in md
+        assert "f();" in md
+
+    def test_dd_without_code_stays_inline(self):
+        html = "<dl><dt>Key</dt><dd>Value</dd></dl>"
+        md = render_body(parse_html(html), "mpark")
+        assert "**Key**" in md
+        assert ": Value" in md
+        assert "```" not in md
+
+
+class TestCodeTableWithCodeBlock:
+    """Tables with <code-block> should extract code like <pre> tables."""
+
+    def test_table_with_code_block_extracts(self):
+        html = (
+            "<table><tr>"
+            "<td><code-block>int x = 1;</code-block></td>"
+            "<td><code-block>int y = 2;</code-block></td>"
+            "</tr></table>"
+        )
+        md = render_body(parse_html(html), "schultke")
+        assert "```cpp" in md
+        assert "int x = 1;" in md
+        assert "int y = 2;" in md
+        assert "|" not in md
+
+
+class TestCodeParagraphDetection:
+    """<p> with only <span class="code"> children -> fenced code block."""
+
+    def test_span_code_only_paragraph_becomes_fenced(self):
+        html = (
+            '<p><span class="code">'
+            '<span class="keyword">constexpr</span> '
+            'basic_cstring_view() noexcept;'
+            '</span></p>'
+        )
+        md = render_body(parse_html(html), "dascandy/fiets")
+        assert "```cpp" in md
+        assert "constexpr basic_cstring_view() noexcept;" in md
+
+    def test_mixed_content_paragraph_stays_prose(self):
+        html = '<p>Use <span class="code">std::vector</span> here.</p>'
+        md = render_body(parse_html(html), "dascandy/fiets")
+        assert "```" not in md
+        assert "std::vector" in md
+
+    def test_multiple_span_code_children(self):
+        html = (
+            '<p>'
+            '<span class="code">template&lt;class T&gt;</span> '
+            '<span class="code">auto foo() -&gt; T;</span>'
+            '</p>'
+        )
+        md = render_body(parse_html(html), "dascandy/fiets")
+        assert "```cpp" in md
+
+    def test_code_element_not_matched(self):
+        """<code> is inline formatting, not dascandy/fiets span.code."""
+        html = '<p><code class="highlight">std::vector</code></p>'
+        md = render_body(parse_html(html), "bikeshed")
+        assert "```cpp" not in md
+
+    def test_empty_paragraph_not_matched(self):
+        html = "<p>   </p>"
+        md = render_body(parse_html(html), "dascandy/fiets")
+        assert md.strip() == "" or "```" not in md

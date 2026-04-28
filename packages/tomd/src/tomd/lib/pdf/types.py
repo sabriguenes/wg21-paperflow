@@ -133,7 +133,7 @@ REPEATING_THRESHOLD = 0.5
 EDGE_ITEMS_PER_PAGE = 3
 
 # Similarity threshold for dual-path comparison (word-level)
-SIMILARITY_THRESHOLD = 0.85
+SIMILARITY_THRESHOLD = 0.82
 
 # --- Precompiled regex patterns ---
 

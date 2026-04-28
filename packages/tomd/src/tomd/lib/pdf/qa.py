@@ -19,6 +19,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from ftfy.badness import badness as _ftfy_badness
 import mistune
 
 __all__ = ["QAMetrics", "compute_metrics", "run_qa_report"]
@@ -31,13 +32,38 @@ _UNCERTAIN_MARKER = "tomd:uncertain"
 _FRONT_MATTER_FIELDS = frozenset({"title", "document", "date", "reply-to", "audience"})
 _WG21_DOC_NUM_RE = re.compile(r"[DPN]\d{3,5}R?\d*", re.IGNORECASE)
 
+_WORDING_DIV_RE = re.compile(r"^:::wording", re.MULTILINE)
+
+# Intentionally broader than structure.py's _STRUCTURAL_CODE_RE.
+# qa.py uses it for *detection* (scoring), so false positives just
+# inflate a metric. structure.py uses it for *rescue* (promoting
+# paragraphs to code blocks), where false positives corrupt output.
 _STRUCTURAL_CODE_RE = re.compile(
     r"^\s*[{}]|"               # standalone brace lines
     r";\s*$|"                  # trailing semicolons (code statements)
     r"#include\s*<|"           # preprocessor includes
     r"\w+\s*\([^)]*\)\s*\{|"  # function_name(...) {
-    r"\w+\s*\([^)]*\)\s*;",   # declaration: name(...);
+    r"\w+\s*\([^)]*\)\s*;|"   # declaration: name(...);
+    r"^\s*template\s*<|"       # template declarations
+    r"^\s*(?:namespace|class|struct|enum)\s+\w+\s*[:{]",  # type decl with brace or colon
     re.MULTILINE,
+)
+
+# ISO C++ normative specification-element labels from [structure.specifications],
+# [requirements] section, and historical labels (C++17 "Requires").
+# Source: https://eel.is/c++draft/structure#specifications
+# Paragraphs starting with these labels are standard wording, not unfenced code,
+# even when they end with semicolons (e.g. "Returns: substr(0).compare(str);").
+_STANDARDESE_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"Effects|Returns|Equivalent to|Preconditions|Postconditions|"
+    r"Constraints|Mandates|Complexity|Throws|Remarks|"
+    r"Default|Expects|Result|Ensures|Let|"
+    r"Constant When|Hardened preconditions|Synchronization|Error conditions|"
+    r"Required behavior|Default behavior|Recommended practice|"
+    r"Requires"
+    r")\s*:",
+    re.IGNORECASE,
 )
 
 
@@ -56,6 +82,10 @@ class QAMetrics:
     uncertain_count: int = 0
     unfenced_code_lines: int = 0
     paragraph_count: int = 0
+    mojibake_count: int = 0
+    heading_level_skips: int = 0
+    wording_section_count: int = 0
+    table_parse_errors: int = 0
     empty_output: bool = False
     score: int = 100
     issues: list[str] = field(default_factory=list)
@@ -101,8 +131,9 @@ def _looks_like_code(node: dict) -> bool:
     Checks only the plain-text children (not codespan or inline_html).
     Looks for structural code patterns — braces, semicolons, function
     declarations — not single keywords that appear naturally in prose.
-    Wording sections (<ins>/<del> markup) are excluded since C++ syntax
-    in proposed standard text is expected, not a missed code block.
+    Wording sections (<ins>/<del> markup) and standardese specification
+    labels (Effects:, Returns:, etc.) are excluded since trailing
+    semicolons in normative prose are expected, not missed code.
     """
     children = node.get("children", [])
     if not children:
@@ -114,12 +145,132 @@ def _looks_like_code(node: dict) -> bool:
     if code_children and not text_children:
         return False
     text = _paragraph_plain_text(node)
+    if text.strip().startswith(":::"):
+        return False
+    if _STANDARDESE_PREFIX_RE.match(text.strip()):
+        return False
     return bool(_STRUCTURAL_CODE_RE.search(text))
 
 
 def _count_unfenced_code(paragraphs: list[dict]) -> int:
     """Count paragraphs that look like unfenced code blocks."""
     return sum(1 for p in paragraphs if _looks_like_code(p))
+
+
+_MOJIBAKE_BADNESS_THRESHOLD = 3
+
+
+_CODE_FENCE_RE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
+
+# Strip inline code spans (single and double backtick) before U+FFFD counting.
+# Must run AFTER _CODE_FENCE_RE to avoid consuming triple-backtick fences.
+_INLINE_CODE_RE = re.compile(r"``[^`]+``|`[^`]+`")
+
+# Papers whose title matches this regex discuss Unicode encoding and may
+# intentionally use U+FFFD as demonstration content, not corruption.
+# Design tradeoff: introduces topic-awareness into a format-agnostic scorer.
+# Justified because U+FFFD is the paper's SUBJECT, not extraction damage.
+# ftfy.badness() still runs independently as a safety net for real corruption.
+_UNICODE_TOPIC_RE = re.compile(
+    r"utf|unicode|transcod|encoding|charconv|replacement.character",
+    re.IGNORECASE,
+)
+
+
+def _count_mojibake(md_text: str) -> int:
+    """Count encoding corruption signals in the markdown text.
+
+    Two-layer detection:
+    1. U+FFFD (replacement character): always means bytes were lost
+       during decoding. Zero false positives. Source:
+       https://bytetunnels.com/posts/some-characters-could-not-be-decoded-fixing-replacement-character-errors/
+    2. ftfy.badness(): scores unlikely Unicode sequences that indicate
+       UTF-8 decoded as Latin-1/CP-1252. Uses ~400 character classes
+       tuned over years with ~1 false positive per 6M texts.
+       We use the integer score, not the boolean is_bad(), because
+       is_bad() has length-dependent false-positive rate on long
+       technical documents.
+
+    We require badness >= 3 to flag, because a score of 1-2 on a
+    large document with math symbols or diacritics can be noise.
+
+    U+FFFD inside fenced code blocks and inline code spans is
+    suppressed: papers about encoding (e.g. P3904R1, P2728R11)
+    intentionally demonstrate replacement characters in code.
+
+    For papers whose title indicates they discuss Unicode encoding,
+    U+FFFD counting is suppressed entirely since the replacement
+    character is the paper's subject matter. ftfy.badness() still
+    provides an independent safety net for real encoding corruption.
+
+    Decision: ftfy over custom regex. See plans/QA-001-extend-qa-scoring.md,
+    Research Finding #1. Custom byte-pattern regex (e.g. [\\xc0-\\xdf][\\x80-\\xbf])
+    false-positives on valid multi-byte Unicode in author names, math
+    symbols, and C++ template syntax.
+
+    Known limitations:
+    - ftfy is NOT Markdown-aware (Research Finding #5). Math symbols
+      in the 'numeric' category could interact with mojibake patterns,
+      but the threshold of >= 3 mitigates this.
+    - Does not detect encoding issues inside images or binary blobs.
+    """
+    prose = _CODE_FENCE_RE.sub("", md_text)
+    prose = _INLINE_CODE_RE.sub("", prose)
+    front = _parse_front_matter(md_text)
+    title = front.get("title", "")
+    if _UNICODE_TOPIC_RE.search(title):
+        count = 0
+    else:
+        count = prose.count("\ufffd")
+    badness = _ftfy_badness(md_text)
+    if badness >= _MOJIBAKE_BADNESS_THRESHOLD:
+        count += 1
+    return count
+
+
+def _heading_level_skips(tokens: list[dict]) -> int:
+    """Count heading level skips (ascending only).
+
+    Matches markdownlint MD001 (heading-increment) semantics:
+    only flags when heading level increases by more than 1.
+    Decreasing levels (closing a subsection) are always allowed.
+    Source: https://github.com/DavidAnson/markdownlint/blob/main/doc/md001.md
+    W3C WAI: https://www.w3.org/WAI/tutorials/page-structure/headings/
+
+    Limitation: only scans top-level tokens. Headings nested inside
+    blockquotes or list items (in 'children' arrays) are not checked.
+    For WG21 papers this is acceptable because headings never appear
+    inside blockquotes. See plans/QA-001-extend-qa-scoring.md,
+    Research Finding #4 (Mistune AST completeness).
+    """
+    headings = [t for t in tokens if t["type"] == "heading"]
+    if len(headings) < 2:
+        return 0
+    skips = 0
+    for i in range(1, len(headings)):
+        prev_level = headings[i - 1]["attrs"]["level"]
+        curr_level = headings[i]["attrs"]["level"]
+        if curr_level > prev_level and curr_level - prev_level > 1:
+            skips += 1
+    return skips
+
+
+def _count_table_parse_errors(tokens: list[dict]) -> int:
+    """Count tables with inconsistent column counts across rows."""
+    errors = 0
+    for t in tokens:
+        if t["type"] != "table":
+            continue
+        children = t.get("children", [])
+        col_counts: set[int] = set()
+        for child in children:
+            if child["type"] in ("table_head", "table_body"):
+                for row in child.get("children", []):
+                    if row["type"] == "table_row":
+                        col_counts.add(len(row.get("children", [])))
+        if len(col_counts) > 1:
+            errors += 1
+    return errors
 
 
 def compute_metrics(md_text: str, file: str = "") -> QAMetrics:
@@ -166,6 +317,12 @@ def compute_metrics(md_text: str, file: str = "") -> QAMetrics:
     m.paragraph_count = len(paragraphs)
     m.unfenced_code_lines = _count_unfenced_code(paragraphs)
 
+    m.mojibake_count = _count_mojibake(md_text)
+    m.heading_level_skips = _heading_level_skips(tokens)
+
+    m.wording_section_count = len(_WORDING_DIV_RE.findall(md_text))
+    m.table_parse_errors = _count_table_parse_errors(tokens)
+
     m.score, m.issues = _score(m)
     return m
 
@@ -184,7 +341,7 @@ def _score(m: QAMetrics) -> tuple[int, list[str]]:
     is_long = m.paragraph_count >= _LONG_DOC_PARAGRAPHS
 
     if m.uncertain_count > 0:
-        penalty = min(40, 8 * m.uncertain_count)
+        penalty = min(20, 5 * m.uncertain_count)
         score -= penalty
         issues.append(f"{m.uncertain_count} uncertain regions")
 
@@ -198,6 +355,8 @@ def _score(m: QAMetrics) -> tuple[int, list[str]]:
 
     if m.unfenced_code_lines > 5:
         penalty = min(15, m.unfenced_code_lines)
+        if m.code_block_count == 0 and m.unfenced_code_lines > 20:
+            penalty = min(30, penalty + 15)
         score -= penalty
         issues.append(f"{m.unfenced_code_lines} unfenced code lines")
 
@@ -206,6 +365,25 @@ def _score(m: QAMetrics) -> tuple[int, list[str]]:
     if is_long and has_structure <= 1:
         score -= 10
         issues.append(f"low variety ({has_structure} structural types)")
+
+    # Mojibake: encoding corruption is always a conversion bug.
+    # Capped at 20 to avoid dominating the score on documents
+    # with a single corrupted paragraph.
+    # Decision: plans/QA-001-extend-qa-scoring.md, Phase 2.
+    if m.mojibake_count > 0:
+        penalty = min(20, 5 * m.mojibake_count)
+        score -= penalty
+        issues.append(f"{m.mojibake_count} mojibake sequences")
+
+    # Heading level skips: matches markdownlint MD001.
+    # A skip usually means the converter mis-detected heading depth.
+    # Capped at 15 because heading structure is important but not
+    # as severe as encoding corruption (mojibake).
+    # Decision: plans/QA-001-extend-qa-scoring.md, Phase 3.
+    if m.heading_level_skips > 0:
+        penalty = min(15, 5 * m.heading_level_skips)
+        score -= penalty
+        issues.append(f"{m.heading_level_skips} heading level skips")
 
     return max(0, score), issues
 

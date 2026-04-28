@@ -50,6 +50,14 @@ class TestDetectGenerator:
         html = "<title><b>HackMD</b> doc</title>"
         assert detect_generator(parse_html(html)) == "hackmd"
 
+    def test_schultke_by_code_block_element(self):
+        html = "<html><body><code-block>int x;</code-block></body></html>"
+        assert detect_generator(parse_html(html)) == "schultke"
+
+    def test_dascandy_fiets_by_meta(self):
+        html = '<meta name="generator" content="dascandy/fiets">'
+        assert detect_generator(parse_html(html)) == "dascandy/fiets"
+
 
 class TestExtractMparkMetadata:
     MPARK_HTML = """

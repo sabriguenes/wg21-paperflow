@@ -31,7 +31,24 @@ _FONT_MODIFIERS = frozenset({
     "display", "text", "caption", "subhead", "headline", "mt",
 })
 
-_MONO_KEYWORDS = frozenset({"mono", "courier", "code", "consolas", "menlo"})
+# WG21 paper fonts by framework:
+#   LaTeX (mpark/wg21, tcbrindle, cplusplus/draft): LMMono*, LMTT* (Latin Modern)
+#   LaTeX (plain/legacy): CMTT* (Computer Modern Typewriter)
+#   mpark/wg21 override: DejaVu Sans Mono
+#   Bikeshed (HTML->PDF via browser): Menlo (macOS), Consolas (Win), Monaco (macOS)
+#   XeLaTeX users: Source Code Pro, Inconsolata, Fira Code
+#   Microsoft: Cascadia Code/Mono
+#
+# Keywords that are family prefixes (liberation, dejavu, fira, ubuntu) are
+# omitted because their proportional siblings (LiberationSans, DejaVuSerif,
+# FiraSans, Ubuntu) would false-positive.  The monospace variants of those
+# families already match via "mono" or "code".
+_MONO_KEYWORDS = frozenset({
+    "mono", "courier", "code", "consolas", "menlo",
+    "inconsolata", "iosevka", "hack",
+    "jetbrains", "lmtt", "monaco",
+    "cmtt", "cascadia",
+})
 
 _CAMEL_SPLIT_RE = re.compile(
     r"(?<=[a-z])(?=[A-Z])"
@@ -62,15 +79,20 @@ def _split_camel(name: str) -> list[str]:
     return [p.lower() for p in parts if p]
 
 
+_TRAILING_DIGITS_RE = re.compile(r"\d+$")
+
+
 def _font_name_is_monospace(font_name: str) -> bool:
     """Signal 1: font name contains a monospace keyword after decomposition.
 
-    Strips style/weight modifiers, splits camelCase, checks for
-    mono/courier/code/consolas in the remaining family tokens.
+    Strips style/weight modifiers, splits camelCase, strips trailing
+    digits from each token (e.g. LMTT10 -> lmtt), then checks for
+    known monospace family keywords.
     """
     family = _strip_modifiers(font_name)
     tokens = _split_camel(family)
-    return bool(_MONO_KEYWORDS & set(tokens))
+    stripped = [_TRAILING_DIGITS_RE.sub("", t) for t in tokens]
+    return bool(_MONO_KEYWORDS & set(t for t in stripped if t))
 
 
 def _coefficient_of_variation(values: list[float]) -> float:

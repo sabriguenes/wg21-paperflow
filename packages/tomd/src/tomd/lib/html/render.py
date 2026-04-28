@@ -12,6 +12,68 @@ _COLLAPSE_WS_RE = re.compile(r"\s+")
 
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _LIST_CONTAINER_TAGS = frozenset({"ul", "ol"})
+_BLOCK_TAGS = frozenset({
+    "p", "pre", "h1", "h2", "h3", "h4", "h5", "h6",
+    "table", "ul", "ol", "blockquote", "div", "section",
+    "dl", "hr", "figure",
+})
+
+
+_INLINE_PARENT_TAGS = frozenset({
+    "p", "span", "a", "em", "i", "strong", "b",
+}) | _HEADING_TAGS
+
+
+def _fix_misnested_blocks(soup: BeautifulSoup) -> None:
+    """Repair block elements wrongly nested inside inline parents by html.parser.
+
+    html.parser does not auto-close inline-context tags (``<p>``, ``<h3>``,
+    ``<em>``, etc.) when it encounters a block element. This pulls block
+    children out to siblings, preserving surrounding inline content in
+    wrapper elements of the same type.  Runs iteratively until stable.
+    """
+    changed = True
+    while changed:
+        changed = False
+        for parent_tag in list(soup.find_all(_INLINE_PARENT_TAGS)):
+            if not any(
+                isinstance(c, Tag) and c.name in _BLOCK_TAGS
+                for c in parent_tag.children
+            ):
+                continue
+            outer = parent_tag.parent
+            if outer is None:
+                continue
+            changed = True
+            tag_name = parent_tag.name
+            tag_attrs = dict(parent_tag.attrs) if parent_tag.attrs else {}
+            collected_inline: list = []
+
+            def _flush_inline():
+                if not collected_inline:
+                    return
+                if not any(
+                    (isinstance(n, Tag) and n.get_text(strip=True))
+                    or (isinstance(n, NavigableString) and str(n).strip())
+                    for n in collected_inline
+                ):
+                    collected_inline.clear()
+                    return
+                wrapper = soup.new_tag(tag_name, **tag_attrs)
+                for node in collected_inline:
+                    wrapper.append(node.extract())
+                parent_tag.insert_before(wrapper)
+                collected_inline.clear()
+
+            children = list(parent_tag.children)
+            for child in children:
+                if isinstance(child, Tag) and child.name in _BLOCK_TAGS:
+                    _flush_inline()
+                    parent_tag.insert_before(child.extract())
+                else:
+                    collected_inline.append(child)
+            _flush_inline()
+            parent_tag.decompose()
 
 
 def render_body(soup: BeautifulSoup, generator: str) -> str:
@@ -20,6 +82,7 @@ def render_body(soup: BeautifulSoup, generator: str) -> str:
     Warning: this function may mutate the soup tree (extracting nested
     list elements). Do not reuse the soup object after calling this.
     """
+    _fix_misnested_blocks(soup)
     body = soup.find("body") or soup
     parts: list[str] = []
     _render_children(body, parts, generator)
@@ -57,6 +120,9 @@ def _render_element(el: Tag, generator: str) -> str | None:
     if tag == "pre":
         return _render_pre(el, generator)
 
+    if tag == "code-block":
+        return _render_code_block_custom(el)
+
     if tag == "div":
         return _render_div(el, generator)
 
@@ -89,9 +155,29 @@ def _render_element(el: Tag, generator: str) -> str | None:
         _render_children(el, parts, generator)
         return "\n\n".join(p for p in parts if p.strip())
 
+    if tag in ("example-block", "note-block", "bug-block"):
+        parts = []
+        _render_children(el, parts, generator)
+        inner = "\n\n".join(p for p in parts if p.strip())
+        if inner:
+            return "> " + inner.replace("\n", "\n> ")
+        return None
+
+    if tag == "tt-":
+        text = el.get_text()
+        return f"`{text}`" if text.strip() else None
+
+    if tag == "code":
+        code_div = el.find("div", class_="code")
+        if code_div:
+            text = code_div.get_text()
+            text = text.strip("\n")
+            return f"```cpp\n{text}\n```"
+
     if tag in ("span", "a", "code", "em", "strong", "b", "i", "sub", "sup",
                "ins", "del", "mark", "small", "s", "u", "abbr", "cite",
-               "dfn", "var", "kbd", "samp", "time", "data", "wbr"):
+               "dfn", "var", "kbd", "samp", "time", "data", "wbr",
+               "h-", "f-serif"):
         return _render_inline(el)
 
     parts = []
@@ -109,13 +195,40 @@ def _render_heading(el: Tag) -> str | None:
     text = _inline_text_excluding(el, _HEADING_SKIP_CLASSES).strip()
     if not text:
         return None
+    text = text.replace("\n", " ")
+    text = re.sub(r"  +", " ", text)
     text = SECTION_NUM_PREFIX_RE.sub("", text)
     text = _BOLD_WRAP_RE.sub(r"\1", text)
     return f"{'#' * level} {text}"
 
 
+def _is_code_paragraph(el: Tag) -> bool:
+    """True if <p> contains only <span class="code"> children.
+
+    The dascandy/fiets generator uses this pattern for standalone code
+    declarations (e.g. constructor signatures). These should be emitted
+    as fenced code blocks, not flattened to prose paragraphs.
+
+    Targets <span class="code"> specifically, NOT <code> which is inline
+    formatting in Bikeshed and other generators.
+    """
+    has_code_span = False
+    for child in el.children:
+        if isinstance(child, NavigableString):
+            if child.strip():
+                return False
+        elif child.name == "span" and "code" in (child.get("class") or []):
+            has_code_span = True
+        else:
+            return False
+    return has_code_span
+
+
 def _render_paragraph(el: Tag) -> str | None:
     """Render a paragraph to a single unwrapped line."""
+    if _is_code_paragraph(el):
+        text = el.get_text().strip()
+        return f"```cpp\n{text}\n```" if text else None
     text = _collapse_whitespace(_inline_text(el))
     return text if text else None
 
@@ -137,6 +250,13 @@ def _render_pre(el: Tag, generator: str) -> str:
         text = el.get_text()
     text = text.strip("\n")
     return f"```{lang}\n{text}\n```"
+
+
+def _render_code_block_custom(el: Tag) -> str:
+    """Render a <code-block> custom element (Jan Schultke's generator) as fenced code."""
+    text = el.get_text()
+    text = text.strip("\n")
+    return f"```cpp\n{text}\n```"
 
 
 def _detect_code_language(code_el: Tag, generator: str) -> str:
@@ -173,6 +293,11 @@ def _render_div(el: Tag, generator: str) -> str | None:
         if pre:
             return _render_pre(pre, generator)
 
+    if "code" in classes:
+        text = el.get_text()
+        text = text.strip("\n")
+        return f"```cpp\n{text}\n```"
+
     if any(c in classes for c in ("note", "example", "advisement")):
         parts = []
         _render_children(el, parts, generator)
@@ -204,6 +329,9 @@ def _render_wording_div(el: Tag, generator: str) -> str:
     return f"{fence}\n\n{inner}\n\n:::"
 
 
+_CODE_BLOCK_TAGS = frozenset({"pre", "code-block"})
+
+
 def _render_list(el: Tag, marker: str, generator: str) -> str | None:
     """Render an ordered or unordered list."""
     items = []
@@ -220,16 +348,34 @@ def _render_list(el: Tag, marker: str, generator: str) -> str | None:
                 indented = "\n".join("  " + line for line in sub_rendered.split("\n"))
                 nested_parts.append(indented)
 
+        # Extract code blocks before inlining so they are rendered as
+        # fenced blocks rather than flattened to inline text.
+        code_parts = []
+        for cb in li.find_all(_CODE_BLOCK_TAGS, recursive=False):
+            rendered = _render_element(cb.extract(), generator)
+            if rendered:
+                code_parts.append(rendered)
+
         text = _collapse_whitespace(_inline_text(li))
         if text:
             items.append(f"{prefix} {text}")
+        for cp in code_parts:
+            items.append(cp)
         for np in nested_parts:
             items.append(np)
     return "\n".join(items) if items else None
 
 
 def _render_table(el: Tag) -> str | None:
-    """Render a table as a Markdown pipe table."""
+    """Render a table as a Markdown pipe table.
+
+    Tables whose cells contain <pre> or <code-block> elements cannot be
+    represented as pipe tables. For those, extract the code blocks as
+    fenced code and skip the table structure.
+    """
+    if el.find(_CODE_BLOCK_TAGS):
+        return _render_code_table(el)
+
     rows: list[list[str]] = []
     for tr in el.find_all("tr"):
         if tr.find_parent("table") != el:
@@ -256,6 +402,21 @@ def _render_table(el: Tag) -> str | None:
     return "\n".join(lines)
 
 
+def _render_code_table(el: Tag) -> str | None:
+    """Extract fenced code blocks from a table containing <pre> or <code-block>.
+
+    Some generators (dascandy/fiets, Bikeshed, Schultke) wrap code inside
+    table cells. Emit every non-empty block as its own fenced block so
+    before/after comparisons and multi-snippet tables are preserved.
+    """
+    blocks: list[str] = []
+    for cb in el.find_all(_CODE_BLOCK_TAGS):
+        text = cb.get_text().strip()
+        if text:
+            blocks.append(f"```cpp\n{text}\n```")
+    return "\n\n".join(blocks) if blocks else None
+
+
 def _render_blockquote(el: Tag, generator: str) -> str | None:
     """Render a blockquote with > prefix."""
     parts = []
@@ -277,9 +438,15 @@ def _render_dl(el: Tag, generator: str) -> str | None:
             if text:
                 items.append(f"**{text}**")
         elif child.name == "dd":
+            code_parts = []
+            for cb in child.find_all(_CODE_BLOCK_TAGS, recursive=False):
+                rendered = _render_element(cb.extract(), generator)
+                if rendered:
+                    code_parts.append(rendered)
             text = _inline_text(child).strip()
             if text:
                 items.append(f": {text}")
+            items.extend(code_parts)
     return "\n".join(items) if items else None
 
 
@@ -374,10 +541,17 @@ def _inline_text(el: Tag) -> str:
                 parts.append(f"<sup>{inner}</sup>")
                 continue
 
+            if tag == "tt-":
+                stripped = inner.strip()
+                if stripped:
+                    parts.append(f"`{stripped}`")
+                continue
+
             if tag in ("span", "div", "td", "th", "li", "dt", "dd",
                        "mark", "small", "s", "u", "abbr", "cite",
                        "dfn", "var", "kbd", "samp", "time", "data",
-                       "wbr", "p", "figure", "figcaption"):
+                       "wbr", "p", "figure", "figcaption",
+                       "h-", "f-serif", "c-"):
                 parts.append(inner)
                 continue
 

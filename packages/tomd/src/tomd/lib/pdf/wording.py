@@ -14,6 +14,13 @@ Hyperlinks (span.link_url set) are excluded from all checks and fractions.
 Insertions require no drawing decoration. Deletions require a strikethrough
 drawing whose width overlaps at least 30% of the span to avoid matching
 table borders and decorative rules.
+
+Known WG21 framework diff colors (for reference):
+  mpark/wg21:     add=#006e28 (H=142), rm=#bf0303 (H=1)
+  tcbrindle:      add=#008019 (H=150), rm=#ff0000 (H=0)
+  cplusplus/draft: add=#009999 (H=180, teal), rm=#ff0000 (H=0)
+  schultke:       ins=#17752d (H=138), del=#be1621 (H=355)
+All fall within our HSV ranges: green 90-180, red <=30 or >=330.
 """
 
 import colorsys
@@ -239,11 +246,25 @@ def classify_wording(blocks: list[Block],
                 elif is_red_del(span.color):
                     if _match_strikethrough(span.bbox, drawings):
                         candidates.append((span, "del"))
+                    else:
+                        candidates.append((span, "del_unconfirmed"))
                 elif not _is_chromatic(span.color) and span.color != 0:
                     r, g, b = _color_int_to_rgb(span.color)
                     lightness = (r + g + b) / 3.0
                     if _CONTEXT_LIGHTNESS_MIN < lightness < _CONTEXT_LIGHTNESS_MAX:
                         candidates.append((span, "context"))
+
+    ins_count = sum(1 for _, r in candidates if r == "ins")
+    confirmed_del = sum(1 for _, r in candidates if r == "del")
+    unconfirmed_del = sum(1 for _, r in candidates if r == "del_unconfirmed")
+
+    if ins_count >= _MIN_WORDING_SPANS:
+        candidates = [
+            (s, "del" if r == "del_unconfirmed" else r)
+            for s, r in candidates
+        ]
+    else:
+        candidates = [(s, r) for s, r in candidates if r != "del_unconfirmed"]
 
     ins_del = [c for c in candidates if c[1] in ("ins", "del")]
     if len(ins_del) < _MIN_WORDING_SPANS:
@@ -254,10 +275,10 @@ def classify_wording(blocks: list[Block],
     for span, role in candidates:
         span.wording_role = role
 
-    ins_count = sum(1 for _, r in candidates if r == "ins")
     del_count = sum(1 for _, r in candidates if r == "del")
     ctx_count = sum(1 for _, r in candidates if r == "context")
-    _log.info("Wording detected: %d ins, %d del, %d context",
-               ins_count, del_count, ctx_count)
+    _log.info("Wording detected: %d ins, %d del (%d promoted), %d context",
+               ins_count, del_count, unconfirmed_del if del_count > confirmed_del else 0,
+               ctx_count)
 
     return []

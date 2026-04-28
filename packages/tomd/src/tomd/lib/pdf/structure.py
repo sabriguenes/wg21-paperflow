@@ -36,6 +36,24 @@ _LEADING_TRAILING_COMMA_RE = re.compile(r"^[,\s]+|[,\s]+$")
 
 _log = logging.getLogger(__name__)
 
+# Intentionally narrower than qa.py's _STRUCTURAL_CODE_RE.
+# Here the regex drives the rescue pass (promoting paragraphs to code
+# blocks). Broader patterns (template<, namespace/class/struct/enum)
+# cause false positives on flattened tables, so they are excluded.
+_STRUCTURAL_CODE_RE = re.compile(
+    r"^\s*[{}]|"               # standalone brace lines
+    r";\s*$|"                  # trailing semicolons
+    r"#include\s*<|"           # preprocessor includes
+    r"#define\s+\w|"           # preprocessor defines
+    r"\w+\s*\([^)]*\)\s*\{|"  # function_name(...) {
+    r"\w+\s*\([^)]*\)\s*;|"   # declaration: name(...);
+    r"^\s*static_assert\s*\(|" # static_assert(
+    r"^\s*//[^/]",             # C++ line comments (not URLs with //)
+    re.MULTILINE,
+)
+
+_RESCUE_MIN_CODE_LINES = 3
+
 
 def _make_paragraph_section(block: Block) -> Section:
     """Construct a high-confidence PARAGRAPH Section from a Block."""
@@ -447,6 +465,8 @@ def structure_sections(sections: list[Section],
     structured = _detect_code_blocks(structured)
     structured = [s for s in structured if _detect_lang_label(s) is None]
     structured = _classify_wording_sections(structured)
+    structured = _coalesce_code_paragraphs(structured)
+    structured = _rescue_unfenced_code(structured)
     _demote_repeated_low_confidence_numbers(structured)
     nesting_corrections = _validate_nesting(structured)
     return metadata, structured, nesting_corrections
@@ -844,6 +864,103 @@ def _classify_wording_sections(sections: list[Section]) -> list[Section]:
             sec.kind = SectionKind.WORDING
         elif "context" in roles:
             sec.kind = SectionKind.WORDING
+    return sections
+
+
+_WORDING_KINDS = frozenset({
+    SectionKind.WORDING,
+    SectionKind.WORDING_ADD,
+    SectionKind.WORDING_REMOVE,
+})
+
+
+_COALESCE_MAX_LINES = 4
+
+_COALESCE_CODE_RE = re.compile(
+    r"^\s*[{}]|"               # standalone brace lines
+    r"#include\s*<|"           # preprocessor includes
+    r"#define\s+\w|"           # preprocessor defines
+    r"\w+\s*\([^)]*\)\s*\{|"  # function_name(...) {
+    r"\w+\s*\([^)]*\)\s*;|"   # declaration: name(...);
+    r"^\s*static_assert\s*\(|"
+    r"^\s*//[^/]",
+    re.MULTILINE,
+)
+
+
+def _coalesce_code_paragraphs(sections: list[Section]) -> list[Section]:
+    """Merge adjacent short, code-like PARAGRAPH sections before rescue.
+
+    Multi-line code examples often get split into separate one- or
+    two-line paragraphs by the block breaker.  Individually, each
+    paragraph falls below _RESCUE_MIN_CODE_LINES and is never rescued.
+    This pass scans for runs of consecutive short PARAGRAPH sections
+    (at most _COALESCE_MAX_LINES each) where every section matches a
+    strict code regex, and merges those runs into a single PARAGRAPH
+    whose combined line count is high enough for the rescue pass to
+    promote.
+
+    Uses _COALESCE_CODE_RE (excludes trailing-semicolon pattern) to
+    avoid merging prose paragraphs whose lines happen to end with ";".
+    """
+    result: list[Section] = []
+    i = 0
+    while i < len(sections):
+        sec = sections[i]
+        lines = sec.text.splitlines()
+        if (sec.kind != SectionKind.PARAGRAPH
+                or sec.kind in _WORDING_KINDS
+                or len(lines) > _COALESCE_MAX_LINES
+                or not _COALESCE_CODE_RE.search(sec.text)):
+            result.append(sec)
+            i += 1
+            continue
+        run = [sec]
+        j = i + 1
+        while j < len(sections):
+            nxt = sections[j]
+            nxt_lines = nxt.text.splitlines()
+            if (nxt.kind != SectionKind.PARAGRAPH
+                    or nxt.kind in _WORDING_KINDS
+                    or len(nxt_lines) > _COALESCE_MAX_LINES
+                    or not _COALESCE_CODE_RE.search(nxt.text)):
+                break
+            run.append(nxt)
+            j += 1
+        if len(run) >= 2:
+            merged_text = "\n".join(s.text for s in run)
+            merged = replace(run[0], text=merged_text)
+            result.append(merged)
+            _log.info("Coalesced %d code-like paragraphs (%d chars)",
+                       len(run), len(merged_text))
+        else:
+            result.append(sec)
+        i = j
+    return result
+
+
+def _rescue_unfenced_code(sections: list[Section]) -> list[Section]:
+    """Content-based rescue pass: promote paragraph sections to CODE.
+
+    Runs AFTER _classify_wording_sections so wording-classified sections
+    are skipped. Scans lines within each section (not across sections)
+    because _merge_paragraphs may have merged code lines into a single
+    section when they lack terminal punctuation in TERMINAL_PUNCTUATION.
+
+    A section is promoted when _RESCUE_MIN_CODE_LINES or more of its
+    lines match _STRUCTURAL_CODE_RE.
+    """
+    for sec in sections:
+        if sec.kind in _WORDING_KINDS:
+            continue
+        if sec.kind != SectionKind.PARAGRAPH:
+            continue
+        text = sec.text
+        lines = text.splitlines()
+        code_count = sum(1 for ln in lines if _STRUCTURAL_CODE_RE.search(ln))
+        if code_count >= _RESCUE_MIN_CODE_LINES:
+            sec.kind = SectionKind.CODE
+            sec.confidence = Confidence.MEDIUM
     return sections
 
 

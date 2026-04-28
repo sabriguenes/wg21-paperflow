@@ -21,7 +21,8 @@ def parse_html(text: str) -> BeautifulSoup:
 def detect_generator(soup: BeautifulSoup) -> str:
     """Identify which tool generated this HTML paper.
 
-    Returns one of: "mpark", "bikeshed", "hackmd", "wg21", "hand-written", "unknown".
+    Returns one of: "mpark", "bikeshed", "hackmd", "wg21", "schultke",
+    "dascandy/fiets", "hand-written", "unknown".
     Checks meta generator tag first, then structural heuristics.
     """
     for meta in soup.find_all("meta"):
@@ -32,6 +33,8 @@ def detect_generator(soup: BeautifulSoup) -> str:
                 return "mpark"
             if "bikeshed" in content.lower():
                 return "bikeshed"
+            if "dascandy/fiets" in content.lower():
+                return "dascandy/fiets"
     if soup.find("link", href=_HACKMD_RE):
         return "hackmd"
     title_tag = soup.find("title")
@@ -45,6 +48,8 @@ def detect_generator(soup: BeautifulSoup) -> str:
         return "hand-written"
     if soup.find("div", class_="wg21-head"):
         return "wg21"
+    if soup.find("code-block"):
+        return "schultke"
     return "unknown"
 
 
@@ -65,6 +70,8 @@ def extract_metadata(soup: BeautifulSoup, generator: str) -> dict:
         return _extract_handwritten_metadata(soup)
     if generator == "wg21":
         return _extract_wg21_metadata(soup)
+    if generator == "schultke":
+        return _extract_schultke_metadata(soup)
     return _extract_generic_metadata(soup)
 
 
@@ -327,6 +334,11 @@ def _extract_wg21_metadata(soup: BeautifulSoup) -> dict:
         else:
             metadata[field] = value
     return metadata
+
+
+def _extract_schultke_metadata(soup: BeautifulSoup) -> dict:
+    """Jan Schultke's custom HTML generator: metadata from <h1> and tables."""
+    return _extract_generic_metadata(soup)
 
 
 def _extract_generic_metadata(soup: BeautifulSoup) -> dict:
