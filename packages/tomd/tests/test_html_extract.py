@@ -3,6 +3,7 @@
 from tomd.lib.html.extract import (
     parse_html, detect_generator, extract_metadata, strip_boilerplate,
     _extract_generic_metadata, _extract_wg21_metadata, _match_field,
+    _extract_mailto_email, _extract_mailto_authors, _enrich_reply_to,
 )
 
 
@@ -676,3 +677,483 @@ class TestExtractGenericMetadata:
         meta = _extract_generic_metadata(parse_html(html))
         assert "document" not in meta
         assert "date" not in meta
+
+    def test_reply_to_table_label_with_mailto(self):
+        html = """
+        <table>
+          <tr><th>Reply to:</th>
+              <td><a href="mailto:alice@example.com">Alice Smith</a></td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        assert meta.get("reply-to") == ["Alice Smith <alice@example.com>"]
+
+    def test_reply_to_multiple_authors_in_cell(self):
+        html = """
+        <table>
+          <tr><th>Authors:</th>
+              <td>
+                <a href="mailto:a@x.com">Alice</a>
+                <a href="mailto:b@x.com">Bob</a>
+              </td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        assert meta.get("reply-to") == [
+            "Alice <a@x.com>",
+            "Bob <b@x.com>",
+        ]
+
+    def test_reply_to_mailto_fallback_no_label(self):
+        """Loose mailto link outside tables is only promoted when a bare
+        name already exists from table parsing.  A standalone mailto
+        without any table context is not blindly assigned as reply-to."""
+        html = """
+        <h1>Title</h1>
+        <table><tr><th>Reply to:</th><td>Eve Jones</td></tr></table>
+        <a href="mailto:eve@example.com">Eve Jones</a>
+        <h2>Body</h2>
+        """
+        meta = extract_metadata(parse_html(html), "unknown")
+        assert meta.get("reply-to") == ["Eve Jones <eve@example.com>"]
+
+    def test_reply_to_split_row_name_then_email(self):
+        """Name in one row, email mailto in the next (p4160r0 pattern).
+
+        The table loop captures the bare name; the enrichment post-pass
+        merges it with the mailto email found in the metadata region.
+        """
+        html = """
+        <table>
+          <tr><td>Reply to:</td><td>Jens Maurer</td></tr>
+          <tr><td></td><td><a href="mailto://jens@gmx.net">jens@gmx.net</a></td></tr>
+        </table>
+        """
+        meta = extract_metadata(parse_html(html), "unknown")
+        assert meta.get("reply-to") == ["Jens Maurer <jens@gmx.net>"]
+
+    def test_mailto_double_slash_normalized(self):
+        html = """
+        <table>
+          <tr><th>Reply to:</th>
+              <td><a href="mailto://x@y.com">X Y</a></td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        assert meta.get("reply-to") == ["X Y <x@y.com>"]
+
+
+class TestExtractMailtoEmail:
+    def test_standard_mailto(self):
+        assert _extract_mailto_email("mailto:a@b.com") == "a@b.com"
+
+    def test_double_slash_mailto(self):
+        assert _extract_mailto_email("mailto://a@b.com") == "a@b.com"
+
+    def test_single_slash_mailto(self):
+        assert _extract_mailto_email("mailto:/a@b.com") == "a@b.com"
+
+    def test_empty_string(self):
+        assert _extract_mailto_email("") == ""
+
+    def test_no_prefix(self):
+        assert _extract_mailto_email("a@b.com") == "a@b.com"
+
+
+class TestExtractMailtoAuthors:
+    def test_single_mailto(self):
+        html = '<div><a href="mailto:a@b.com">Alice</a></div>'
+        container = parse_html(html).find("div")
+        assert _extract_mailto_authors(container) == ["Alice <a@b.com>"]
+
+    def test_multiple_mailtos(self):
+        html = """
+        <div>
+          <a href="mailto:a@b.com">Alice</a>
+          <a href="mailto:c@d.com">Bob</a>
+        </div>
+        """
+        container = parse_html(html).find("div")
+        result = _extract_mailto_authors(container)
+        assert len(result) == 2
+        assert "Alice <a@b.com>" in result
+        assert "Bob <c@d.com>" in result
+
+    def test_deduplicates(self):
+        html = """
+        <div>
+          <a href="mailto:a@b.com">Alice</a>
+          <a href="mailto:a@b.com">Alice</a>
+        </div>
+        """
+        container = parse_html(html).find("div")
+        assert len(_extract_mailto_authors(container)) == 1
+
+    def test_bare_email_no_name(self):
+        html = '<div><a href="mailto:a@b.com">a@b.com</a></div>'
+        container = parse_html(html).find("div")
+        assert _extract_mailto_authors(container) == ["<a@b.com>"]
+
+    def test_empty_container(self):
+        html = "<div><p>No links here</p></div>"
+        container = parse_html(html).find("div")
+        assert _extract_mailto_authors(container) == []
+
+
+class TestBikeshedNestedEditorEmails:
+    """Bikeshed papers where dd.editor contains <a class='email'> or inline spans."""
+
+    def test_email_link_in_nested_dd(self):
+        html = """
+        <meta name="generator" content="Bikeshed">
+        <h1 class="p-name">P1000R0 My Paper</h1>
+        <div data-fill-with="spec-metadata">
+          <dl>
+            <dt class="editor">Editor:</dt>
+            <dd class="editor h-card vcard">
+              <a class="p-name fn u-url url" href="https://example.com">Daniel Towner</a>
+              (<a class="p-org org h-org" href="https://intel.com">Intel</a>)
+              <a class="u-email email" href="mailto:daniel.towner@intel.com">daniel.towner@intel.com</a>
+            </dd>
+            <dt>Audience:</dt>
+            <dd>SG1</dd>
+          </dl>
+        </div>
+        """
+        meta = extract_metadata(parse_html(html), "bikeshed")
+        assert "reply-to" in meta
+        assert any("daniel.towner@intel.com" in a for a in meta["reply-to"])
+        assert any("Daniel Towner" in a for a in meta["reply-to"])
+
+    def test_multiple_editors(self):
+        html = """
+        <meta name="generator" content="Bikeshed">
+        <h1 class="p-name">P2000R0 Paper Two</h1>
+        <div data-fill-with="spec-metadata">
+          <dl>
+            <dt class="editor">Editors:</dt>
+            <dd class="editor h-card">
+              <span class="p-name fn">Alice</span>
+              <a class="u-email email" href="mailto:alice@x.com">alice@x.com</a>
+            </dd>
+            <dd class="editor h-card">
+              <span class="p-name fn">Bob</span>
+              <a class="u-email email" href="mailto:bob@y.com">bob@y.com</a>
+            </dd>
+          </dl>
+        </div>
+        """
+        meta = extract_metadata(parse_html(html), "bikeshed")
+        assert len(meta.get("reply-to", [])) == 2
+        assert any("alice@x.com" in a for a in meta["reply-to"])
+        assert any("bob@y.com" in a for a in meta["reply-to"])
+
+    def test_inline_email_in_span(self):
+        html = """
+        <meta name="generator" content="Bikeshed">
+        <h1 class="p-name">P3000R0 Inline</h1>
+        <div data-fill-with="spec-metadata">
+          <dl>
+            <dt class="editor">Author:</dt>
+            <dd class="editor">
+              <span class="p-name fn">Victor Z victor@z.com</span>
+            </dd>
+          </dl>
+        </div>
+        """
+        meta = extract_metadata(parse_html(html), "bikeshed")
+        assert "reply-to" in meta
+        assert any("victor@z.com" in a for a in meta["reply-to"])
+
+    def test_strips_affiliation_from_name(self):
+        html = """
+        <meta name="generator" content="Bikeshed">
+        <h1 class="p-name">P4000R0 Affiliation</h1>
+        <div data-fill-with="spec-metadata">
+          <dl>
+            <dt class="editor">Editor:</dt>
+            <dd class="editor h-card">
+              <a class="p-name" href="#">Dan Towner - Intel</a>
+              <a class="u-email email" href="mailto:dan@intel.com">dan@intel.com</a>
+            </dd>
+          </dl>
+        </div>
+        """
+        meta = extract_metadata(parse_html(html), "bikeshed")
+        assert "reply-to" in meta
+        entry = meta["reply-to"][0]
+        assert "Intel" not in entry.split("<")[0]
+        assert "dan@intel.com" in entry
+
+
+class TestMparkNoTableFallback:
+    """Papers detected as mpark but lacking a metadata table."""
+
+    def test_mailto_in_header_without_table(self):
+        html = """
+        <header id="title-block-header">
+          <h1 class="title">My Paper</h1>
+          <p>By <a href="mailto:author@example.com">Author Name</a></p>
+        </header>
+        """
+        meta = extract_metadata(parse_html(html), "mpark")
+        assert meta["title"] == "My Paper"
+        assert "reply-to" in meta
+        assert any("author@example.com" in a for a in meta["reply-to"])
+
+    def test_no_mailto_no_table_returns_title_only(self):
+        html = """
+        <header id="title-block-header">
+          <h1 class="title">Title Only</h1>
+          <p>Some description with no emails</p>
+        </header>
+        """
+        meta = extract_metadata(parse_html(html), "mpark")
+        assert meta == {"title": "Title Only"}
+
+    def test_pandoc_mailto_in_sibling_ul(self):
+        """Pandoc: header has only <h1>, metadata is in a <ul> sibling."""
+        html = """
+        <header id="title-block-header">
+          <h1 class="title">Timed lock algorithms</h1>
+        </header>
+        <ul>
+          <li><strong>Reply-to:</strong> Ted Lyngmo
+            <a class="email" href="mailto:ted@lyncon.se">ted@lyncon.se</a></li>
+        </ul>
+        """
+        meta = extract_metadata(parse_html(html), "mpark")
+        assert "reply-to" in meta
+        assert any("Ted Lyngmo" in a and "ted@lyncon.se" in a
+                    for a in meta["reply-to"])
+
+    def test_pandoc_mailto_in_sibling_p(self):
+        """Pandoc: header sibling is <p> with inline author."""
+        html = """
+        <header id="title-block-header">
+          <h1 class="title">Constant evaluation when?</h1>
+        </header>
+        <p><em>Audience</em>: CWG<br/>
+        S. Davis Herring &lt;<a href="mailto:herring@lanl.gov"
+        class="email">herring@lanl.gov</a>&gt;<br/>
+        Los Alamos National Laboratory</p>
+        """
+        meta = extract_metadata(parse_html(html), "mpark")
+        assert "reply-to" in meta
+        assert any("S. Davis Herring" in a and "herring@lanl.gov" in a
+                    for a in meta["reply-to"])
+
+    def test_with_table_uses_table_not_fallback(self):
+        html = """
+        <header id="title-block-header">
+          <h1 class="title">T</h1>
+          <a href="mailto:wrong@example.com">Wrong</a>
+          <table>
+            <tr><td>Reply-to:</td><td>
+              Alice<br>&lt;<a href="mailto:alice@x.com">alice@x.com</a>&gt;
+            </td></tr>
+          </table>
+        </header>
+        """
+        meta = extract_metadata(parse_html(html), "mpark")
+        assert "reply-to" in meta
+        assert any("alice@x.com" in a for a in meta["reply-to"])
+
+
+class TestEnrichReplyTo:
+    """Tests for the _enrich_reply_to post-pass."""
+
+    def test_bare_name_gets_email_from_mailto(self):
+        """Bare name with unassigned email in metadata region."""
+        html = """
+        <p><a href="mailto:cpp@kaotic.software">cpp@kaotic.software</a></p>
+        <h2>Introduction</h2>
+        """
+        soup = parse_html(html)
+        metadata = {"reply-to": ["Tiago Freire"]}
+        _enrich_reply_to(soup, metadata)
+        assert metadata["reply-to"] == ["Tiago Freire <cpp@kaotic.software>"]
+
+    def test_internal_merge_bare_name_and_bare_email(self):
+        """p3161r5 pattern: reply-to has <email> and bare name from
+        separate table rows. Enrichment 0 merges them internally."""
+        html = """<h2>Body</h2>"""
+        soup = parse_html(html)
+        metadata = {"reply-to": ["<cpp@kaotic.software>", "Tiago Freire"]}
+        _enrich_reply_to(soup, metadata)
+        assert metadata["reply-to"] == ["Tiago Freire <cpp@kaotic.software>"]
+
+    def test_noop_when_already_complete(self):
+        """Entries that already have Name <email> are not modified."""
+        html = """<a href="mailto:alice@x.com">Alice</a><h2>Body</h2>"""
+        soup = parse_html(html)
+        metadata = {"reply-to": ["Alice <alice@x.com>"]}
+        _enrich_reply_to(soup, metadata)
+        assert metadata["reply-to"] == ["Alice <alice@x.com>"]
+
+    def test_bare_email_gets_name_from_context(self):
+        """Pandoc sibling: link text = email, name is in parent text."""
+        html = """
+        <p>Ted Lyngmo
+          <a href="mailto:ted@lyncon.se">ted@lyncon.se</a></p>
+        <h2>Body</h2>
+        """
+        soup = parse_html(html)
+        metadata = {"reply-to": ["<ted@lyncon.se>"]}
+        _enrich_reply_to(soup, metadata)
+        assert metadata["reply-to"] == ["Ted Lyngmo <ted@lyncon.se>"]
+
+    def test_h2_boundary_respected(self):
+        """Emails after <h2> are not harvested by the enrichment pass."""
+        html = """
+        <table><tr><th>Reply-to:</th><td>Alice</td></tr></table>
+        <h2>Introduction</h2>
+        <a href="mailto:bob@example.com">bob@example.com</a>
+        """
+        soup = parse_html(html)
+        metadata = {"reply-to": ["Alice"]}
+        _enrich_reply_to(soup, metadata)
+        assert metadata["reply-to"] == ["Alice"]
+
+    def test_multiple_bare_names_multiple_emails(self):
+        """1:1 merge when counts match."""
+        html = """
+        <a href="mailto:a@x.com">a@x.com</a>
+        <a href="mailto:b@x.com">b@x.com</a>
+        <h2>Body</h2>
+        """
+        soup = parse_html(html)
+        metadata = {"reply-to": ["Alice", "Bob"]}
+        _enrich_reply_to(soup, metadata)
+        assert "Alice <a@x.com>" in metadata["reply-to"]
+        assert "Bob <b@x.com>" in metadata["reply-to"]
+
+    def test_count_mismatch_appends_separately(self):
+        """When bare names and emails don't match 1:1, emails are appended."""
+        html = """
+        <a href="mailto:a@x.com">a@x.com</a>
+        <a href="mailto:b@x.com">b@x.com</a>
+        <h2>Body</h2>
+        """
+        soup = parse_html(html)
+        metadata = {"reply-to": ["Alice"]}
+        _enrich_reply_to(soup, metadata)
+        assert "Alice" in metadata["reply-to"]
+        assert "<a@x.com>" in metadata["reply-to"]
+        assert "<b@x.com>" in metadata["reply-to"]
+
+    def test_no_reply_to_bootstraps_from_metadata_region(self):
+        """No reply-to key: bootstrap from mailto links in metadata region."""
+        html = """<a href="mailto:a@x.com">a</a>"""
+        soup = parse_html(html)
+        metadata = {}
+        _enrich_reply_to(soup, metadata)
+        assert metadata["reply-to"] == ["<a@x.com>"]
+
+    def test_no_reply_to_no_emails_noop(self):
+        """No reply-to key and no emails: enrichment is a no-op."""
+        html = """<p>Some text without emails</p>"""
+        soup = parse_html(html)
+        metadata = {}
+        _enrich_reply_to(soup, metadata)
+        assert "reply-to" not in metadata
+
+
+class TestGenericMetadataAccumulation:
+    """Tests for the fix-overwrite change in _extract_generic_metadata."""
+
+    def test_reply_to_not_overwritten_by_authors(self):
+        """Reply-to row with email is not replaced by a later Authors row."""
+        html = """
+        <table>
+          <tr><th>Reply-to:</th>
+              <td><a href="mailto:cpp@kaotic.software">cpp@kaotic.software</a></td></tr>
+          <tr><th>Authors:</th><td>Tiago Freire</td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        assert any("cpp@kaotic.software" in e for e in meta.get("reply-to", []))
+        assert any("Tiago Freire" in e for e in meta.get("reply-to", []))
+
+    def test_both_buckets_merged(self):
+        """Both reply and author entries appear in the final list."""
+        html = """
+        <table>
+          <tr><th>Reply-to:</th>
+              <td><a href="mailto:a@x.com">Alice</a></td></tr>
+          <tr><th>Authors:</th>
+              <td><a href="mailto:b@x.com">Bob</a></td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        rt = meta.get("reply-to", [])
+        assert any("Alice" in e and "a@x.com" in e for e in rt)
+        assert any("Bob" in e and "b@x.com" in e for e in rt)
+
+
+class TestContinuationRows:
+    """Tests for multi-row reply-to with empty label cells."""
+
+    def test_multirow_reply_to_all_authors(self):
+        """p3655r4 pattern: Reply-to label only on first row, empty on rest."""
+        html = """
+        <table><tbody>
+          <tr><td>Document #</td><td>P3655R4</td></tr>
+          <tr><td>Date</td><td>2025-10-05</td></tr>
+          <tr><td>Reply-to</td>
+              <td>Peter Bindels &lt;dascandy@gmail.com&gt;</td></tr>
+          <tr><td> </td>
+              <td>Hana Dusikova &lt;hanicka@hanicka.net&gt;</td></tr>
+          <tr><td> </td>
+              <td>Jeremy Rifkin &lt;jeremy@rifkin.dev&gt;</td></tr>
+        </tbody></table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        rt = meta.get("reply-to", [])
+        assert len(rt) == 3
+        assert any("Peter Bindels" in e and "dascandy@gmail.com" in e for e in rt)
+        assert any("Hana Dusikova" in e and "hanicka@hanicka.net" in e for e in rt)
+        assert any("Jeremy Rifkin" in e and "jeremy@rifkin.dev" in e for e in rt)
+
+    def test_continuation_stops_at_next_label(self):
+        """Empty rows after a non-reply label must not be treated as authors."""
+        html = """
+        <table>
+          <tr><td>Reply-to</td><td>Alice &lt;a@x.com&gt;</td></tr>
+          <tr><td>Date</td><td>2025-01-01</td></tr>
+          <tr><td> </td><td>Not an author</td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        rt = meta.get("reply-to", [])
+        assert len(rt) == 1
+        assert "Alice" in rt[0]
+        assert "Not an author" not in str(rt)
+
+    def test_single_row_unaffected(self):
+        """Single reply-to row still works as before."""
+        html = """
+        <table>
+          <tr><td>Reply-to</td>
+              <td>Bob &lt;bob@x.com&gt;</td></tr>
+          <tr><td>Date</td><td>2025-01-01</td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        rt = meta.get("reply-to", [])
+        assert len(rt) == 1
+        assert "Bob" in rt[0] and "bob@x.com" in rt[0]
+
+    def test_continuation_with_mailto(self):
+        """Continuation rows with mailto links are also captured."""
+        html = """
+        <table>
+          <tr><td>Reply to:</td><td>Jens Maurer</td></tr>
+          <tr><td></td>
+              <td><a href="mailto://jens@gmx.net">jens@gmx.net</a></td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        rt = meta.get("reply-to", [])
+        assert any("jens@gmx.net" in e for e in rt)
+        assert any("Jens Maurer" in e for e in rt)

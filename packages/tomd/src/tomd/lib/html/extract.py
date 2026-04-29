@@ -5,12 +5,32 @@ import re
 
 from bs4 import BeautifulSoup, Tag
 
-from .. import DATE_RE, DOC_NUM_RE, parse_author_lines
+from .. import DATE_RE, DOC_NUM_RE, EMAIL_RE, parse_author_lines
 
 _log = logging.getLogger(__name__)
 
 _HACKMD_RE = re.compile(r"hackmd")
 _COMMA_COLLAPSE_RE = re.compile(r"(,\s*){2,}")
+_MAILTO_PREFIX_RE = re.compile(r"^mailto:/{0,2}")
+
+
+def _extract_mailto_email(href: str) -> str:
+    """Normalize both ``mailto:`` and the invalid ``mailto://`` to a bare address."""
+    return _MAILTO_PREFIX_RE.sub("", href)
+
+
+def _extract_mailto_authors(container: Tag) -> list[str]:
+    """Extract ``Name <email>`` entries from mailto links in *container*."""
+    authors: list[str] = []
+    for a in container.find_all("a", href=lambda h: h and "mailto:" in h):
+        email = _extract_mailto_email(a.get("href", ""))
+        name = a.get_text(strip=True)
+        if not email:
+            continue
+        entry = f"{name} <{email}>" if name and name != email else f"<{email}>"
+        if entry not in authors:
+            authors.append(entry)
+    return authors
 
 
 def parse_html(text: str) -> BeautifulSoup:
@@ -56,23 +76,29 @@ def detect_generator(soup: BeautifulSoup) -> str:
 def extract_metadata(soup: BeautifulSoup, generator: str) -> dict:
     """Extract WG21 metadata fields from the HTML.
 
-    HTML DOM scan (pathway 3 of 3). Dispatches to a generator-specific
-    extractor based on the detected generator family.
+    Two-phase architecture:
+      Phase 1 -- generator-specific extractor (structural, high confidence).
+      Phase 2 -- ``_enrich_reply_to`` post-pass that fills bare-name entries
+                 with emails found anywhere in the metadata region.
 
     Returns a dict with possible keys: title, document, date,
     audience, reply-to.
     """
     if generator == "mpark":
-        return _extract_mpark_metadata(soup)
-    if generator == "bikeshed":
-        return _extract_bikeshed_metadata(soup)
-    if generator == "hand-written":
-        return _extract_handwritten_metadata(soup)
-    if generator == "wg21":
-        return _extract_wg21_metadata(soup)
-    if generator == "schultke":
-        return _extract_schultke_metadata(soup)
-    return _extract_generic_metadata(soup)
+        metadata = _extract_mpark_metadata(soup)
+    elif generator == "bikeshed":
+        metadata = _extract_bikeshed_metadata(soup)
+    elif generator == "hand-written":
+        metadata = _extract_handwritten_metadata(soup)
+    elif generator == "wg21":
+        metadata = _extract_wg21_metadata(soup)
+    elif generator == "schultke":
+        metadata = _extract_schultke_metadata(soup)
+    else:
+        metadata = _extract_generic_metadata(soup)
+
+    _enrich_reply_to(soup, metadata)
+    return metadata
 
 
 def _extract_mpark_metadata(soup: BeautifulSoup) -> dict:
@@ -84,10 +110,21 @@ def _extract_mpark_metadata(soup: BeautifulSoup) -> dict:
 
     title_tag = header.find("h1", class_="title")
     if title_tag:
-        metadata["title"] = title_tag.get_text(strip=True)
+        metadata["title"] = title_tag.get_text(" ", strip=True)
 
     table = header.find("table")
     if not table:
+        # Pandoc papers: header has only <h1>, mailto links may be in
+        # the header itself or the next sibling element.  The enrichment
+        # post-pass (_enrich_reply_to) handles name-email correlation.
+        if "reply-to" not in metadata:
+            authors = _extract_mailto_authors(header)
+            if not authors:
+                sib = header.find_next_sibling()
+                if sib:
+                    authors = _extract_mailto_authors(sib)
+            if authors:
+                metadata["reply-to"] = authors
         return metadata
 
     for row in table.find_all("tr"):
@@ -187,6 +224,7 @@ def _extract_bikeshed_metadata(soup: BeautifulSoup) -> dict:
 
     spec_meta_div = soup.find("div", {"data-fill-with": "spec-metadata"})
     dl = (spec_meta_div or soup).find("dl")
+    editor_dds: list[Tag] = []
     if dl:
         current_label = None
         for child in dl.children:
@@ -195,18 +233,50 @@ def _extract_bikeshed_metadata(soup: BeautifulSoup) -> dict:
             if child.name == "dt":
                 current_label = _normalize_label(child.get_text(strip=True))
             elif child.name == "dd" and current_label:
-                text = child.get_text(strip=True)
                 if "audience" in current_label:
                     metadata["audience"] = _get_text_br_separated(child)
                 elif "editor" in current_label or "author" in current_label:
-                    email_link = child.find("a", class_="email")
-                    if email_link:
-                        name = email_link.get_text(strip=True)
-                        href = email_link.get("href", "")
-                        email = href.replace("mailto:", "")
-                        authors = metadata.get("reply-to", [])
-                        authors.append(f"{name} <{email}>")
-                        metadata["reply-to"] = authors
+                    editor_dds.append(child)
+
+    # Also collect <dd> elements with explicit editor/author CSS class
+    if dl:
+        for dd in dl.find_all("dd", class_=lambda c: c and
+                              ("editor" in c or "author" in c)):
+            if dd not in editor_dds:
+                editor_dds.append(dd)
+
+    if "reply-to" not in metadata and editor_dds:
+        authors: list[str] = []
+        for dd in editor_dds:
+            email_link = dd.find(
+                "a", class_=lambda c: c and ("email" in c or "u-email" in c),
+            )
+            if not email_link:
+                email_link = dd.find(
+                    "a", href=lambda h: h and "mailto:" in h,
+                )
+            if email_link:
+                href = email_link.get("href", "")
+                email = _extract_mailto_email(href)
+                name_el = (
+                    dd.find("a", class_="p-name")
+                    or dd.find("span", class_="p-name")
+                )
+                raw_name = (name_el or email_link).get_text(strip=True)
+                name = raw_name.split(" - ")[0].strip()
+                if email:
+                    authors.append(f"{name} <{email}>")
+                continue
+            name_span = dd.find("span", class_="p-name")
+            if name_span:
+                text = name_span.get_text(strip=True)
+                m = EMAIL_RE.search(text)
+                if m:
+                    email = m.group(0)
+                    name = text[:m.start()].strip().rstrip("<").strip()
+                    authors.append(f"{name} <{email}>")
+        if authors:
+            metadata["reply-to"] = authors
 
     return metadata
 
@@ -231,18 +301,13 @@ def _extract_handwritten_metadata(soup: BeautifulSoup) -> dict:
             elif (m := DATE_RE.search(line)):
                 metadata["date"] = m.group(0)
 
-        for a in addr.find_all("a"):
-            href = a.get("href", "")
-            if "mailto:" in href:
-                email = href.replace("mailto:", "")
-                name = a.get_text(strip=True)
-                authors = metadata.get("reply-to", [])
-                authors.append(f"{name} <{email}>")
-                metadata["reply-to"] = authors
+        addr_authors = _extract_mailto_authors(addr)
+        if addr_authors:
+            metadata["reply-to"] = addr_authors
 
     h1 = soup.find("h1")
     if h1 and "title" not in metadata:
-        metadata["title"] = h1.get_text(strip=True)
+        metadata["title"] = h1.get_text(" ", strip=True)
 
     table = soup.find("table", class_="header")
     if table:
@@ -262,28 +327,37 @@ def _extract_handwritten_metadata(soup: BeautifulSoup) -> dict:
                         metadata["date"] = m.group(0)
                 elif "audience" in label:
                     metadata["audience"] = _get_text_br_separated(td)
-                elif "reply" in label:
-                    a_tag = td.find("a")
-                    if a_tag:
-                        href = a_tag.get("href", "")
-                        email = href.replace("mailto:", "")
-                        name = a_tag.get_text(strip=True)
-                        authors = metadata.get("reply-to", [])
-                        authors.append(f"{name} <{email}>")
-                        metadata["reply-to"] = authors
+                elif "reply" in label or "author" in label or "editor" in label:
+                    authors = _extract_mailto_authors(td)
+                    if authors:
+                        existing = metadata.get("reply-to", [])
+                        for a_entry in authors:
+                            if a_entry not in existing:
+                                existing.append(a_entry)
+                        metadata["reply-to"] = existing
 
     return metadata
 
 
 # Canonical field names mapped to the exact strings produced by _normalize_label().
 # A <dt> or table header matches a field when its normalized text is in the synonym set.
+#
+# Design decision (April 2026, Slack #cppa-wg21): all author-like labels
+# ("Author", "Authors", "Editor", "Co-Authors", "Reply-to") map to the
+# single "reply-to" frontmatter field.  Mungo Gill noted that although
+# "authors" is more descriptive, consistency with the papers CPPA
+# generates (which use "reply-to") is more important.  Vinnie confirmed
+# the goal is to extract name/email pairs into this one field.
 _FIELD_SYNONYMS: dict[str, frozenset[str]] = {
     "document": frozenset({
         "document number", "document no", "doc no", "doc. no.", "doc", "number",
     }),
     "date":     frozenset({"date", "revision date"}),
     "audience": frozenset({"audience", "subgroup"}),
-    "reply-to": frozenset({"reply to", "reply-to", "author", "authors", "editor", "editors"}),
+    "reply-to": frozenset({
+        "reply to", "reply-to", "author", "authors", "editor", "editors",
+        "co-author", "co-authors",
+    }),
 }
 
 
@@ -308,53 +382,124 @@ def _extract_wg21_metadata(soup: BeautifulSoup) -> dict:
     metadata: dict = {}
     h1 = container.find("h1")
     if h1:
-        metadata["title"] = h1.get_text(strip=True)
+        metadata["title"] = h1.get_text(" ", strip=True)
     dl = container.find("dl")
     if not dl:
         return metadata
-    for dt, dd in zip(dl.find_all("dt"), dl.find_all("dd")):
-        field = _match_field(dt.get_text(strip=True))
-        if field is None:
+    current_field: str | None = None
+    for child in dl.children:
+        if not isinstance(child, Tag):
             continue
-        value = dd.get_text(strip=True)
-        if field == "document":
-            m = DOC_NUM_RE.search(value)
-            if m:
-                metadata["document"] = m.group(0).upper()
-        elif field == "date":
-            m = DATE_RE.search(value)
-            if m:
-                metadata["date"] = m.group(0)
-        elif field == "audience":
-            metadata["audience"] = _get_text_br_separated(dd)
-        elif field == "reply-to":
-            authors = parse_author_lines([value])
-            if authors:
-                metadata["reply-to"] = authors
-        else:
-            metadata[field] = value
+        if child.name == "dt":
+            current_field = _match_field(child.get_text(strip=True))
+        elif child.name == "dd" and current_field:
+            value = child.get_text(strip=True)
+            if current_field == "document":
+                m = DOC_NUM_RE.search(value)
+                if m:
+                    metadata["document"] = m.group(0).upper()
+            elif current_field == "date":
+                m = DATE_RE.search(value)
+                if m:
+                    metadata["date"] = m.group(0)
+            elif current_field == "audience":
+                metadata["audience"] = _get_text_br_separated(child)
+            elif current_field == "reply-to":
+                authors = _extract_mailto_authors(child)
+                if not authors:
+                    authors = parse_author_lines([value])
+                existing = metadata.get("reply-to", [])
+                for entry in authors:
+                    if entry not in existing:
+                        existing.append(entry)
+                if existing:
+                    metadata["reply-to"] = existing
     return metadata
 
 
 def _extract_schultke_metadata(soup: BeautifulSoup) -> dict:
-    """Jan Schultke's custom HTML generator: metadata from <h1> and tables."""
-    return _extract_generic_metadata(soup)
+    """Jan Schultke's custom HTML generator: metadata from <dl> and tables.
+
+    Schultke papers use a ``<dl>`` definition list for metadata, with
+    labels like ``Reply-to:``, ``Co-Authors:``, ``Co-authors:``.
+    Multiple ``<dd>`` elements may follow a single ``<dt>`` (continuation),
+    and a single ``<dd>`` may contain multiple authors separated by ``<br/>``.
+    Falls back to the generic table extractor for remaining fields.
+    """
+    metadata = _extract_generic_metadata(soup)
+
+    for dl in soup.find_all("dl"):
+        current_label = None
+        for child in dl.children:
+            if not isinstance(child, Tag):
+                continue
+            if child.name == "dt":
+                current_label = _normalize_label(child.get_text(strip=True))
+            elif child.name == "dd" and current_label:
+                if "reply" in current_label or "author" in current_label or "co-author" in current_label:
+                    authors = _extract_mailto_authors(child)
+                    if authors:
+                        existing = metadata.get("reply-to", [])
+                        for entry in authors:
+                            if entry not in existing:
+                                existing.append(entry)
+                        metadata["reply-to"] = existing
+                    else:
+                        text = child.get_text(strip=True)
+                        if text:
+                            parsed = parse_author_lines([text])
+                            existing = metadata.get("reply-to", [])
+                            for entry in parsed:
+                                if entry not in existing:
+                                    existing.append(entry)
+                            metadata["reply-to"] = existing
+                elif "document" in current_label:
+                    text = child.get_text(strip=True)
+                    m = DOC_NUM_RE.search(text)
+                    if m:
+                        metadata["document"] = m.group(0).upper()
+                elif "date" in current_label:
+                    text = child.get_text(strip=True)
+                    m = DATE_RE.search(text)
+                    if m:
+                        metadata["date"] = m.group(0)
+                elif "audience" in current_label:
+                    metadata["audience"] = _get_text_br_separated(child)
+
+    return metadata
 
 
 def _extract_generic_metadata(soup: BeautifulSoup) -> dict:
-    """Fallback: try common patterns."""
+    """Fallback: try common patterns.
+
+    Collects reply-to and author/editor entries into separate buckets so
+    that a later "Authors:" row cannot overwrite an earlier "Reply-to:" row.
+    The buckets are merged at the end: mailto entries win, then reply-to
+    entries, then author entries.
+    """
     metadata: dict = {}
+    reply_entries: list[str] = []
+    author_entries: list[str] = []
 
     h1 = soup.find("h1")
     if h1:
-        metadata["title"] = h1.get_text(strip=True)
+        metadata["title"] = h1.get_text(" ", strip=True)
 
     for table in soup.find_all("table"):
+        current_field: str | None = None
         for row in table.find_all("tr"):
             cells = row.find_all(["th", "td"])
             if len(cells) >= 2:
                 label = _normalize_label(cells[0].get_text(strip=True))
                 value = cells[-1].get_text(strip=True)
+
+                is_reply = "reply" in label or "author" in label or "editor" in label
+
+                if label:
+                    current_field = "reply" if is_reply else label
+                elif not label and current_field != "reply":
+                    continue
+
                 if "document" in label or "doc" in label:
                     m = DOC_NUM_RE.search(value)
                     if m:
@@ -365,8 +510,183 @@ def _extract_generic_metadata(soup: BeautifulSoup) -> dict:
                         metadata["date"] = m.group(0)
                 elif "audience" in label:
                     metadata["audience"] = _get_text_br_separated(cells[-1])
+                elif is_reply or (not label and current_field == "reply"):
+                    mailto = _extract_mailto_authors(cells[-1])
+                    bucket = reply_entries if ("reply" in label or not label) else author_entries
+                    if mailto:
+                        for entry in mailto:
+                            if entry not in bucket:
+                                bucket.append(entry)
+                    elif value:
+                        parsed = parse_author_lines([value])
+                        for entry in parsed:
+                            if entry not in bucket:
+                                bucket.append(entry)
+
+    # Merge: prefer reply_entries (from "Reply-to:"), fall back to
+    # author_entries (from "Authors:"/"Editors:"). Both are kept so the
+    # enrichment pass can correlate bare names with unassigned emails.
+    merged = reply_entries or author_entries
+    if reply_entries and author_entries:
+        for entry in author_entries:
+            if entry not in merged:
+                merged.append(entry)
+    if merged:
+        metadata["reply-to"] = merged
 
     return metadata
+
+
+def _collect_metadata_emails(soup: BeautifulSoup) -> list[str]:
+    """Gather all email addresses from the metadata region (before first <h2>).
+
+    Returns deduplicated list of bare email strings.  Sources checked
+    in confidence order: mailto links, then plain-text EMAIL_RE matches
+    in tables, lists, paragraphs, and definition lists.
+    """
+    first_h2 = soup.find("h2")
+    emails: list[str] = []
+    seen: set[str] = set()
+
+    def _add(email: str) -> None:
+        lower = email.lower()
+        if lower not in seen:
+            seen.add(lower)
+            emails.append(email)
+
+    # Pass 1: mailto links (highest confidence)
+    for a in soup.find_all("a", href=lambda h: h and "mailto:" in h):
+        if first_h2 and a.find_previous("h2"):
+            continue
+        email = _extract_mailto_email(a.get("href", ""))
+        if email:
+            _add(email)
+
+    # Pass 2: plain-text emails in metadata containers
+    for tag in soup.find_all(["td", "dd", "li", "p", "span"]):
+        if first_h2 and tag.find_previous("h2"):
+            continue
+        for m in EMAIL_RE.finditer(tag.get_text()):
+            _add(m.group(0))
+
+    return emails
+
+
+def _recover_name_from_context(soup: BeautifulSoup, email: str) -> str:
+    """Find a human name adjacent to *email* in the metadata region.
+
+    Pandoc emits ``Name <a href="mailto:x">x</a>`` where the link text
+    equals the address.  The name sits in the parent element's text just
+    before the email.
+    """
+    first_h2 = soup.find("h2")
+    for a in soup.find_all("a", href=lambda h: h and "mailto:" in h):
+        if first_h2 and a.find_previous("h2"):
+            continue
+        href_email = _extract_mailto_email(a.get("href", ""))
+        if href_email.lower() != email.lower():
+            continue
+        parent = a.parent
+        if not parent:
+            continue
+        full = parent.get_text(separator="\n", strip=True)
+        idx = full.find(email)
+        if idx <= 0:
+            continue
+        before = full[:idx].strip().rstrip("<").strip()
+        last_line = before.rsplit("\n", 1)[-1].strip()
+        last_line = last_line.split(":")[-1].strip()
+        if last_line and not EMAIL_RE.fullmatch(last_line):
+            return last_line
+    return ""
+
+
+def _enrich_reply_to(soup: BeautifulSoup, metadata: dict) -> None:
+    """Post-pass: fill in missing emails and names for reply-to entries.
+
+    Three enrichments, all additive-only (never remove existing data):
+
+    0. **Internal merge**: pair bare names and bare emails already
+       co-existing in the same reply-to list (e.g. from separate
+       table rows). Only when counts match 1:1.
+    1. **External emails**: scan the metadata region (before first
+       ``<h2>``) for emails not yet present and merge with remaining
+       bare names, or append as ``<email>``.
+    2. **Context names**: for remaining ``<email>``-only entries,
+       recover the adjacent human name from HTML parent text
+       (Pandoc pattern).
+    """
+    rt = metadata.get("reply-to", [])
+    if not rt:
+        # Bootstrap: no reply-to found by the generator-specific extractor.
+        # Scan the metadata region for mailto links and seed reply-to.
+        all_emails = _collect_metadata_emails(soup)
+        if all_emails:
+            seeded: list[str] = []
+            for email in all_emails:
+                name = _recover_name_from_context(soup, email)
+                seeded.append(f"{name} <{email}>" if name else f"<{email}>")
+            metadata["reply-to"] = seeded
+        return
+
+    # --- Enrichment 0: merge bare names with bare emails in-list ---
+    bare_names = [e for e in rt if "<" not in e and "@" not in e]
+    bare_emails = [e for e in rt
+                   if e.startswith("<") and e.endswith(">") and "@" in e]
+    if bare_names and bare_emails and len(bare_names) == len(bare_emails):
+        merged_entries: list[str] = []
+        name_iter = iter(bare_names)
+        email_iter = iter(bare_emails)
+        used_names: set[str] = set()
+        used_emails: set[str] = set()
+        for name, email_entry in zip(bare_names, bare_emails):
+            email = email_entry[1:-1]
+            merged_entries.append(f"{name} <{email}>")
+            used_names.add(name)
+            used_emails.add(email_entry)
+        result = []
+        for entry in rt:
+            if entry in used_names or entry in used_emails:
+                continue
+            result.append(entry)
+        metadata["reply-to"] = merged_entries + result
+        rt = metadata["reply-to"]
+        bare_names = [e for e in rt if "<" not in e and "@" not in e]
+
+    # --- Enrichment 1: fill emails for remaining bare names ---
+    if bare_names:
+        assigned = set()
+        for entry in rt:
+            m = EMAIL_RE.search(entry)
+            if m:
+                assigned.add(m.group(0).lower())
+
+        region_emails = _collect_metadata_emails(soup)
+        unassigned = [e for e in region_emails if e.lower() not in assigned]
+
+        if unassigned:
+            if len(bare_names) == len(unassigned):
+                for name, email in zip(bare_names, unassigned):
+                    merged = f"{name} <{email}>"
+                    metadata["reply-to"] = [
+                        merged if e == name else e for e in metadata["reply-to"]
+                    ]
+            else:
+                for email in unassigned:
+                    entry = f"<{email}>"
+                    if entry not in metadata["reply-to"]:
+                        metadata["reply-to"].append(entry)
+
+    # --- Enrichment 2: recover names for bare-email entries ---
+    updated = []
+    for entry in metadata["reply-to"]:
+        if entry.startswith("<") and entry.endswith(">") and "@" in entry:
+            email = entry[1:-1]
+            name = _recover_name_from_context(soup, email)
+            updated.append(f"{name} <{email}>" if name else entry)
+        else:
+            updated.append(entry)
+    metadata["reply-to"] = updated
 
 
 def strip_boilerplate(soup: BeautifulSoup, generator: str) -> list[str]:

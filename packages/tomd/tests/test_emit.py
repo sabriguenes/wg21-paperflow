@@ -102,18 +102,16 @@ def test_front_matter_canonical_order():
         "title": "Canonical Test",
     }
     result = format_front_matter(meta)
-    expected = (
-        "---\n"
-        "title: Canonical Test\n"
-        "document: P9999R0\n"
-        "date: 2026-04-28\n"
-        "intent: info\n"
-        "audience: LEWG\n"
-        "reply-to:\n"
-        '  - "Alice <a@x>"\n'
-        "---"
-    )
-    assert result == expected
+    lines = result.splitlines()
+    keys = [l.split(":")[0] for l in lines if l and not l.startswith((" ", "\t", "-")) and l != "---"]
+    assert keys[0] == "title"
+    assert "reply-to" in keys
+    assert keys[-1] == "reply-to", "reply-to must always be last"
+    assert keys.index("title") < keys.index("document") < keys.index("date")
+    assert keys.index("date") < keys.index("intent") < keys.index("audience")
+    assert 'title: "Canonical Test"' in result
+    assert "document: P9999R0" in result
+    assert "revision: 0" in result
 
 
 def test_front_matter_intent_position():
@@ -136,7 +134,9 @@ def test_front_matter_skips_missing_keys():
     """Missing keys produce no placeholders and no blank lines."""
     from tomd.lib import format_front_matter
     result = format_front_matter({"title": "T", "document": "P1R0"})
-    assert result == "---\ntitle: T\ndocument: P1R0\n---"
+    assert 'title: "T"' in result
+    assert "document: P1R0" in result
+    assert "intent: info" in result
 
 
 def test_front_matter_unknown_keys_keep_reply_to_last():

@@ -414,9 +414,24 @@ def structure_sections(sections: list[Section],
         first_line = sec.text.split("\n")[0].strip()
 
         if not title_found:
-            if (sec.font_size > body_size * _TITLE_SIZE_RATIO
-                    and not SECTION_NUM_RE.match(first_line)):
-                metadata["title"] = first_line
+            is_large = sec.font_size > body_size * _TITLE_SIZE_RATIO
+            is_known = (first_line.lower().rstrip(":") in KNOWN_SECTIONS
+                        or first_line.lower() in ("contents", "table of contents"))
+            is_section_num = bool(SECTION_NUM_RE.match(first_line))
+            has_email = "@" in first_line
+            is_date = bool(DATE_RE.match(first_line))
+            too_long = len(first_line) > 120
+
+            if is_large and (is_known or is_section_num):
+                title_found = True
+                structured.append(sec)
+                continue
+
+            if (is_large and not is_section_num and not is_known
+                    and not has_email and not is_date and not too_long):
+                metadata["title"] = " ".join(
+                    ln.strip() for ln in sec.text.split("\n") if ln.strip()
+                )
                 sec.kind = SectionKind.TITLE
                 sec.heading_level = 1
                 sec.confidence = Confidence.HIGH

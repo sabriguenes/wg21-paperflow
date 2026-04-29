@@ -26,6 +26,32 @@ _log = logging.getLogger(__name__)
 _STANDALONE_PAGE_RE = re.compile(r'^\d{1,4}$')
 _TOC_X_TOLERANCE = 5.0
 
+_PID_BASE_RE = re.compile(r"([DPN])(\d{3,5})(?:R(\d+))?", re.IGNORECASE)
+
+
+def _override_revision_from_filename(metadata: dict, path: Path) -> None:
+    """Override document revision from filename when the base paper number
+    matches but revisions differ. Skip when the extracted document has a
+    D-prefix (draft), since D/P mismatches are expected WG21 workflow."""
+    if "document" not in metadata:
+        return
+    doc_m = _PID_BASE_RE.search(metadata["document"])
+    stem_m = _PID_BASE_RE.search(path.stem)
+    if not doc_m or not stem_m:
+        return
+    if doc_m.group(1).upper() == "D":
+        return
+    if doc_m.group(2) != stem_m.group(2):
+        return
+    stem_rev = stem_m.group(3)
+    doc_rev = doc_m.group(3)
+    if stem_rev is not None and stem_rev != doc_rev:
+        prefix = stem_m.group(1).upper()
+        number = stem_m.group(2)
+        metadata["document"] = f"{prefix}{number}R{stem_rev}"
+        _log.debug("Overrode document revision from filename: %s -> %s",
+                   f"{doc_m.group(0)}", metadata["document"])
+
 
 def _toc_structural_hints(sections) -> list[bool]:
     """Mark sections that structurally resemble TOC entries.
@@ -129,6 +155,93 @@ class PipelineResult:
     skip_reason: str = ""
 
 
+def _parse_pdf_info_date(raw: str) -> str:
+    """Parse a PDF info-dict date (``D:YYYYMMDDHHmmSS...``) into ``YYYY-MM-DD``."""
+    if not raw:
+        return ""
+    raw = raw.strip()
+    if raw.startswith("D:"):
+        raw = raw[2:]
+    if len(raw) >= 8 and raw[:8].isdigit():
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+    return ""
+
+
+def _enrich_pdf_reply_to(
+    metadata: dict, blocks: list, *, max_lines: int = 30
+) -> None:
+    """Safety-net post-pass: scan page 0 for emails missed by labeled extractors.
+
+    Mirrors the HTML _enrich_reply_to pattern. Runs after wg21/structure merge.
+    """
+    from .. import EMAIL_RE
+
+    page0_lines: list[str] = []
+    for b in blocks:
+        if b.page_num != 0:
+            continue
+        for ln in b.lines:
+            page0_lines.append(ln.text.strip())
+            if len(page0_lines) >= max_lines:
+                break
+        if len(page0_lines) >= max_lines:
+            break
+
+    existing = metadata.get("reply-to", [])
+    existing_joined = " ".join(existing)
+    existing_emails = {e.lower() for e in EMAIL_RE.findall(existing_joined)}
+
+    if existing_emails:
+        return
+
+    page0_text = "\n".join(page0_lines)
+    page0_emails = EMAIL_RE.findall(page0_text)
+    missing = [e for e in page0_emails if e.lower() not in existing_emails]
+    if not missing:
+        return
+
+    _NAMED_EMAIL_RE = re.compile(
+        r"([A-Z][A-Za-z.''\- ]+?)\s*[<(](" + EMAIL_RE.pattern + r")[)>]"
+    )
+    _BARE_EMAIL_RE = re.compile(
+        r"^\s*[<(]?(" + EMAIL_RE.pattern + r")[)>]?\s*$"
+    )
+    line_map: dict[str, str] = {}
+    for idx, line in enumerate(page0_lines):
+        for m in _NAMED_EMAIL_RE.finditer(line):
+            name = m.group(1).strip().rstrip(",/;")
+            line_map[m.group(2).lower()] = name
+        m = _BARE_EMAIL_RE.match(line)
+        if m and m.group(1).lower() not in line_map:
+            if idx > 0:
+                prev = page0_lines[idx - 1].strip().rstrip(":")
+                if prev and "@" not in prev and "<" not in prev:
+                    line_map[m.group(1).lower()] = prev
+
+    paired: set[str] = set()
+    for email in missing:
+        name = line_map.get(email.lower(), "")
+        if name:
+            for idx, entry in enumerate(existing):
+                if entry == name or (
+                    "<" not in entry and "@" not in entry
+                    and name.lower().startswith(entry.lower())
+                ):
+                    existing[idx] = f"{entry} <{email}>"
+                    paired.add(email.lower())
+                    break
+
+    for email in missing:
+        if email.lower() in paired:
+            continue
+        name = line_map.get(email.lower(), "")
+        if name:
+            existing.append(f"{name} <{email}>")
+        else:
+            existing.append(f"<{email}>")
+    metadata["reply-to"] = existing
+
+
 def _run_pipeline(path: Path) -> PipelineResult:
     """Run the full PDF conversion pipeline, returning all intermediate data."""
     import fitz
@@ -206,6 +319,10 @@ def _run_pipeline(path: Path) -> PipelineResult:
             drawings = collect_line_drawings(doc[pg_num])
             if drawings:
                 page_drawings[pg_num] = drawings
+
+        pdf_info_date = _parse_pdf_info_date(doc.metadata.get("creationDate", ""))
+        pdf_info_title = (doc.metadata.get("title") or "").strip()
+        doc_metadata = dict(doc.metadata)
     finally:
         if doc is not None:
             doc.close()
@@ -273,6 +390,52 @@ def _run_pipeline(path: Path) -> PipelineResult:
     structure_metadata, sections, nesting_corrections = structure_sections(
         sections, has_title=has_title)
     metadata = {**structure_metadata, **wg21_metadata}
+
+    if "document" not in metadata:
+        from .. import DOC_NUM_RE
+        stem_match = DOC_NUM_RE.search(path.stem)
+        if stem_match:
+            metadata["document"] = stem_match.group(1).upper()
+
+    if "date" not in metadata and pdf_info_date:
+        metadata["date"] = pdf_info_date
+
+    _override_revision_from_filename(metadata, path)
+
+    if not metadata.get("title"):
+        for sec in sections:
+            if sec.kind == SectionKind.HEADING:
+                candidate = " ".join(
+                    ln.strip().lstrip("# ").strip()
+                    for ln in sec.text.split("\n") if ln.strip()
+                )
+                if candidate:
+                    metadata["title"] = candidate
+                    break
+
+    if not metadata.get("title") and pdf_info_title:
+        _TITLE_BOILERPLATE_RE = re.compile(
+            r"^(?:Microsoft\s+Word|Document\d|Untitled|"
+            r"[DPN]\d{3,5}(?:R\d+)?|Presentation\d?)$",
+            re.IGNORECASE,
+        )
+        if not _TITLE_BOILERPLATE_RE.match(pdf_info_title):
+            metadata["title"] = pdf_info_title
+
+    if "reply-to" not in metadata:
+        pdf_info_author = (doc_metadata.get("author") or "").strip()
+        if pdf_info_author and len(pdf_info_author) >= 4:
+            _AUTHOR_BOILERPLATE_RE = re.compile(
+                r"^(?:Admin|Scanner|Unknown|Default|User|Owner|"
+                r"Microsoft|Adobe|LaTeX|TeX|MiKTeX|pdfTeX|dvips|"
+                r"Acrobat|LibreOffice|OpenOffice|Google|Apple|"
+                r"[a-z0-9._-]+\.(?:pdf|doc|docx|tex))$",
+                re.IGNORECASE,
+            )
+            if not _AUTHOR_BOILERPLATE_RE.match(pdf_info_author):
+                metadata["reply-to"] = [pdf_info_author]
+
+    _enrich_pdf_reply_to(metadata, all_mupdf_blocks)
 
     texts = [sec.text.split("\n")[0].strip() for sec in sections]
     heading_texts = {sec.text.split("\n")[0].strip()

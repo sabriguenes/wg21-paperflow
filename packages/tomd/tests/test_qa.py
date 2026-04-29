@@ -89,6 +89,34 @@ class TestUncertainRegions:
         assert m.score <= 80, "uncertain penalty capped at 20"
 
 
+class TestLossyTableCount:
+    def test_lossy_table_marker_counted(self):
+        md = "## Heading\n\n<!-- tomd:lossy-table -->\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n"
+        m = compute_metrics(md)
+        assert m.lossy_table_count == 1
+        assert any("lossy" in i for i in m.issues)
+
+    def test_no_marker_zero_count(self):
+        md = "## Heading\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n"
+        m = compute_metrics(md)
+        assert m.lossy_table_count == 0
+
+    def test_multiple_markers(self):
+        md = (
+            "## Heading\n\n"
+            "<!-- tomd:lossy-table -->\n\n| A | B |\n| --- | --- |\n\n"
+            "<!-- tomd:lossy-table -->\n\n| C | D |\n| --- | --- |\n"
+        )
+        m = compute_metrics(md)
+        assert m.lossy_table_count == 2
+
+    def test_lossy_table_no_score_penalty(self):
+        """Lossy tables are informational, not penalized."""
+        md = "## Heading\n\n<!-- tomd:lossy-table -->\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n"
+        m = compute_metrics(md)
+        assert m.score == 100
+
+
 class TestNoHeadings:
     def test_no_headings_long_doc_penalized(self):
         """A document with 10+ paragraphs and zero headings is penalized."""

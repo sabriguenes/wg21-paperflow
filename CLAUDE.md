@@ -85,6 +85,32 @@ Outside a venv, prefix with `uv run`. Workspace defaults to `$PAPERFLOW_WORKSPAC
   <pid>.prompts.json             # tomd, uncertain regions only
 ```
 
+## Canonical front matter (tomd output)
+
+Every converted paper gets this YAML block. Field order is fixed.
+
+```yaml
+---
+title: "Paper Title"
+document: P2583R3
+revision: 3
+date: 2024-01-15
+intent: info
+audience: SG1, LEWG
+reply-to:
+  - "Author Name <email@example.com>"
+---
+```
+
+- `title`: double-quoted. Extracted from source metadata or first heading.
+- `document`: unquoted paper number (e.g. `P4036R0`).
+- `revision`: integer from PID (`PxxxxRy` -> `y`). Omit for N-papers.
+- `date`: unquoted ISO 8601.
+- `intent`: `info` or `ask`. Default `info` for external papers.
+- `audience`: unquoted, comma-separated (e.g. `SG1, LEWG`).
+- `reply-to`: YAML list of `"Name <email>"` strings. All author-like metadata (Reply-to, Authors, Editors, Co-Authors) is merged into this single field. Field name chosen for consistency with cppalliance/wg21-papers `source/CLAUDE.md` (Mungo/Vinnie decision, April 2026).
+- Body headings start at H2. The front-matter `title` renders as H1; no `# H1` in body.
+
 ## Invariants
 
 - **All storage goes through `paperstore.StorageBackend`.** Never write files directly. Never construct paths from `backend.workspace_dir`.

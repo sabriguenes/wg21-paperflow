@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup, Comment, Tag, NavigableString
 from .. import strip_format_chars, SECTION_NUM_PREFIX_RE, ALLOWED_LINK_SCHEMES
 
 _BOLD_WRAP_RE = re.compile(r"^\*\*(.+)\*\*$")
+_LOSSY_TABLE_MARKER = "<!-- tomd:lossy-table -->"
 _COLLAPSE_WS_RE = re.compile(r"\s+")
 
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
@@ -76,6 +77,32 @@ def _fix_misnested_blocks(soup: BeautifulSoup) -> None:
             parent_tag.decompose()
 
 
+
+def _fix_misnested_list_items(soup: BeautifulSoup) -> None:
+    """Promote <li> elements nested inside other <li> to siblings.
+
+    html.parser does not auto-close <li> when it encounters a new <li>,
+    causing successive list items to nest inside the first one. This walks
+    all <li> tags and moves any child <li> to the correct sibling position.
+    """
+    changed = True
+    while changed:
+        changed = False
+        for li in list(soup.find_all("li")):
+            nested = li.find_all("li", recursive=False)
+            if not nested:
+                for child in li.children:
+                    if isinstance(child, Tag) and child.name in ("ul", "ol"):
+                        nested.extend(child.find_all("li", recursive=False))
+                continue
+            parent = li.parent
+            if parent is None:
+                continue
+            for nested_li in nested:
+                changed = True
+                parent.append(nested_li.extract())
+
+
 def render_body(soup: BeautifulSoup, generator: str) -> str:
     """Render the HTML body to Markdown.
 
@@ -83,6 +110,7 @@ def render_body(soup: BeautifulSoup, generator: str) -> str:
     list elements). Do not reuse the soup object after calling this.
     """
     _fix_misnested_blocks(soup)
+    _fix_misnested_list_items(soup)
     body = soup.find("body") or soup
     parts: list[str] = []
     _render_children(body, parts, generator)
@@ -366,25 +394,235 @@ def _render_list(el: Tag, marker: str, generator: str) -> str | None:
     return "\n".join(items) if items else None
 
 
+def _has_spans(el: Tag) -> bool:
+    """Return True if any cell uses colspan or rowspan."""
+    for cell in el.find_all(["th", "td"]):
+        if cell.get("colspan") or cell.get("rowspan"):
+            return True
+    return False
+
+
+def _has_mangled_cells(el: Tag) -> bool:
+    """Return True if any cell contains nested cells (parser artifact).
+
+    html.parser does not auto-close <td>/<th> tags, creating nested cell
+    structures. These need the descendant-walking flat reconstruction path.
+    """
+    for cell in el.find_all(["th", "td"]):
+        if cell.find(["th", "td"]):
+            return True
+    return False
+
+
+def _needs_flat_reconstruction(el: Tag) -> bool:
+    """Return True for tables that need the descendant-walking flat path.
+
+    This covers: nested <table> elements, parser-mangled nested cells,
+    and block-level content inside cells.
+    """
+    if el.find("table"):
+        return True
+    for cell in el.find_all(["th", "td"]):
+        if cell.find(["th", "td"]):
+            return True
+        if cell.find(["pre", "ol", "ul", "blockquote"]):
+            return True
+        if cell.find("p") and len(cell.find_all("p")) > 1:
+            return True
+    return False
+
+
+
+def _has_br_in_cells(el: Tag) -> bool:
+    """Return True if any cell contains a <br> tag."""
+    for cell in el.find_all(["th", "td"]):
+        if cell.find("br"):
+            return True
+    return False
+
+
+def _cell_own_text(cell: Tag) -> str:
+    """Get text directly owned by a cell, excluding nested cells/rows."""
+    parts = []
+    for child in cell.children:
+        if isinstance(child, NavigableString):
+            parts.append(str(child))
+        elif isinstance(child, Tag) and child.name not in ("td", "th", "tr",
+                                                            "thead", "tbody",
+                                                            "tfoot", "table"):
+            parts.append(child.get_text(" ", strip=True))
+    return " ".join(parts).strip()
+
+
+def _denormalize_table(el: Tag) -> list[list[str]]:
+    """Expand rowspan/colspan into a flat rectangular grid of cell texts.
+
+    Two-pass algorithm: builds a None-initialized 2D matrix, then fills it
+    by walking <tr> elements and tracking pending rowspans per column.
+    """
+    trs = []
+    containers = el.find_all(["thead", "tbody", "tfoot"], recursive=False)
+    if containers:
+        for c in containers:
+            trs.extend(c.find_all("tr", recursive=False))
+    else:
+        trs = el.find_all("tr", recursive=False)
+
+    if not trs:
+        return []
+
+    # First pass: determine grid dimensions
+    max_cols = 0
+    for tr in trs:
+        col_count = 0
+        for cell in tr.find_all(["th", "td"], recursive=False):
+            col_count += int(cell.get("colspan", 1))
+        if col_count > max_cols:
+            max_cols = col_count
+    num_rows = len(trs)
+
+    if max_cols == 0:
+        return []
+
+    grid: list[list[str | None]] = [[None] * max_cols for _ in range(num_rows)]
+
+    # Second pass: fill the grid
+    for row_idx, tr in enumerate(trs):
+        col_idx = 0
+        for cell in tr.find_all(["th", "td"], recursive=False):
+            # Skip columns already filled by previous rowspans
+            while col_idx < max_cols and grid[row_idx][col_idx] is not None:
+                col_idx += 1
+            if col_idx >= max_cols:
+                break
+
+            text = _inline_text(cell).strip().replace("|", "\\|")
+            text = _COLLAPSE_WS_RE.sub(" ", text)
+            rs = int(cell.get("rowspan", 1))
+            cs = int(cell.get("colspan", 1))
+
+            for dr in range(rs):
+                for dc in range(cs):
+                    r, c = row_idx + dr, col_idx + dc
+                    if r < num_rows and c < max_cols:
+                        grid[r][c] = text
+
+            col_idx += cs
+
+    # Replace any remaining None with empty string
+    return [[cell if cell is not None else "" for cell in row] for row in grid]
+
+
+def _render_denormalized_table(el: Tag) -> str | None:
+    """Render a table with rowspan/colspan as a flat denormalized pipe table."""
+    rows = _denormalize_table(el)
+    if not rows:
+        return None
+
+    num_cols = max(len(r) for r in rows)
+    for r in rows:
+        while len(r) < num_cols:
+            r.append("")
+
+    headers = [_BOLD_WRAP_RE.sub(r"\1", cell) for cell in rows[0]]
+
+    lines = [_LOSSY_TABLE_MARKER]
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join(["---"] * num_cols) + " |")
+    for row in rows[1:]:
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines)
+
+
+def _render_table_flat(el: Tag) -> str:
+    """Render a table as a pipe table, handling parser-mangled DOM.
+
+    When html.parser has mangled the tree (nested cells due to missing
+    closing tags), we collect ALL <td>/<th> descendants in document order,
+    extract their direct text via _cell_own_text, and use <tr> boundaries
+    to reconstruct rows. Output is a standard Markdown pipe table.
+    """
+    all_cells = el.find_all(["td", "th"])
+
+    if not all_cells:
+        return el.get_text(" ", strip=True)
+
+    rows: list[list[str]] = []
+    current_row: list[str] = []
+
+    seen: set[int] = set()
+    for node in el.descendants:
+        if not isinstance(node, Tag):
+            continue
+        if node.name == "tr" and current_row:
+            rows.append(current_row)
+            current_row = []
+        elif node.name in ("td", "th"):
+            nid = id(node)
+            if nid in seen:
+                continue
+            seen.add(nid)
+            text = _cell_own_text(node)
+            text = _COLLAPSE_WS_RE.sub(" ", text).strip().replace("|", "\\|")
+            current_row.append(text)
+    if current_row:
+        rows.append(current_row)
+
+    if not rows:
+        return el.get_text(" ", strip=True)
+
+    num_cols = max(len(r) for r in rows)
+    for r in rows:
+        while len(r) < num_cols:
+            r.append("")
+
+    headers = [_BOLD_WRAP_RE.sub(r"\1", cell) for cell in rows[0]]
+
+    lines = [_LOSSY_TABLE_MARKER]
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join(["---"] * num_cols) + " |")
+    for row in rows[1:]:
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines)
+
+
 def _render_table(el: Tag) -> str | None:
     """Render a table as a Markdown pipe table.
 
     Tables whose cells contain <pre> or <code-block> elements cannot be
     represented as pipe tables. For those, extract the code blocks as
     fenced code and skip the table structure.
+
+    Tables with rowspan/colspan are denormalized into flat pipe tables.
+    Tables with parser-mangled DOM (nested cells from unclosed tags) are
+    reconstructed via descendant walking. Only tables with nested <table>
+    elements or block-level cell content (pre, lists) fall back to the
+    flat reconstruction path.
     """
     if el.find(_CODE_BLOCK_TAGS):
         return _render_code_table(el)
 
+    if _needs_flat_reconstruction(el):
+        return _render_table_flat(el)
+
+    if _has_spans(el):
+        return _render_denormalized_table(el)
+
     rows: list[list[str]] = []
-    for tr in el.find_all("tr"):
-        if tr.find_parent("table") != el:
-            continue
-        cells = []
-        for td in tr.find_all(["th", "td"]):
-            cells.append(_inline_text(td).strip().replace("|", "\\|"))
-        if cells:
-            rows.append(cells)
+    containers = el.find_all(["thead", "tbody", "tfoot"], recursive=False)
+    if containers:
+        tr_sources = containers
+    else:
+        tr_sources = [el]
+    for src in tr_sources:
+        for tr in src.find_all("tr", recursive=False):
+            cells = []
+            for td in tr.find_all(["th", "td"], recursive=False):
+                cell_text = _inline_text(td).strip()
+                cell_text = _COLLAPSE_WS_RE.sub(" ", cell_text)
+                cells.append(cell_text.replace("|", "\\|"))
+            if cells:
+                rows.append(cells)
 
     if not rows:
         return None
@@ -394,8 +632,10 @@ def _render_table(el: Tag) -> str | None:
         while len(r) < num_cols:
             r.append("")
 
+    headers = [_BOLD_WRAP_RE.sub(r"\1", cell) for cell in rows[0]]
+
     lines = []
-    lines.append("| " + " | ".join(rows[0]) + " |")
+    lines.append("| " + " | ".join(headers) + " |")
     lines.append("| " + " | ".join(["---"] * num_cols) + " |")
     for row in rows[1:]:
         lines.append("| " + " | ".join(row) + " |")
@@ -414,7 +654,9 @@ def _render_code_table(el: Tag) -> str | None:
         text = cb.get_text().strip()
         if text:
             blocks.append(f"```cpp\n{text}\n```")
-    return "\n\n".join(blocks) if blocks else None
+    if not blocks:
+        return None
+    return _LOSSY_TABLE_MARKER + "\n\n" + "\n\n".join(blocks)
 
 
 def _render_blockquote(el: Tag, generator: str) -> str | None:
@@ -483,6 +725,10 @@ def _inline_text(el: Tag) -> str:
             tag = child.name
 
             if tag in ("style", "script"):
+                continue
+
+            if tag in ("table", "thead", "tbody", "tfoot", "tr"):
+                parts.append(child.get_text(" ", strip=True))
                 continue
 
             inner = _inline_text(child)

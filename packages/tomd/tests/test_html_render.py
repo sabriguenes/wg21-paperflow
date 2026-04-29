@@ -368,7 +368,7 @@ class TestDivDispatch:
 
 
 class TestTableExtended:
-    def test_nested_table_not_in_outer_rows(self):
+    def test_nested_table_becomes_pipe(self):
         html = """
         <table>
         <tr><th>OuterA</th><th>OuterB</th></tr>
@@ -376,9 +376,9 @@ class TestTableExtended:
         </table>
         """
         md = render_body(parse_html(html), "mpark")
-        lines = [ln for ln in md.splitlines() if ln.startswith("|")]
-        assert any("OuterA" in ln for ln in lines)
-        assert sum(1 for ln in lines if "Inner" in ln) == 1
+        assert "<table>" not in md
+        assert "OuterA" in md
+        assert "Inner" in md
 
     def test_short_row_padding(self):
         html = """
@@ -389,6 +389,214 @@ class TestTableExtended:
         """
         md = render_body(parse_html(html), "mpark")
         assert "| 1 | 2 |" in md or "| 1 | 2 | |" in md
+
+
+class TestDenormalizedTable:
+    """Tables with rowspan/colspan are denormalized into flat pipe tables."""
+
+    def test_rowspan_expanded(self):
+        html = """
+        <table>
+        <tr><th>Day</th><th>Time</th></tr>
+        <tr><td rowspan="2">Mon-Tue</td><td>09:00</td></tr>
+        <tr><td>10:00</td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<table>" not in md
+        assert "| Day | Time |" in md
+        assert "| Mon-Tue | 09:00 |" in md
+        assert "| Mon-Tue | 10:00 |" in md
+
+    def test_colspan_expanded(self):
+        html = """
+        <table>
+        <tr><th colspan="2">Header</th></tr>
+        <tr><td>A</td><td>B</td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<table>" not in md
+        assert "| Header | Header |" in md
+        assert "| A | B |" in md
+
+    def test_mixed_rowspan_colspan(self):
+        html = """
+        <table>
+        <tr><th>X</th><th>Y</th><th>Z</th></tr>
+        <tr><td rowspan="2">A</td><td colspan="2">B</td></tr>
+        <tr><td>C</td><td>D</td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<table>" not in md
+        lines = [l for l in md.splitlines() if l.startswith("|")]
+        assert len(lines) == 4  # header + separator + 2 data rows
+        assert "| A | B | B |" in md
+        assert "| A | C | D |" in md
+
+    def test_schedule_table_n5034(self):
+        """Real-world schedule from N5034 with rowspan=5 and colspan=2."""
+        html = """
+        <table>
+        <tr><th>Day</th><th>Start</th><th>Break</th><th>End</th></tr>
+        <tr><td>Monday</td><td>9:00 AM</td><td rowspan="3">10:15</td><td rowspan="3">5:30 PM</td></tr>
+        <tr><td>Tuesday</td><td rowspan="2">8:30 AM</td></tr>
+        <tr><td>Wednesday</td></tr>
+        <tr><td>Saturday</td><td>8:30 AM</td><td colspan="2">No breaks</td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<table>" not in md
+        assert "| Monday | 9:00 AM | 10:15 | 5:30 PM |" in md
+        assert "| Tuesday | 8:30 AM | 10:15 | 5:30 PM |" in md
+        assert "| Wednesday | 8:30 AM | 10:15 | 5:30 PM |" in md
+        assert "| Saturday | 8:30 AM | No breaks | No breaks |" in md
+
+    def test_simple_table_no_spans_still_pipe(self):
+        """Tables without spans should still render as pipe tables."""
+        html = """
+        <table>
+        <tr><th>A</th><th>B</th></tr>
+        <tr><td>1</td><td>2</td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<table>" not in md
+        assert "| A | B |" in md
+        assert "| 1 | 2 |" in md
+
+    def test_br_in_cell_becomes_space(self):
+        """Cells with <br> should collapse to single-line pipe table cells."""
+        html = """
+        <table>
+        <tr><th>Col</th></tr>
+        <tr><td>Line1<br>Line2</td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<table>" not in md
+        assert "Line1 Line2" in md
+
+    def test_pipe_in_cell_escaped(self):
+        """Pipe characters in cell content must be escaped."""
+        html = """
+        <table>
+        <tr><th>Op</th></tr>
+        <tr><td rowspan="2">a|b</td></tr>
+        <tr></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert r"a\|b" in md
+
+    def test_nested_table_becomes_pipe(self):
+        """Nested tables are reconstructed as pipe tables via flat path."""
+        html = """
+        <table>
+        <tr><td><table><tr><td>Inner</td></tr></table></td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<table>" not in md
+        assert "Inner" in md
+
+    def test_block_content_in_cell_becomes_pipe(self):
+        """Tables with block content (lists) in cells become pipe tables."""
+        html = """
+        <table>
+        <tr><td rowspan="2">X</td><td><ul><li>Item</li></ul></td></tr>
+        <tr><td>Y</td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<table>" not in md
+        assert "X" in md
+
+    def test_bikeshed_unclosed_tags_become_pipe(self):
+        """Bikeshed-style tables with unclosed <td>/<th> become pipe tables."""
+        html = """
+        <table>
+        <tr><th>Poll<th>SF<th>WF<th>Outcome
+        <tr><td>Poll 1<td>11<td>4<td>Consensus
+        <tr><td>Poll 2<td>5<td>3<td>No consensus
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<table>" not in md
+        assert "Poll" in md
+        assert "SF" in md
+        assert "Consensus" in md
+        pipe_lines = [l for l in md.splitlines() if l.strip().startswith("|")]
+        assert len(pipe_lines) >= 4  # header + sep + 2 data rows
+
+
+class TestLossyTableMarker:
+    """Lossy table rendering paths emit <!-- tomd:lossy-table --> markers."""
+
+    def test_rowspan_emits_marker(self):
+        html = """
+        <table>
+        <tr><th>Day</th><th>Time</th></tr>
+        <tr><td rowspan="2">Mon</td><td>09:00</td></tr>
+        <tr><td>10:00</td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<!-- tomd:lossy-table -->" in md
+
+    def test_colspan_emits_marker(self):
+        html = """
+        <table>
+        <tr><th colspan="2">Header</th></tr>
+        <tr><td>A</td><td>B</td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<!-- tomd:lossy-table -->" in md
+
+    def test_simple_table_no_marker(self):
+        html = """
+        <table>
+        <tr><th>A</th><th>B</th></tr>
+        <tr><td>1</td><td>2</td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<!-- tomd:lossy-table -->" not in md
+
+    def test_nested_table_emits_marker(self):
+        html = """
+        <table>
+        <tr><td><table><tr><td>Inner</td></tr></table></td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<!-- tomd:lossy-table -->" in md
+
+    def test_code_table_emits_marker(self):
+        html = """
+        <table>
+        <tr><td><pre><code>int x = 1;</code></pre></td></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert "<!-- tomd:lossy-table -->" in md
+
+    def test_multiple_lossy_tables_multiple_markers(self):
+        html = """
+        <table>
+        <tr><th colspan="2">T1</th></tr>
+        <tr><td>A</td><td>B</td></tr>
+        </table>
+        <table>
+        <tr><th>X</th></tr>
+        <tr><td rowspan="2">Y</td></tr>
+        <tr></tr>
+        </table>
+        """
+        md = render_body(parse_html(html), "mpark")
+        assert md.count("<!-- tomd:lossy-table -->") == 2
 
 
 class TestDefinitionList:

@@ -116,3 +116,30 @@ def test_reply_to_continuation_capped():
     # The block just past the cap must not be consumed
     past_cap_idx = 1 + REPLY_TO_CONTINUATION_CAP
     assert past_cap_idx not in consumed
+
+
+def test_numeric_line_not_parsed_as_author():
+    """A bare page number like '1' must not appear as an author entry."""
+    b = _meta_block([
+        "Reply-to: Alice Smith alice@example.com",
+        "1",
+    ])
+    meta, consumed = extract_metadata_from_blocks([b])
+    assert "reply-to" in meta
+    for entry in meta["reply-to"]:
+        assert entry.strip() != "1", f"Page number leaked into reply-to: {meta['reply-to']}"
+    assert any("Alice Smith" in a for a in meta["reply-to"])
+
+
+def test_numeric_lines_mixed_with_authors():
+    """Multiple authors with stray numeric lines in between."""
+    b = _meta_block([
+        "Reply-to: Alice <alice@x.com>",
+        "2",
+        "Bob <bob@y.com>",
+    ])
+    meta, consumed = extract_metadata_from_blocks([b])
+    authors = meta.get("reply-to", [])
+    assert any("alice@x.com" in a for a in authors)
+    for entry in authors:
+        assert entry.strip() != "2"

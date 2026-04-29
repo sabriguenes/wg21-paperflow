@@ -2,7 +2,7 @@
 
 import logging
 
-from .. import format_front_matter
+from .. import format_front_matter, dedup_paragraphs, strip_redundant_body_meta, strip_leading_h1
 from .cleanup import normalize_whitespace
 from .types import Line, Span, Section, SectionKind, BULLET_CHARS
 
@@ -336,6 +336,29 @@ def emit_markdown(metadata: dict, sections: list[Section]) -> str:
         line_num += rendered.count("\n") + 2
 
     md = "\n\n".join(parts)
+    md = dedup_paragraphs(md)
+
+    if fm:
+        title = metadata.get("title", "")
+        fm_end = md.find("---", 4)
+        if fm_end >= 0:
+            fm_end = md.find("\n", fm_end)
+            if fm_end >= 0:
+                body = md[fm_end + 1:]
+                body = strip_leading_h1(body, title)
+                md = md[:fm_end + 1] + body
+
+    md = strip_redundant_body_meta(md)
+
+    if fm:
+        fm_end = md.find("---", 4)
+        if fm_end >= 0:
+            fm_end = md.find("\n", fm_end)
+            if fm_end >= 0:
+                body = md[fm_end + 1:]
+                body = strip_leading_h1(body, title)
+                md = md[:fm_end + 1] + body
+
     md = md.rstrip() + "\n"
     return md
 

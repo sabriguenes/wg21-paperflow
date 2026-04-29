@@ -103,10 +103,15 @@ The converter handles six generator families (mpark/wg21, Bikeshed, hand-written
 
 **T12. Table rendering**
 - `render.py:_render_table`
-- Iterates `<tr>` / `<th>`/`<td>` into rows of cells
-- First row = header, then `---` separator, then body rows
+- Four rendering paths, dispatched by table complexity:
+  1. **Code tables** (`_render_code_table`): cells containing `<pre>` or `<code-block>` elements. Table structure is dropped; each code block is emitted as a fenced block.
+  2. **Flat reconstruction** (`_render_table_flat`): nested `<table>` elements or parser-mangled DOM (html.parser nests unclosed `<td>` tags). Descendant-walking collects all cells in document order and reconstructs rows from `<tr>` boundaries.
+  3. **Denormalized tables** (`_render_denormalized_table`): cells with `rowspan` or `colspan`. A two-pass algorithm builds a rectangular grid: first pass determines dimensions by summing colspans; second pass fills a `None`-initialized matrix, duplicating cell text into every spanned position.
+  4. **Simple pipe tables** (default): direct `<tr>` / `<td>` iteration into rows.
+- All four paths emit standard CommonMark pipe tables (`| col | col |`)
 - Pipe characters in cells escaped as `\|`
 - Short rows padded with empty cells
+- Paths 1-3 are lossy (table structure cannot be represented in CommonMark). Each emits a `<!-- tomd:lossy-table -->` HTML comment marker before the table. The QA scorer (`qa.py`) counts these markers as `lossy_table_count` to flag papers for manual review.
 
 **T13. List rendering**
 - `render.py:_render_list`

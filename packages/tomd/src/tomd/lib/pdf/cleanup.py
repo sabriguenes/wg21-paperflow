@@ -13,6 +13,7 @@ from .types import (
     PAGE_NUM_RE, COMPOUND_PREFIXES,
     compute_bbox,
 )
+from .wg21 import _LABEL_RE as _WG21_LABEL_RE
 
 _log = logging.getLogger(__name__)
 
@@ -124,6 +125,15 @@ def strip_repeating(blocks: list[Block], repeating: set[tuple[float, str]],
     if not repeating:
         return blocks
 
+    _page0_meta_y = 0.0
+    for blk in blocks:
+        if blk.page_num != 0:
+            break
+        for ln in blk.lines:
+            cleaned = strip_format_chars(ln.text).strip()
+            if _WG21_LABEL_RE.match(cleaned):
+                _page0_meta_y = ln.bbox[3] + 20.0
+
     patterns_by_y: dict[float, list[str]] = defaultdict(list)
     for ry, rp in repeating:
         patterns_by_y[ry].append(rp)
@@ -157,6 +167,9 @@ def strip_repeating(blocks: list[Block], repeating: set[tuple[float, str]],
                 continue
 
             if any(_matches(text, rp) for rp in line_patterns):
+                if block.page_num == 0 and line.bbox[1] < _page0_meta_y:
+                    kept_lines.append(line)
+                    continue
                 continue
 
             kept_spans = []

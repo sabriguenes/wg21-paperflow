@@ -33,7 +33,7 @@ import re
 import sys
 from pathlib import Path
 
-from tomd.lib import format_front_matter, sanitize_metadata
+from tomd.lib import format_front_matter, sanitize_metadata, FRONT_MATTER_ORDER
 from tomd.lib.html import convert_html
 from tomd.lib.pdf import convert_pdf
 
@@ -56,6 +56,12 @@ _FALLBACK_KEY_MAP = {
     "target_group": "audience",   # DB row key (SqliteBackend)
     "authors": "reply-to",
 }
+
+# Keys where mailing metadata is authoritative and should override
+# whatever the source document contains. SD-7 mandates that D-numbers
+# (draft circulation) never appear in published mailings; the mailing
+# paper_id (P/N-number) is the canonical identifier.
+_OVERRIDE_KEYS = {"document"}
 
 _FRONT_MATTER_RE = re.compile(
     r"\A---\s*\n(?P<body>.*?)\n---\s*\n?", re.DOTALL
@@ -83,7 +89,7 @@ def _format_yaml_value(key: str, val) -> str:
         items = "\n".join(f'  - "{_yaml_escape(str(v))}"' for v in val)
         return f"{key}:\n{items}"
     s = str(val)
-    if any(c in s for c in ':{}[]#&*?|>!%@`"\'\n\\'):
+    if key == "title" or any(c in s for c in ':{}[]#&*?|>!%@`"\'\n\\'):
         return f'{key}: "{_yaml_escape(s)}"'
     return f"{key}: {s}"
 
@@ -99,8 +105,58 @@ def _present_keys(front_matter_body: str) -> set[str]:
     return keys
 
 
+def _reorder_yaml_body(body: str) -> str:
+    """Re-sort YAML front-matter lines into FRONT_MATTER_ORDER."""
+    blocks: dict[str, list[str]] = {}
+    order: list[str] = []
+    current_key: str | None = None
+    for line in body.splitlines():
+        if line and not line.startswith((" ", "\t", "-")):
+            head, sep, _ = line.partition(":")
+            if sep:
+                current_key = head.strip()
+                if current_key not in blocks:
+                    order.append(current_key)
+                    blocks[current_key] = []
+                blocks[current_key].append(line)
+                continue
+        if current_key is not None:
+            blocks[current_key].append(line)
+
+    priority = {k: i for i, k in enumerate(FRONT_MATTER_ORDER)}
+    fallback = len(FRONT_MATTER_ORDER)
+    sorted_keys = sorted(order, key=lambda k: (priority.get(k, fallback), order.index(k)))
+    lines: list[str] = []
+    for k in sorted_keys:
+        lines.extend(blocks[k])
+    return "\n".join(lines)
+
+
+def _remove_yaml_key(body: str, key: str) -> str:
+    """Remove a top-level YAML key and its continuation lines from *body*."""
+    out: list[str] = []
+    skipping = False
+    for line in body.splitlines():
+        if line and not line.startswith((" ", "\t", "-")):
+            head, sep, _ = line.partition(":")
+            if sep and head.strip() == key:
+                skipping = True
+                continue
+            skipping = False
+        elif skipping:
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _apply_metadata_fallback(md: str, mailing_meta: dict | None) -> str:
-    """Inject any missing YAML front-matter fields from ``mailing_meta``."""
+    """Inject missing YAML front-matter fields from ``mailing_meta``.
+
+    Keys listed in ``_OVERRIDE_KEYS`` are replaced even when already
+    present, because the mailing metadata is authoritative for those
+    fields (e.g. ``document`` uses the published P/N-number, not the
+    draft D-number the author embedded in the source).
+    """
     if not mailing_meta:
         return md
 
@@ -116,16 +172,23 @@ def _apply_metadata_fallback(md: str, mailing_meta: dict | None) -> str:
 
     additions: list[str] = []
     added_yaml_keys: set[str] = set()
+    changed = False
     for src_key, yaml_key in _FALLBACK_KEY_MAP.items():
-        if yaml_key in present or yaml_key in added_yaml_keys:
+        if yaml_key in added_yaml_keys:
+            continue
+        is_override = yaml_key in _OVERRIDE_KEYS
+        if yaml_key in present and not is_override:
             continue
         val = mailing_meta.get(src_key)
         if val in (None, "", []):
             continue
+        if yaml_key in present and is_override:
+            body = _remove_yaml_key(body, yaml_key)
+            changed = True
         additions.append(_format_yaml_value(yaml_key, val))
         added_yaml_keys.add(yaml_key)
 
-    if not additions and match:
+    if not additions and not changed and match:
         return md
 
     new_body_lines = [body.rstrip()] if body.strip() else []
@@ -133,6 +196,7 @@ def _apply_metadata_fallback(md: str, mailing_meta: dict | None) -> str:
     new_body = "\n".join(line for line in new_body_lines if line)
 
     if new_body:
+        new_body = _reorder_yaml_body(new_body)
         return f"---\n{new_body}\n---\n\n{rest.lstrip()}"
     return md
 

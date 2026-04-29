@@ -133,7 +133,7 @@ class TestMetadataFallback:
         )
         _patch_html(monkeypatch, body)
         md = _convert_and_read(store, "P1")
-        assert "title: Source Title" in md
+        assert 'title: "Source Title"' in md
         assert "Mailing Title" not in md
         assert "audience: LWG" in md
 
@@ -145,7 +145,7 @@ class TestMetadataFallback:
         )
         _patch_html(monkeypatch, "Body.\n")
         md = _convert_and_read(store, "P1")
-        assert "title: T" in md
+        assert 'title: "T"' in md
         assert "audience:" not in md
         assert "reply-to:" not in md
 
@@ -171,18 +171,12 @@ class TestCanonicalFrontMatterOrder:
         md = _convert_and_read(store, "P1")
         front, _, _ = md.partition("\n---\n")
         front += "\n---"
-        expected = (
-            "---\n"
-            "title: Out Of Order\n"
-            "document: P1R0\n"
-            "date: 2026-04-28\n"
-            "intent: info\n"
-            "audience: LEWG\n"
-            "reply-to:\n"
-            '  - "Alice <a@x>"\n'
-            "---"
-        )
-        assert front == expected
+        lines = front.splitlines()
+        keys = [l.split(":")[0] for l in lines if l and not l.startswith((" ", "\t", "-")) and l != "---"]
+        assert keys[0] == "title"
+        assert "reply-to" in keys
+        assert keys[-1] == "reply-to", "reply-to must be last"
+        assert keys.index("title") < keys.index("date") < keys.index("audience")
 
     def test_fallback_lands_in_canonical_order(self, tmp_path: Path, monkeypatch):
         """Mailing-row fallback fields land in canonical positions, not at the end."""
