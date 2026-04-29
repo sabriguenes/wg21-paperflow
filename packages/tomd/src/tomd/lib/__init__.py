@@ -224,7 +224,13 @@ def format_front_matter(metadata: dict) -> str:
             metadata["revision"] = rev
 
     if "intent" not in metadata:
-        metadata["intent"] = "info"
+        title = metadata.get("title", "")
+        if isinstance(title, str):
+            t = title.strip()
+            if t.startswith("Info:"):
+                metadata["intent"] = "info"
+            elif t.startswith("Ask:"):
+                metadata["intent"] = "ask"
 
     lines = ["---"]
     pre_reply_to: list[str] = []

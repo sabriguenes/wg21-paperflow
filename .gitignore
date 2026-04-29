@@ -22,14 +22,3 @@ build/
 .fseventsd
 data/
 .cursor/
-
-# Local QA/audit scripts and results (not part of the project)
-_*.py
-_*.json
-_qa016_renders/
-_qa016_visual_review.html
-qa-report*.json
-plans/
-reports/
-CONCURRENCY-TODO.md
-STATUS.md

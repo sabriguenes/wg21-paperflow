@@ -136,7 +136,7 @@ def test_front_matter_skips_missing_keys():
     result = format_front_matter({"title": "T", "document": "P1R0"})
     assert 'title: "T"' in result
     assert "document: P1R0" in result
-    assert "intent: info" in result
+    assert "intent" not in result
 
 
 def test_front_matter_unknown_keys_keep_reply_to_last():
