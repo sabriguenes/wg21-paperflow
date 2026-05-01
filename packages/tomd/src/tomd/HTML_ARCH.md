@@ -82,11 +82,12 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 
 - `_normalize_label` strips and lowercases labels; `_match_field` maps synonyms to **document**, **date**, **audience**, **reply-to** via `_FIELD_SYNONYMS` ([`extract.py`](lib/html/extract.py)).
 - When no exact synonym matches, `_match_field` falls back to `similarity.fuzzy_match_label` against the inverted synonym keys (`_ALL_SYNONYMS`) with a threshold of 0.82. This recovers metadata from HTML sources with typos in label text (e.g. "Repy-to", "Auther"). A warning is logged on fuzzy matches.
+- When `_extract_mailto_authors` returns empty for hand-written papers, `_extract_plaintext_authors` provides a fallback that handles plain-text emails, deobfuscated emails ("at"/"dot" patterns), and bare names from `<address>` tags or `<td>` text.
 
 **Reply-to enrichment post-pass**
 
 - Always runs `_enrich_reply_to` after the generator-specific extractor ([`extract_metadata`](lib/html/extract.py)).
-- **Bootstrap:** If there was no `reply-to`, seed from emails in the metadata region (before first `<h2>`) via mailto scan then plain-text `EMAIL_RE` in common containers ([`_collect_metadata_emails`](lib/html/extract.py)).
+- **Bootstrap:** If there was no `reply-to`, seed from emails in the metadata region (before first `<h2>`) via mailto scan, plain-text `EMAIL_RE`, then deobfuscated "at"/"dot" patterns (`_deobfuscate_email`) in common containers including `<address>` ([`_collect_metadata_emails`](lib/html/extract.py)).
 - **Merge in-list:** When bare names and `<email>` entries count **match 1:1**, zip into `"Name <email>"`.
 - **External emails:** Pair remaining bare names with unassigned emails from the region when counts align; otherwise append `<email>` entries.
 - **Context names:** For `<email>`-only entries, recover adjacent names from parent text (Pandoc-style `Name <a mailto>`) ([`_recover_name_from_context`](lib/html/extract.py)).

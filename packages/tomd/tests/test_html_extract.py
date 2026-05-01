@@ -2,8 +2,11 @@
 
 from tomd.lib.html.extract import (
     parse_html, detect_generator, extract_metadata, strip_boilerplate,
-    _extract_generic_metadata, _extract_wg21_metadata, _extract_mailto_email, _extract_mailto_authors, _enrich_reply_to,
+    _extract_generic_metadata, _extract_wg21_metadata, _match_field,
+    _extract_mailto_email, _extract_mailto_authors, _enrich_reply_to,
+    _extract_plaintext_authors,
 )
+from tomd.lib import deobfuscate_email
 
 
 class TestDetectGenerator:
@@ -1203,3 +1206,123 @@ class TestFuzzyLabelMatching:
         meta = extract_metadata(parse_html(html), "wg21")
         assert "reply-to" not in meta
         assert "document" not in meta
+
+
+class TestDeobfuscateEmail:
+    """deobfuscate_email reverses common anti-spam patterns."""
+
+    def test_at_dot_spaces(self):
+        assert deobfuscate_email("akrzemi1 at gmail dot com") == "akrzemi1@gmail.com"
+
+    def test_parenthesized(self):
+        assert deobfuscate_email("foo (at) bar (dot) org") == "foo@bar.org"
+
+    def test_bracketed(self):
+        assert deobfuscate_email("foo [at] bar [dot] co [dot] uk") == "foo@bar.co.uk"
+
+    def test_rejects_prose(self):
+        assert deobfuscate_email("this is not at all dotty") is None
+
+    def test_rejects_already_valid(self):
+        assert deobfuscate_email("normal@email.com") is None
+
+    def test_rejects_empty(self):
+        assert deobfuscate_email("") is None
+
+    def test_mixed_case(self):
+        assert deobfuscate_email("Name AT example DOT com") == "Name@example.com"
+
+    def test_embedded_in_sentence(self):
+        result = deobfuscate_email("Contact me at user at example dot org please")
+        assert result == "user@example.org"
+
+    def test_underscore_at_pattern(self):
+        """n5038/n5040 pattern: braden.ganetsky_at_gmail.com"""
+        assert deobfuscate_email("braden.ganetsky_at_gmail.com") == "braden.ganetsky@gmail.com"
+
+    def test_underscore_at_with_name(self):
+        result = deobfuscate_email("Braden Ganetsky, braden.ganetsky_at_gmail.com")
+        assert result == "braden.ganetsky@gmail.com"
+
+    def test_underscore_at_subdomain(self):
+        assert deobfuscate_email("user_at_mail.example.co.uk") == "user@mail.example.co.uk"
+
+    def test_underscore_at_rejects_normal_underscores(self):
+        """Underscores that aren't _at_ should not match."""
+        assert deobfuscate_email("some_variable_name") is None
+
+
+class TestExtractPlaintextAuthors:
+    """_extract_plaintext_authors extracts names from plain text when mailto fails."""
+
+    def test_address_with_obfuscated_email(self):
+        html = """<td>
+            <address>Andrzej K &lt;akrzemi1 at gmail dot com&gt;</address>
+            <address>Tomasz K &lt;tomaszkam at gmail dot com&gt;</address>
+        </td>"""
+        td = parse_html(html).find("td")
+        authors = _extract_plaintext_authors(td)
+        assert len(authors) == 2
+        assert any("Andrzej" in a for a in authors)
+        assert any("Tomasz" in a for a in authors)
+
+    def test_address_with_plaintext_email(self):
+        html = '<td><address>Alice alice@example.com</address></td>'
+        td = parse_html(html).find("td")
+        authors = _extract_plaintext_authors(td)
+        assert len(authors) == 1
+        assert "alice@example.com" in authors[0]
+
+    def test_no_address_uses_td_text(self):
+        html = "<td>Bob Smith</td>"
+        td = parse_html(html).find("td")
+        authors = _extract_plaintext_authors(td)
+        assert authors == ["Bob Smith"]
+
+    def test_empty_returns_empty(self):
+        html = "<td>   </td>"
+        td = parse_html(html).find("td")
+        authors = _extract_plaintext_authors(td)
+        assert authors == []
+
+
+class TestHandwrittenObfuscatedReplyTo:
+    """Integration: hand-written papers with obfuscated emails produce reply-to."""
+
+    def test_p2285r1_pattern(self):
+        """The exact HTML pattern from p2285r1.html produces reply-to."""
+        html = """
+        <table class="header"><tbody>
+          <tr><th>Document number:</th><th> </th><td class="header">P2285R1</td></tr>
+          <tr><th>Date:</th><th> </th><td class="header">2026-02-23</td></tr>
+          <tr><th>Audience:</th><th> </th><td class="header">EWG</td></tr>
+          <tr>
+            <th>Reply-to:</th><th> </th>
+            <td class="header">
+              <address>Andrzej Krzemie\u0144ski &lt;akrzemi1 at gmail dot com&gt;</address>
+              <address>Tomasz Kami\u0144ski &lt;tomaszkam at gmail dot com&gt;</address>
+            </td>
+          </tr>
+        </tbody></table>
+        <address>placeholder</address>
+        <h1>Are default function arguments in the immediate context?</h1>
+        """
+        soup = parse_html(html)
+        meta = extract_metadata(soup, "hand-written")
+        assert "reply-to" in meta, "reply-to must be present"
+        rt = meta["reply-to"]
+        assert len(rt) >= 2
+        names = " ".join(rt)
+        assert "Andrzej" in names
+        assert "Tomasz" in names
+
+    def test_no_false_positive_on_garbage_label(self):
+        """Labels that don't match reply/author/editor in table don't produce reply-to."""
+        html = """
+        <table class="header">
+          <tr><th>Foobar:</th><td>Some Random Text</td></tr>
+        </table>
+        <h1>Title</h1>
+        """
+        meta = extract_metadata(parse_html(html), "hand-written")
+        assert "reply-to" not in meta

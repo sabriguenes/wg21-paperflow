@@ -361,6 +361,7 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 **Email enrichment**
 
 - If **no** reply-to entry contained an email yet, scan **first 30** lines of page zero for emails; pair **bare emails** with previous line names; merge into `"Name <email>"` ([`_enrich_pdf_reply_to`](lib/pdf/__init__.py)).
+- `parse_author_lines` includes a deobfuscation fallback via shared `deobfuscate_email` for `_at_` patterns (e.g. `user_at_domain.com` in n5038/n5040). The `wg21.py` page-zero fallback scanner also tries deobfuscation when `_EMAIL_LINE_RE` fails.
 
 **Sources:** `_run_pipeline` metadata section in [`lib/pdf/__init__.py`](lib/pdf/__init__.py).
 
