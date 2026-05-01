@@ -1,7 +1,12 @@
 """Tests for lib.pdf.wg21."""
 
 from tomd.lib.pdf.types import Block, Line, Span
-from tomd.lib.pdf.wg21 import extract_metadata_from_blocks, REPLY_TO_CONTINUATION_CAP
+from tomd.lib.pdf.wg21 import (
+    extract_metadata_from_blocks,
+    REPLY_TO_CONTINUATION_CAP,
+    _LABEL_RE,
+    _FUZZY_LABEL_TARGETS,
+)
 
 
 def _meta_block(lines_text, page_num=0, font_size=9.0):
@@ -143,3 +148,68 @@ def test_numeric_lines_mixed_with_authors():
     assert any("alice@x.com" in a for a in authors)
     for entry in authors:
         assert entry.strip() != "2"
+
+
+# --- Vocabulary drift guard ---
+
+# One canonical form per _LABEL_RE alternative group.
+_MUST_MATCH = [
+    "Document Number", "Doc No", "Title", "Date",
+    "Audience", "Subgroup", "Reply-to", "Reply to",
+    "Author", "Authors", "Editor", "Editors",
+    "Target", "Project", "Email", "Emails", "E-mail",
+]
+
+_MUST_REJECT = [
+    "Abstract", "Introduction", "References", "Table of Contents",
+]
+
+
+def test_label_re_covers_must_match():
+    """Every MUST_MATCH entry should be recognized by _LABEL_RE."""
+    for label in _MUST_MATCH:
+        assert _LABEL_RE.match(f"{label}: value"), (
+            f"_LABEL_RE does not match {label!r}; add it or update the test"
+        )
+
+
+def test_fuzzy_targets_cover_must_match():
+    """Every MUST_MATCH entry (lowercased, stripped of punctuation) should
+    fuzzy-match against _FUZZY_LABEL_TARGETS."""
+    from tomd.lib.similarity import fuzzy_match_label
+    for label in _MUST_MATCH:
+        norm = label.lower().replace("-", " ").replace(".", "").strip()
+        hit = fuzzy_match_label(norm, _FUZZY_LABEL_TARGETS)
+        assert hit is not None, (
+            f"fuzzy_match_label cannot match {label!r} (normalized: {norm!r}); "
+            f"add an entry to _FUZZY_LABEL_TARGETS"
+        )
+
+
+def test_must_reject_not_matched():
+    """MUST_REJECT labels should be recognized by neither system."""
+    from tomd.lib.similarity import fuzzy_match_label
+    for label in _MUST_REJECT:
+        assert not _LABEL_RE.match(f"{label}: value"), (
+            f"_LABEL_RE unexpectedly matches {label!r}"
+        )
+        hit = fuzzy_match_label(label.lower(), _FUZZY_LABEL_TARGETS)
+        assert hit is None, (
+            f"fuzzy_match_label unexpectedly matches {label!r} -> {hit!r}"
+        )
+
+
+# --- Fuzzy reply-to continuation ---
+
+def test_fuzzy_reply_to_triggers_continuation():
+    """A fuzzy-matched reply-to label (e.g. 'Repy-to') must still trigger
+    the continuation pass that absorbs subsequent author blocks."""
+    reply_block = _meta_block(["Repy-to: Alice <alice@x.com>"])
+    continuation_block = _meta_block(["Bob <bob@y.com>"])
+    blocks = [reply_block, continuation_block]
+    meta, consumed = extract_metadata_from_blocks(blocks)
+    authors = meta.get("reply-to", [])
+    assert any("alice@x.com" in a for a in authors), "Primary author missing"
+    assert any("bob@y.com" in a for a in authors), (
+        "Continuation block not absorbed on fuzzy reply-to path"
+    )

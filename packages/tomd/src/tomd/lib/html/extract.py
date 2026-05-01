@@ -5,7 +5,10 @@ import re
 
 from bs4 import BeautifulSoup, Tag
 
-from .. import DATE_RE, DOC_NUM_RE, EMAIL_RE, parse_author_lines
+from .. import (
+    DATE_RE, DOC_NUM_RE, EMAIL_RE, parse_author_lines,
+    deobfuscate_email, _OBFUSCATED_UNDERSCORE_RE, _OBFUSCATED_WORD_RE,
+)
 from ..similarity import fuzzy_match_label
 
 _log = logging.getLogger(__name__)
@@ -13,7 +16,6 @@ _log = logging.getLogger(__name__)
 _HACKMD_RE = re.compile(r"hackmd")
 _COMMA_COLLAPSE_RE = re.compile(r"(,\s*){2,}")
 _MAILTO_PREFIX_RE = re.compile(r"^mailto:/{0,2}")
-
 
 def _extract_mailto_email(href: str) -> str:
     """Normalize both ``mailto:`` and the invalid ``mailto://`` to a bare address."""
@@ -31,6 +33,66 @@ def _extract_mailto_authors(container: Tag) -> list[str]:
         entry = f"{name} <{email}>" if name and name != email else f"<{email}>"
         if entry not in authors:
             authors.append(entry)
+    return authors
+
+
+def _extract_plaintext_authors(container: Tag) -> list[str]:
+    """Fallback: extract author names from plain text when no mailto links exist.
+
+    Tries three signals in confidence order:
+    1. EMAIL_RE on full text (plain-text email without mailto link)
+    2. Deobfuscated emails paired with names from <address> children
+    3. Bare names from <address> children (lowest confidence)
+
+    Motivated by p2285r1 where <address> tags contain obfuscated emails
+    like ``akrzemi1 at gmail dot com`` that defeat mailto-only extraction.
+    """
+    authors: list[str] = []
+    seen: set[str] = set()
+
+    def _add(entry: str) -> None:
+        if entry not in seen:
+            seen.add(entry)
+            authors.append(entry)
+
+    addr_tags = container.find_all("address")
+    if not addr_tags:
+        lines = [
+            ln.strip()
+            for ln in container.get_text("\n", strip=True).split("\n")
+            if ln.strip()
+        ]
+    else:
+        lines = [a.get_text(strip=True) for a in addr_tags if a.get_text(strip=True)]
+
+    for line in lines:
+        email_m = EMAIL_RE.search(line)
+        if email_m:
+            email = email_m.group(0)
+            name = line[: email_m.start()].strip().rstrip("<").strip()
+            if name:
+                _add(f"{name} <{email}>")
+            else:
+                _add(f"<{email}>")
+            continue
+
+        deob = deobfuscate_email(line)
+        if deob:
+            _log.info("deobfuscated email in hand-written paper: %s", deob)
+            um = _OBFUSCATED_UNDERSCORE_RE.search(line)
+            wm = _OBFUSCATED_WORD_RE.search(line)
+            match_obj = um or wm
+            name = line[:match_obj.start()].strip().rstrip("<").strip() if match_obj else ""
+            if name:
+                _add(f"{name} <{deob}>")
+            else:
+                _add(f"<{deob}>")
+            continue
+
+        cleaned = line.strip()
+        if cleaned and not EMAIL_RE.search(cleaned):
+            _add(cleaned)
+
     return authors
 
 
@@ -303,6 +365,10 @@ def _extract_handwritten_metadata(soup: BeautifulSoup) -> dict:
                 metadata["date"] = m.group(0)
 
         addr_authors = _extract_mailto_authors(addr)
+        if not addr_authors:
+            # Fallback: plain-text extraction when no mailto links exist
+            # (p2285r1: obfuscated emails in <address> tags)
+            addr_authors = _extract_plaintext_authors(addr)
         if addr_authors:
             metadata["reply-to"] = addr_authors
 
@@ -330,6 +396,9 @@ def _extract_handwritten_metadata(soup: BeautifulSoup) -> dict:
                     metadata["audience"] = _get_text_br_separated(td)
                 elif "reply" in label or "author" in label or "editor" in label:
                     authors = _extract_mailto_authors(td)
+                    if not authors:
+                        # Fallback: plain-text/deobfuscation when no mailto links
+                        authors = _extract_plaintext_authors(td)
                     if authors:
                         existing = metadata.get("reply-to", [])
                         for a_entry in authors:
@@ -380,7 +449,7 @@ def _match_field(label: str) -> str | None:
     # Fuzzy fallback when no exact synonym matched.
     fuzzy_hit = fuzzy_match_label(norm, _ALL_SYNONYMS.keys())
     if fuzzy_hit is not None:
-        _log.warning("Fuzzy label match: %r -> %r (field %r)", norm, fuzzy_hit, _ALL_SYNONYMS[fuzzy_hit])
+        _log.info("Fuzzy label match: %r -> %r (field %r)", norm, fuzzy_hit, _ALL_SYNONYMS[fuzzy_hit])
         return _ALL_SYNONYMS[fuzzy_hit]
     return None
 
@@ -556,8 +625,8 @@ def _collect_metadata_emails(soup: BeautifulSoup) -> list[str]:
     """Gather all email addresses from the metadata region (before first <h2>).
 
     Returns deduplicated list of bare email strings.  Sources checked
-    in confidence order: mailto links, then plain-text EMAIL_RE matches
-    in tables, lists, paragraphs, and definition lists.
+    in confidence order: mailto links, then plain-text EMAIL_RE matches,
+    then deobfuscated ``at``/``dot`` patterns (medium confidence, EMAIL_RE gate).
     """
     first_h2 = soup.find("h2")
     emails: list[str] = []
@@ -583,6 +652,14 @@ def _collect_metadata_emails(soup: BeautifulSoup) -> list[str]:
             continue
         for m in EMAIL_RE.finditer(tag.get_text()):
             _add(m.group(0))
+
+    # Pass 3: deobfuscate "name at domain dot com" patterns (medium confidence)
+    for tag in soup.find_all(["td", "dd", "li", "p", "span", "address"]):
+        if first_h2 and tag.find_previous("h2"):
+            continue
+        deob = deobfuscate_email(tag.get_text())
+        if deob:
+            _add(deob)
 
     return emails
 

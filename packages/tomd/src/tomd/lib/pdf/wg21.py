@@ -8,7 +8,7 @@ table detection or structuring runs.
 import logging
 import re
 
-from .. import strip_format_chars, EMAIL_RE, DATE_RE, parse_author_lines
+from .. import strip_format_chars, EMAIL_RE, DATE_RE, parse_author_lines, deobfuscate_email
 from ..similarity import fuzzy_match_label
 from .types import Block
 
@@ -19,16 +19,16 @@ _LABEL_RE = re.compile(
     r"Reply[- ]?to|Authors?|Editors?|Target|Project|E-?mails?)\s*:",
     re.IGNORECASE,
 )
-    # Fallback for PDF sources with typos in label text (e.g. "Repy-to", "Document Number")
-    # that _LABEL_RE cannot match exactly.
+# Fallback for PDF sources with typos in label text (e.g. "Repy-to", "Document Number")
+# that _LABEL_RE cannot match exactly.
 _FUZZY_LABEL_TARGETS = frozenset({
     "document number", "doc no", "title", "date", "audience", "subgroup",
     "reply-to", "reply to", "author", "authors", "editor", "editors",
     "target", "project", "email", "emails",
 })
 
-## Split "Label: Value" where the label portion is 2-20 chars before the colon.
-_COLON_SPLIT_RE = re.compile(r"^([^:]{2,20}):\s*(.*)", re.DOTALL)
+# Split "Label: Value" where the label portion is 2-20 chars before the colon.
+_COLON_SPLIT_RE = re.compile(r"^([^:]{2,20}):\s*(.*)")
 
 # Exact match via _LABEL_RE first, then fuzzy fallback for typos.
 def _is_label_line(text: str) -> bool:
@@ -252,6 +252,7 @@ def extract_metadata_from_blocks(blocks: list[Block],
             continue
 
         found_any = False
+        has_reply_label = False
 
         for li, line in enumerate(block.lines):
             line_text = _clean(line.text)
@@ -266,11 +267,13 @@ def extract_metadata_from_blocks(blocks: list[Block],
                     candidate = cm.group(1).strip().lower()
                     fuzzy_hit = fuzzy_match_label(candidate, _FUZZY_LABEL_TARGETS)
                     if fuzzy_hit is not None:
-                        _log.warning(
-                            "Fuzzy PDF label match: %r -> %r",
-                            candidate, fuzzy_hit,
+                        _log.info(
+                            "Fuzzy label match: %r -> %r (target %r)",
+                            candidate, fuzzy_hit, fuzzy_hit,
                         )
-                        label = fuzzy_hit.title() if " " not in fuzzy_hit else fuzzy_hit
+                        label = fuzzy_hit
+                        if "reply" in label or label in ("author", "authors", "editor", "editors"):
+                            has_reply_label = True
                         remainder = cm.group(2).strip()
                         found_any = True
                         value_lines = []
@@ -287,6 +290,9 @@ def extract_metadata_from_blocks(blocks: list[Block],
 
             found_any = True
             label = m.group(1)
+            label_lower = label.lower()
+            if "reply" in label_lower or label_lower in ("author", "authors", "editor", "editors"):
+                has_reply_label = True
             remainder = stripped_text[m.end():].strip()
 
             value_lines = []
@@ -304,7 +310,7 @@ def extract_metadata_from_blocks(blocks: list[Block],
         if found_any:
             consumed.add(i)
             label_block_ids.add(i)
-            if "reply" in " ".join(_clean(ln.text) for ln in block.lines).lower():
+            if has_reply_label:
                 continuation_count = 0
                 for j, next_block in page0_blocks:
                     if j <= i:
@@ -403,6 +409,20 @@ def extract_metadata_from_blocks(blocks: list[Block],
                     name = m.group(1).strip().strip("<>").strip()
                     email = m.group(2)
                     entry = f"{name} <{email}>" if name else f"<{email}>"
+                    existing = metadata.get("reply-to", [])
+                    if entry not in existing:
+                        metadata["reply-to"] = existing + [entry]
+                    continue
+                # Fallback: deobfuscate "user_at_domain.com" patterns
+                deob = deobfuscate_email(lt)
+                if deob:
+                    # Name is everything before the obfuscated email
+                    from .. import _OBFUSCATED_UNDERSCORE_RE, _OBFUSCATED_WORD_RE
+                    um = _OBFUSCATED_UNDERSCORE_RE.search(lt)
+                    wm = _OBFUSCATED_WORD_RE.search(lt)
+                    match_start = (um or wm).start()
+                    name = lt[:match_start].strip().rstrip(",").strip()
+                    entry = f"{name} <{deob}>" if name else f"<{deob}>"
                     existing = metadata.get("reply-to", [])
                     if entry not in existing:
                         metadata["reply-to"] = existing + [entry]
