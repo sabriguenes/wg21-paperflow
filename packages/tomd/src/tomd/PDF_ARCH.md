@@ -435,3 +435,4 @@ Links point to sections above.
 | [`lib/toc.py`](lib/toc.py) | [TOC stripping](#toc-stripping) |
 | [`lib/pdf/emit.py`](lib/pdf/emit.py) | [Emit](#emit) |
 | [`lib/__init__.py`](lib/__init__.py) | Link schemes, front matter helpers, [Emit](#emit) post-pass |
+| [`lib/similarity.py`](lib/similarity.py) | [Fuzzy label recovery](#fuzzy-label-recovery) |
