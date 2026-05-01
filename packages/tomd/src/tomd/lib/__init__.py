@@ -392,6 +392,61 @@ ALLOWED_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 
+import logging as _logging
+
+_deobfuscate_log = _logging.getLogger(__name__)
+
+# Two families of anti-spam obfuscation:
+# Family 1: word-based -- "user at domain dot com", "user (at) domain (dot) com"
+# Family 2: underscore-based -- "user_at_domain.com"  (real dots in domain)
+_OBFUSCATED_WORD_RE = re.compile(
+    r"\b(\w[\w.+-]*)"
+    r"\s*(?:\(at\)|\[at\]|\bat\b)\s*"
+    r"(\w[\w-]*"
+    r"(?:\s*(?:\(dot\)|\[dot\]|\bdot\b)\s*\w[\w-]*)+)"
+    r"\b",
+    re.IGNORECASE,
+)
+_OBFUSCATED_UNDERSCORE_RE = re.compile(
+    r"\b(\w[\w.+-]*)_at_([\w.-]+\.\w+)\b",
+    re.IGNORECASE,
+)
+
+
+def deobfuscate_email(text: str) -> str | None:
+    """Reverse common anti-spam email obfuscation patterns.
+
+    Handles two families:
+    - Word-based: ``user at domain dot com``, ``(at)``/``[at]`` variants
+    - Underscore-based: ``user_at_domain.com`` (n5038/n5040 pattern)
+
+    Returns the reconstructed address only when the result passes
+    ``EMAIL_RE`` validation. Shared across HTML and PDF pipelines.
+    """
+    # Family 2 first (more specific, less likely to false-positive)
+    m = _OBFUSCATED_UNDERSCORE_RE.search(text)
+    if m:
+        candidate = f"{m.group(1)}@{m.group(2)}"
+        if EMAIL_RE.fullmatch(candidate):
+            return candidate
+
+    # Family 1: word/bracket "at"/"dot"
+    m = _OBFUSCATED_WORD_RE.search(text)
+    if m:
+        local = m.group(1)
+        domain_raw = m.group(2)
+        domain = re.sub(
+            r"\s*(?:\(dot\)|\[dot\]|\bdot\b)\s*",
+            ".",
+            domain_raw,
+            flags=re.IGNORECASE,
+        )
+        candidate = f"{local}@{domain}"
+        if EMAIL_RE.fullmatch(candidate):
+            return candidate
+
+    return None
+
 
 def parse_author_lines(lines, clean_line=None, skip_line=None):
     """Parse author name + email pairs from an iterable of raw line strings.
@@ -431,11 +486,31 @@ def parse_author_lines(lines, clean_line=None, skip_line=None):
             else:
                 authors.append(f"<{email}>")
         else:
-            cleaned = clean_line(line)
-            if cleaned and not skip_line(cleaned):
-                if pending_name:
-                    authors.append(pending_name)
-                pending_name = cleaned
+            # Fallback: try deobfuscating "user_at_domain.com" or
+            # "user at domain dot com" patterns before treating as bare name
+            deob = deobfuscate_email(line)
+            if deob:
+                _deobfuscate_log.info("deobfuscated email: %s", deob)
+                # Extract name portion before the obfuscated email
+                underscore_m = _OBFUSCATED_UNDERSCORE_RE.search(line)
+                word_m = _OBFUSCATED_WORD_RE.search(line)
+                match_start = (underscore_m or word_m).start()
+                name_part = clean_line(line[:match_start])
+                name_part = name_part.strip(",").strip()
+                if name_part:
+                    authors.append(f"{name_part} <{deob}>")
+                    pending_name = None
+                elif pending_name:
+                    authors.append(f"{pending_name} <{deob}>")
+                    pending_name = None
+                else:
+                    authors.append(f"<{deob}>")
+            else:
+                cleaned = clean_line(line)
+                if cleaned and not skip_line(cleaned):
+                    if pending_name:
+                        authors.append(pending_name)
+                    pending_name = cleaned
 
     if pending_name:
         authors.append(pending_name)
