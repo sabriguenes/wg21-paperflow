@@ -39,5 +39,5 @@ jobs:
           gh workflow run "$SUPERPROJECT_WORKFLOW" \
             --repo "$SUPERPROJECT_REPO" \
             --ref "$SUPERPROJECT_TARGET_REF" \
-            -f vendor=paperlint \
+            -f vendor=paperflow \
             -f "vendor_ref=$VENDOR_REF"
