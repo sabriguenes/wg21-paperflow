@@ -81,6 +81,7 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 **Shared label mapping**
 
 - `_normalize_label` strips and lowercases labels; `_match_field` maps synonyms to **document**, **date**, **audience**, **reply-to** via `_FIELD_SYNONYMS` ([`extract.py`](lib/html/extract.py)).
+- When no exact synonym matches, `_match_field` falls back to `similarity.fuzzy_match_label` against the inverted synonym keys (`_ALL_SYNONYMS`) with a threshold of 0.82. This recovers metadata from HTML sources with typos in label text (e.g. "Repy-to", "Auther"). A warning is logged on fuzzy matches.
 
 **Reply-to enrichment post-pass**
 

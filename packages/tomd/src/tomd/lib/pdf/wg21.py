@@ -9,6 +9,7 @@ import logging
 import re
 
 from .. import strip_format_chars, EMAIL_RE, DATE_RE, parse_author_lines
+from ..similarity import fuzzy_match_label
 from .types import Block
 
 _log = logging.getLogger(__name__)
@@ -18,6 +19,26 @@ _LABEL_RE = re.compile(
     r"Reply[- ]?to|Authors?|Editors?|Target|Project|E-?mails?)\s*:",
     re.IGNORECASE,
 )
+    # Fallback for PDF sources with typos in label text (e.g. "Repy-to", "Document Number")
+    # that _LABEL_RE cannot match exactly.
+_FUZZY_LABEL_TARGETS = frozenset({
+    "document number", "doc no", "title", "date", "audience", "subgroup",
+    "reply-to", "reply to", "author", "authors", "editor", "editors",
+    "target", "project", "email", "emails",
+})
+
+## Split "Label: Value" where the label portion is 2-20 chars before the colon.
+_COLON_SPLIT_RE = re.compile(r"^([^:]{2,20}):\s*(.*)", re.DOTALL)
+
+# Exact match via _LABEL_RE first, then fuzzy fallback for typos.
+def _is_label_line(text: str) -> bool:
+    """True if *text* matches a known metadata label (exact or fuzzy)."""
+    if _LABEL_RE.match(text):
+        return True
+    cm = _COLON_SPLIT_RE.match(text)
+    if cm and fuzzy_match_label(cm.group(1).strip().lower(), _FUZZY_LABEL_TARGETS) is not None:
+        return True
+    return False
 
 _DOC_NUM_VALUE_RE = re.compile(
     r"([DPN]\d{3,5}(?:R\d+)?)",
@@ -73,7 +94,7 @@ def _parse_authors(lines: list[str]) -> list[str]:
     return parse_author_lines(
         lines,
         clean_line=_clean_author,
-        skip_line=lambda line: bool(_LABEL_RE.match(line)) or line.strip().isdigit(),
+        skip_line=lambda l: _is_label_line(l) or l.strip().isdigit(),
     )
 
 
@@ -193,7 +214,7 @@ def extract_metadata_from_blocks(blocks: list[Block],
     for i, block in page0_blocks:
         if not block.lines:
             continue
-        has_label = any(_LABEL_RE.match(_strip_bullets(_clean(ln.text))) for ln in block.lines)
+        has_label = any(_is_label_line(_strip_bullets(_clean(ln.text))) for ln in block.lines)
         if has_label:
             break
         content_lines = [
@@ -240,6 +261,28 @@ def extract_metadata_from_blocks(blocks: list[Block],
             stripped_text = _strip_bullets(line_text)
             m = _LABEL_RE.match(stripped_text)
             if not m:
+                cm = _COLON_SPLIT_RE.match(stripped_text)
+                if cm:
+                    candidate = cm.group(1).strip().lower()
+                    fuzzy_hit = fuzzy_match_label(candidate, _FUZZY_LABEL_TARGETS)
+                    if fuzzy_hit is not None:
+                        _log.warning(
+                            "Fuzzy PDF label match: %r -> %r",
+                            candidate, fuzzy_hit,
+                        )
+                        label = fuzzy_hit.title() if " " not in fuzzy_hit else fuzzy_hit
+                        remainder = cm.group(2).strip()
+                        found_any = True
+                        value_lines = []
+                        if remainder:
+                            value_lines.append(remainder)
+                        for vl in block.lines[li + 1:]:
+                            vl_text = _strip_bullets(_clean(vl.text))
+                            if _is_label_line(vl_text):
+                                break
+                            value_lines.append(vl_text)
+                        _store_field(metadata, label, value_lines)
+                        continue
                 continue
 
             found_any = True
@@ -252,7 +295,7 @@ def extract_metadata_from_blocks(blocks: list[Block],
 
             for vl in block.lines[li + 1:]:
                 vl_text = _strip_bullets(_clean(vl.text))
-                if _LABEL_RE.match(vl_text):
+                if _is_label_line(vl_text):
                     break
                 value_lines.append(vl_text)
 
@@ -271,7 +314,7 @@ def extract_metadata_from_blocks(blocks: list[Block],
                     if continuation_count >= REPLY_TO_CONTINUATION_CAP:
                         break
                     next_text = _strip_bullets(_clean(next_block.lines[0].text)) if next_block.lines else ""
-                    if not next_text or _LABEL_RE.match(next_text):
+                    if not next_text or _is_label_line(next_text):
                         break
                     has_email = any(EMAIL_RE.search(ln.text) for ln in next_block.lines)
                     if has_email:
@@ -328,7 +371,7 @@ def extract_metadata_from_blocks(blocks: list[Block],
                 continue
             for ln in block.lines:
                 lt = _clean(ln.text)
-                if _LABEL_RE.match(lt):
+                if _is_label_line(lt):
                     continue
                 m = DATE_RE.search(lt)
                 if m and not _DOC_NUM_VALUE_RE.search(lt):
@@ -353,7 +396,7 @@ def extract_metadata_from_blocks(blocks: list[Block],
                 break
             for ln in block.lines:
                 lt = _strip_bullets(_clean(ln.text))
-                if _LABEL_RE.match(lt):
+                if _is_label_line(lt):
                     continue
                 m = _EMAIL_LINE_RE.match(lt)
                 if m:

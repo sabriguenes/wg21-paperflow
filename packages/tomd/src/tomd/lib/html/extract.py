@@ -6,6 +6,7 @@ import re
 from bs4 import BeautifulSoup, Tag
 
 from .. import DATE_RE, DOC_NUM_RE, EMAIL_RE, parse_author_lines
+from ..similarity import fuzzy_match_label
 
 _log = logging.getLogger(__name__)
 
@@ -360,13 +361,27 @@ _FIELD_SYNONYMS: dict[str, frozenset[str]] = {
     }),
 }
 
+# Inverted lookup: synonym string -> canonical field name for fuzzy fallback.
+_ALL_SYNONYMS: dict[str, str] = {
+    syn: field for field, synonyms in _FIELD_SYNONYMS.items() for syn in synonyms
+}
+
 
 def _match_field(label: str) -> str | None:
-    """Map a metadata label to its canonical field name, or None if unrecognized."""
+    """Map a metadata label to its canonical field name, or None if unrecognized.
+
+    Two-stage: exact synonym lookup first, then fuzzy fallback via
+    ``fuzzy_match_label`` from ``similarity.py``.
+    """
     norm = _normalize_label(label)
     for field, synonyms in _FIELD_SYNONYMS.items():
         if norm in synonyms:
             return field
+    # Fuzzy fallback when no exact synonym matched.
+    fuzzy_hit = fuzzy_match_label(norm, _ALL_SYNONYMS.keys())
+    if fuzzy_hit is not None:
+        _log.warning("Fuzzy label match: %r -> %r (field %r)", norm, fuzzy_hit, _ALL_SYNONYMS[fuzzy_hit])
+        return _ALL_SYNONYMS[fuzzy_hit]
     return None
 
 

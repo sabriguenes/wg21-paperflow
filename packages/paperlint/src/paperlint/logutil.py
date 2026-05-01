@@ -7,7 +7,7 @@
 
 """Logging wiring for paperlint.
 
-Two handlers live here:
+Three handlers live here:
 
 * ``configure_paperlint_console_logging`` attaches a stderr ``StreamHandler``
   whose level is driven by the CLI ``-v`` count (0=WARNING, 1=INFO, 2+=DEBUG).
@@ -15,6 +15,9 @@ Two handlers live here:
 * ``configure_paperlint_file_logging_if_needed`` adds an optional file handler
   for callers that want to capture a structured log to disk, driven by the
   ``PAPERLINT_LOG_FILE`` / ``PAPERLINT_LOG_TO_WORKSPACE`` env vars.
+* ``rich_console_handler`` is a context manager that temporarily swaps the
+  console handler for a ``RichHandler`` sharing a given ``Console``, so log
+  output coordinates with an active Rich Progress bar.
 """
 
 from __future__ import annotations
@@ -22,7 +25,14 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from rich.console import Console
 
 _LOGGER_NAME = "paperlint"
 _pwl_file_handler: logging.FileHandler | None = None
@@ -90,3 +100,44 @@ def configure_paperlint_file_logging_if_needed(workspace: Path | None) -> None:
     log = get_paperlint_logger()
     log.setLevel(logging.DEBUG)
     log.addHandler(h)
+
+
+@contextmanager
+def rich_console_handler(console: Console) -> Iterator[None]:
+    """Temporarily route paperlint log output through a shared Rich Console.
+
+    While a Rich ``Progress`` bar is active, the plain stderr handler would
+    write directly to the original ``sys.stderr``, bypassing Rich's display
+    coordination.  This context manager swaps it for a ``RichHandler`` that
+    shares the same ``Console`` as the progress bar, then restores the
+    original handler on exit.  No-op when no console handler is configured.
+    """
+    global _pwl_console_handler
+    if _pwl_console_handler is None:
+        yield
+        return
+
+    from rich.logging import RichHandler
+
+    log = get_paperlint_logger()
+    old = _pwl_console_handler
+
+    rh = RichHandler(
+        console=console,
+        show_time=False,
+        show_level=False,
+        show_path=False,
+        markup=False,
+    )
+    rh.setLevel(old.level)
+    rh.setFormatter(old.formatter)
+
+    log.removeHandler(old)
+    log.addHandler(rh)
+    _pwl_console_handler = rh
+    try:
+        yield
+    finally:
+        log.removeHandler(rh)
+        log.addHandler(old)
+        _pwl_console_handler = old

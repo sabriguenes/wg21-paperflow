@@ -16,7 +16,7 @@ not need to special-case non-TTY environments.
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, ContextManager
 
 
@@ -42,7 +42,7 @@ def progress_callbacks(
         TimeElapsedColumn,
     )
 
-    console = Console()
+    console = Console(stderr=True)
     if not console.is_terminal:
         return nullcontext(), None, None
 
@@ -64,4 +64,11 @@ def progress_callbacks(
     def on_progress(_result: dict) -> None:
         progress.advance(task_id)
 
-    return progress, on_total, on_progress
+    @contextmanager
+    def _ctx():
+        from paperlint.logutil import rich_console_handler
+
+        with rich_console_handler(console), progress:
+            yield
+
+    return _ctx(), on_total, on_progress

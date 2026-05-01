@@ -216,6 +216,15 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 **Sources:** `extract_metadata_from_blocks`, `_get_page0_text_colors`.
 
+**Fuzzy label recovery**
+
+- Label detection uses a two-stage strategy: first an exact regex match via `_LABEL_RE`, then a fuzzy fallback via `_is_label_line` which delegates to `similarity.fuzzy_match_label`.
+- The fuzzy stage compares the candidate text against `_FUZZY_LABEL_TARGETS` (a frozen set of canonical labels: "Document Number", "Date", "Project", "Reply to", "Audience") using symmetric `SequenceMatcher` (max of both argument orders) with a threshold of 0.82.
+- This recovers metadata from PDFs with typos in label text (e.g. "Repy-to", "Documnet Number") that the exact regex cannot match.
+- All call sites that previously checked `_LABEL_RE.match()` directly now call `_is_label_line()` for consistent exact-then-fuzzy behavior.
+
+**Sources:** `_is_label_line`, `_FUZZY_LABEL_TARGETS` in [`lib/pdf/wg21.py`](lib/pdf/wg21.py); `fuzzy_match_label` in [`lib/similarity.py`](lib/similarity.py).
+
 ---
 
 ### Tables

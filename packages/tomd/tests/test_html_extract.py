@@ -1156,3 +1156,50 @@ class TestContinuationRows:
         rt = meta.get("reply-to", [])
         assert any("jens@gmx.net" in e for e in rt)
         assert any("Jens Maurer" in e for e in rt)
+
+
+class TestFuzzyLabelMatching:
+    """Fuzzy fallback in _match_field for typos like Repy-to."""
+
+    def test_repy_to_wg21_dl(self):
+        """Typo 'Repy-to' in a wg21-style <dl> is matched via fuzzy fallback."""
+        html = """
+        <div class="wg21-head">
+          <h1>Test Paper</h1>
+          <dl>
+            <dt>Document Number:</dt><dd>P9999R0</dd>
+            <dt>Repy-to:</dt>
+            <dd><a href="mailto:gasper@example.com">Gasper Azman</a></dd>
+          </dl>
+        </div>
+        """
+        meta = extract_metadata(parse_html(html), "wg21")
+        assert "reply-to" in meta
+        assert any("gasper@example.com" in e for e in meta["reply-to"])
+
+    def test_auther_generic_table(self):
+        """Typo 'Auther' in a generic table is matched via fuzzy fallback."""
+        html = """
+        <table>
+          <tr><td>Date:</td><td>2026-01-01</td></tr>
+          <tr><td>Auther:</td>
+              <td><a href="mailto:a@b.com">Alice</a></td></tr>
+        </table>
+        """
+        meta = extract_metadata(parse_html(html), "unknown")
+        assert "reply-to" in meta
+        assert any("a@b.com" in e for e in meta["reply-to"])
+
+    def test_garbage_label_not_matched(self):
+        """Random labels like 'Foobar' should NOT fuzzy-match anything."""
+        html = """
+        <div class="wg21-head">
+          <h1>Test</h1>
+          <dl>
+            <dt>Foobar:</dt><dd>some value</dd>
+          </dl>
+        </div>
+        """
+        meta = extract_metadata(parse_html(html), "wg21")
+        assert "reply-to" not in meta
+        assert "document" not in meta
