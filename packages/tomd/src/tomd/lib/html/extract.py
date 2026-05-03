@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup, Tag
 
 from .. import (
     DATE_RE, DOC_NUM_RE, EMAIL_RE, parse_author_lines,
-    deobfuscate_email, _OBFUSCATED_UNDERSCORE_RE, _OBFUSCATED_WORD_RE,
+    deobfuscate_email,
 )
 from ..similarity import fuzzy_match_label
 
@@ -76,13 +76,11 @@ def _extract_plaintext_authors(container: Tag) -> list[str]:
                 _add(f"<{email}>")
             continue
 
-        deob = deobfuscate_email(line)
-        if deob:
+        deob_result = deobfuscate_email(line)
+        if deob_result:
+            deob, (match_start, _match_end) = deob_result
             _log.info("deobfuscated email in hand-written paper: %s", deob)
-            um = _OBFUSCATED_UNDERSCORE_RE.search(line)
-            wm = _OBFUSCATED_WORD_RE.search(line)
-            match_obj = um or wm
-            name = line[:match_obj.start()].strip().rstrip("<").strip() if match_obj else ""
+            name = line[:match_start].strip().rstrip("<").strip()
             if name:
                 _add(f"{name} <{deob}>")
             else:
@@ -657,9 +655,9 @@ def _collect_metadata_emails(soup: BeautifulSoup) -> list[str]:
     for tag in soup.find_all(["td", "dd", "li", "p", "span", "address"]):
         if first_h2 and tag.find_previous("h2"):
             continue
-        deob = deobfuscate_email(tag.get_text())
-        if deob:
-            _add(deob)
+        deob_result = deobfuscate_email(tag.get_text())
+        if deob_result:
+            _add(deob_result[0])
 
     return emails
 

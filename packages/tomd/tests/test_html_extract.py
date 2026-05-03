@@ -1212,13 +1212,20 @@ class TestDeobfuscateEmail:
     """deobfuscate_email reverses common anti-spam patterns."""
 
     def test_at_dot_spaces(self):
-        assert deobfuscate_email("akrzemi1 at gmail dot com") == "akrzemi1@gmail.com"
+        result = deobfuscate_email("akrzemi1 at gmail dot com")
+        assert result is not None
+        assert result[0] == "akrzemi1@gmail.com"
+        assert result[1] == (0, 25)
 
     def test_parenthesized(self):
-        assert deobfuscate_email("foo (at) bar (dot) org") == "foo@bar.org"
+        result = deobfuscate_email("foo (at) bar (dot) org")
+        assert result is not None
+        assert result[0] == "foo@bar.org"
 
     def test_bracketed(self):
-        assert deobfuscate_email("foo [at] bar [dot] co [dot] uk") == "foo@bar.co.uk"
+        result = deobfuscate_email("foo [at] bar [dot] co [dot] uk")
+        assert result is not None
+        assert result[0] == "foo@bar.co.uk"
 
     def test_rejects_prose(self):
         assert deobfuscate_email("this is not at all dotty") is None
@@ -1230,22 +1237,33 @@ class TestDeobfuscateEmail:
         assert deobfuscate_email("") is None
 
     def test_mixed_case(self):
-        assert deobfuscate_email("Name AT example DOT com") == "Name@example.com"
+        result = deobfuscate_email("Name AT example DOT com")
+        assert result is not None
+        assert result[0] == "Name@example.com"
 
     def test_embedded_in_sentence(self):
         result = deobfuscate_email("Contact me at user at example dot org please")
-        assert result == "user@example.org"
+        assert result is not None
+        assert result[0] == "user@example.org"
+        assert result[1] == (14, 37)
 
     def test_underscore_at_pattern(self):
         """n5038/n5040 pattern: braden.ganetsky_at_gmail.com"""
-        assert deobfuscate_email("braden.ganetsky_at_gmail.com") == "braden.ganetsky@gmail.com"
+        result = deobfuscate_email("braden.ganetsky_at_gmail.com")
+        assert result is not None
+        assert result[0] == "braden.ganetsky@gmail.com"
+        assert result[1] == (0, 28)
 
     def test_underscore_at_with_name(self):
         result = deobfuscate_email("Braden Ganetsky, braden.ganetsky_at_gmail.com")
-        assert result == "braden.ganetsky@gmail.com"
+        assert result is not None
+        assert result[0] == "braden.ganetsky@gmail.com"
+        assert result[1] == (17, 45)
 
     def test_underscore_at_subdomain(self):
-        assert deobfuscate_email("user_at_mail.example.co.uk") == "user@mail.example.co.uk"
+        result = deobfuscate_email("user_at_mail.example.co.uk")
+        assert result is not None
+        assert result[0] == "user@mail.example.co.uk"
 
     def test_underscore_at_rejects_normal_underscores(self):
         """Underscores that aren't _at_ should not match."""

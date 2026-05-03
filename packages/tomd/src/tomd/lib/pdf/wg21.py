@@ -268,8 +268,8 @@ def extract_metadata_from_blocks(blocks: list[Block],
                     fuzzy_hit = fuzzy_match_label(candidate, _FUZZY_LABEL_TARGETS)
                     if fuzzy_hit is not None:
                         _log.info(
-                            "Fuzzy label match: %r -> %r (target %r)",
-                            candidate, fuzzy_hit, fuzzy_hit,
+                            "Fuzzy label match: %r -> %r",
+                            candidate, fuzzy_hit,
                         )
                         label = fuzzy_hit
                         if "reply" in label or label in ("author", "authors", "editor", "editors"):
@@ -414,13 +414,9 @@ def extract_metadata_from_blocks(blocks: list[Block],
                         metadata["reply-to"] = existing + [entry]
                     continue
                 # Fallback: deobfuscate "user_at_domain.com" patterns
-                deob = deobfuscate_email(lt)
-                if deob:
-                    # Name is everything before the obfuscated email
-                    from .. import _OBFUSCATED_UNDERSCORE_RE, _OBFUSCATED_WORD_RE
-                    um = _OBFUSCATED_UNDERSCORE_RE.search(lt)
-                    wm = _OBFUSCATED_WORD_RE.search(lt)
-                    match_start = (um or wm).start()
+                deob_result = deobfuscate_email(lt)
+                if deob_result:
+                    deob, (match_start, _match_end) = deob_result
                     name = lt[:match_start].strip().rstrip(",").strip()
                     entry = f"{name} <{deob}>" if name else f"<{deob}>"
                     existing = metadata.get("reply-to", [])

@@ -392,8 +392,6 @@ ALLOWED_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 
-import logging as _logging
-
 _deobfuscate_log = _logging.getLogger(__name__)
 
 # Two families of anti-spam obfuscation:
@@ -413,22 +411,24 @@ _OBFUSCATED_UNDERSCORE_RE = re.compile(
 )
 
 
-def deobfuscate_email(text: str) -> str | None:
+def deobfuscate_email(text: str) -> tuple[str, tuple[int, int]] | None:
     """Reverse common anti-spam email obfuscation patterns.
 
     Handles two families:
     - Word-based: ``user at domain dot com``, ``(at)``/``[at]`` variants
     - Underscore-based: ``user_at_domain.com`` (n5038/n5040 pattern)
 
-    Returns the reconstructed address only when the result passes
-    ``EMAIL_RE`` validation. Shared across HTML and PDF pipelines.
+    Returns ``(email, (match_start, match_end))`` when the reconstructed
+    address passes ``EMAIL_RE`` validation, or ``None``.  The span refers
+    to the obfuscated region in *text* so callers can slice the name
+    portion without re-matching.  Shared across HTML and PDF pipelines.
     """
     # Family 2 first (more specific, less likely to false-positive)
     m = _OBFUSCATED_UNDERSCORE_RE.search(text)
     if m:
         candidate = f"{m.group(1)}@{m.group(2)}"
         if EMAIL_RE.fullmatch(candidate):
-            return candidate
+            return (candidate, (m.start(), m.end()))
 
     # Family 1: word/bracket "at"/"dot"
     m = _OBFUSCATED_WORD_RE.search(text)
@@ -443,7 +443,7 @@ def deobfuscate_email(text: str) -> str | None:
         )
         candidate = f"{local}@{domain}"
         if EMAIL_RE.fullmatch(candidate):
-            return candidate
+            return (candidate, (m.start(), m.end()))
 
     return None
 
@@ -488,13 +488,10 @@ def parse_author_lines(lines, clean_line=None, skip_line=None):
         else:
             # Fallback: try deobfuscating "user_at_domain.com" or
             # "user at domain dot com" patterns before treating as bare name
-            deob = deobfuscate_email(line)
-            if deob:
+            deob_result = deobfuscate_email(line)
+            if deob_result:
+                deob, (match_start, _match_end) = deob_result
                 _deobfuscate_log.info("deobfuscated email: %s", deob)
-                # Extract name portion before the obfuscated email
-                underscore_m = _OBFUSCATED_UNDERSCORE_RE.search(line)
-                word_m = _OBFUSCATED_WORD_RE.search(line)
-                match_start = (underscore_m or word_m).start()
                 name_part = clean_line(line[:match_start])
                 name_part = name_part.strip(",").strip()
                 if name_part:
