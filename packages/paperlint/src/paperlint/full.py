@@ -5,7 +5,7 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""CLI command module for 'paperflow full' (all four stages)."""
+"""CLI command module for 'paperflow full' (all three stages)."""
 
 from __future__ import annotations
 
@@ -19,11 +19,10 @@ from paperstore.backend import StorageBackend
 def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subparsers.add_parser(
         "full",
-        help="Run all four stages: mailing + download + convert + eval",
+        help="Run all three stages: mailing + download + convert",
         description=(
-            "Full pipeline: scrape mailing index, download sources, convert to "
-            "markdown, then run the LLM eval. Each stage is idempotent; already-done "
-            "work is skipped. Requires OPENROUTER_API_KEY."
+            "Full pipeline: scrape mailing index, download sources, and convert to "
+            "markdown. Each stage is idempotent; already-done work is skipped."
         ),
     )
     p.add_argument(
@@ -50,13 +49,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParse
         metavar="N",
         help="Concurrency limit for network stages (default: 10).",
     )
-    p.add_argument(
-        "--discovery-passes",
-        type=int,
-        default=3,
-        metavar="N",
-        help="Number of LLM discovery passes per paper (default: 3).",
-    )
     return p
 
 
@@ -68,7 +60,6 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
         force=args.force,
         verify=args.verify,
         concurrency=args.concurrency,
-        discovery_passes=args.discovery_passes,
     ))
 
     any_failed = False

@@ -16,7 +16,6 @@ import pytest
 
 from paperstore import SqliteBackend
 from paperstore.errors import (
-    MissingEvaluationError,
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
@@ -55,7 +54,7 @@ class _FailingConn:
 
 def test_put_source_and_get_source_path(store: SqliteBackend, tmp_path: Path):
     path = store.put_source("P1234R0", b"%PDF-1.7\n", suffix=".pdf")
-    assert path == tmp_path / "p1234r0.pdf"
+    assert path == tmp_path / "paperstore" / "p1234r0.pdf"
     assert path.read_bytes() == b"%PDF-1.7\n"
     assert store.get_source_path("p1234r0") == path
 
@@ -79,7 +78,7 @@ def test_get_source_path_missing_raises(store: SqliteBackend):
 
 def test_write_and_get_paper_md(store: SqliteBackend, tmp_path: Path):
     path = store.write_paper_md("P1", "# Hi\n")
-    assert path == tmp_path / "p1.md"
+    assert path == tmp_path / "paperstore" / "p1.md"
     assert store.get_paper_md("P1") == "# Hi\n"
 
 
@@ -94,35 +93,12 @@ def test_write_paper_md_updates_markdown_path(store: SqliteBackend):
     assert meta["markdown_path"] == str(path)
 
 
-def test_write_and_get_evaluation(store: SqliteBackend, tmp_path: Path):
-    store.upsert_year("2026", [{"paper_id": "P1"}])
-    path = store.write_evaluation_json("P1", {"summary": "ok", "pipeline_status": "complete"})
-    assert path == tmp_path / "p1.eval.json"
-    result = store.get_evaluation("P1")
-    assert result["summary"] == "ok"
-
-
-def test_get_evaluation_missing_raises(store: SqliteBackend):
-    with pytest.raises(MissingEvaluationError):
-        store.get_evaluation("NOPE")
-
-
-def test_get_eval_status_returns_pipeline_status(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1"}, {"paper_id": "P2"}])
-    store.write_evaluation_json("P1", {"summary": "ok", "pipeline_status": "complete"})
-    store.write_evaluation_json("P2", {"summary": "x", "pipeline_status": "partial"})
-    assert store.get_eval_status("P1") == "complete"
-    assert store.get_eval_status("P2") == "partial"
-    assert store.get_eval_status("NOPE") is None
-
-
 def test_write_intermediate(store: SqliteBackend, tmp_path: Path):
     store.write_intermediate("P1", "1-findings", [{"n": 1}])
-    path = tmp_path / "p1.1-findings.json"
+    path = tmp_path / "paperstore" / "p1.1-findings.json"
     assert path.exists()
     assert json.loads(path.read_text())  == [{"n": 1}]
-    # No leftover .partial files; the helper handles temp cleanup.
-    assert list(tmp_path.glob("*.partial")) == []
+    assert list((tmp_path / "paperstore").glob("*.partial")) == []
 
 
 def test_upsert_year_and_list_papers(store: SqliteBackend):
@@ -222,8 +198,8 @@ def test_writers_do_not_leave_temp_files_after_success(
     """No .partial or legacy .tmp.* siblings should linger after a successful write."""
     store.put_source("P1", b"x", suffix=".pdf")
     store.write_paper_md("P1", "body")
-    store.write_evaluation_json("P1", {"summary": "ok"})
-    leftovers = list(tmp_path.glob("*.partial")) + list(tmp_path.glob("*.tmp.*"))
+    papers_dir = tmp_path / "paperstore"
+    leftovers = list(papers_dir.glob("*.partial")) + list(papers_dir.glob("*.tmp.*"))
     assert leftovers == []
 
 
@@ -238,7 +214,7 @@ def test_put_source_rolls_back_on_sql_failure(
             store.put_source("P1", b"data", suffix=".pdf")
     finally:
         store._conn = real
-    assert (tmp_path / "p1.pdf").exists()
+    assert (tmp_path / "paperstore" / "p1.pdf").exists()
     with pytest.raises(MissingMetaError):
         store.get_meta("P1")
 
@@ -254,7 +230,7 @@ def test_write_paper_md_rolls_back_on_sql_failure(
             store.write_paper_md("P1", "body")
     finally:
         store._conn = real
-    assert (tmp_path / "p1.md").exists()
+    assert (tmp_path / "paperstore" / "p1.md").exists()
     with pytest.raises(MissingMetaError):
         store.get_meta("P1")
 
@@ -274,53 +250,33 @@ def test_write_meta_json_rolls_back_on_sql_failure(store: SqliteBackend):
     assert meta["year"] == "2026"
 
 
-def test_write_evaluation_json_rolls_back_on_sql_failure(
-    store: SqliteBackend, tmp_path: Path
-):
-    """File written to disk, but evals row absent if the INSERT fails."""
-    real = store._conn
-    store._conn = _FailingConn(real, fail_on_nth=1)  # only one execute in this writer
-    try:
-        with pytest.raises(sqlite3.OperationalError, match="simulated"):
-            store.write_evaluation_json("P1", {"summary": "ok"})
-    finally:
-        store._conn = real
-    assert (tmp_path / "p1.eval.json").exists()
-    with pytest.raises(MissingEvaluationError):
-        store.get_evaluation("P1")
-
-
 def test_reconcile_empty_workspace(store: SqliteBackend):
     """Empty workspace is a clean no-op."""
-    assert store.reconcile() == {"sources": 0, "markdowns": 0, "evaluations": 0}
+    assert store.reconcile() == {"sources": 0, "markdowns": 0}
 
 
 def test_reconcile_backfills_orphan_artifacts(
     store: SqliteBackend, tmp_path: Path
 ):
-    """Files dropped into the workspace get indexed without re-writing them."""
-    (tmp_path / "p1.pdf").write_bytes(b"%PDF-1.7\n")
-    (tmp_path / "p2.html").write_text("<html/>")
-    (tmp_path / "p3.md").write_text("# body\n")
-    (tmp_path / "p4.eval.json").write_text('{"summary": "ok"}')
+    """Files dropped into the paperstore/ subdir get indexed without re-writing them."""
+    papers_dir = tmp_path / "paperstore"
+    (papers_dir / "p1.pdf").write_bytes(b"%PDF-1.7\n")
+    (papers_dir / "p2.html").write_text("<html/>")
+    (papers_dir / "p3.md").write_text("# body\n")
 
     counts = store.reconcile()
-    assert counts == {"sources": 2, "markdowns": 1, "evaluations": 1}
-    assert store.get_source_path("P1") == tmp_path / "p1.pdf"
-    assert store.get_source_path("P2") == tmp_path / "p2.html"
+    assert counts == {"sources": 2, "markdowns": 1}
+    assert store.get_source_path("P1") == papers_dir / "p1.pdf"
+    assert store.get_source_path("P2") == papers_dir / "p2.html"
     assert store.get_paper_md("P3") == "# body\n"
-    assert store.get_evaluation("P4") == {"summary": "ok"}
 
 
 def test_reconcile_preserves_existing_values(store: SqliteBackend, tmp_path: Path):
     """Reconcile fills empties only; it does not overwrite indexed paths."""
     real_path = store.put_source("P1", b"x", suffix=".pdf")
-    # Drop a sibling file with the same pid (e.g., an unrelated .html stray);
-    # source_file is already set, so reconcile should not touch it.
-    (tmp_path / "p1.html").write_text("<html/>")
+    papers_dir = tmp_path / "paperstore"
+    (papers_dir / "p1.html").write_text("<html/>")
     counts = store.reconcile()
-    # The .pdf stem matches an indexed row; the .html stem hits the same row
-    # which already has a non-empty source_file, so neither updates.
     assert counts["sources"] == 0
     assert store.get_source_path("P1") == real_path
 
@@ -328,39 +284,22 @@ def test_reconcile_preserves_existing_values(store: SqliteBackend, tmp_path: Pat
 def test_reconcile_skips_intermediates_partials_and_db(
     store: SqliteBackend, tmp_path: Path
 ):
-    """Non-artifact files (intermediates, .partial, papers.db) are ignored."""
-    (tmp_path / "p1.meta.json").write_text("{}")
-    (tmp_path / "p1.1-findings.json").write_text("[]")
-    (tmp_path / "p1.prompts.json").write_text("[]")
-    (tmp_path / "p1.pdf.partial").write_bytes(b"in-flight")
+    """Non-artifact files (intermediates, .partial) are ignored."""
+    papers_dir = tmp_path / "paperstore"
+    (papers_dir / "p1.1-findings.json").write_text("[]")
+    (papers_dir / "p1.prompts.json").write_text("[]")
+    (papers_dir / "p1.pdf.partial").write_bytes(b"in-flight")
     counts = store.reconcile()
-    assert counts == {"sources": 0, "markdowns": 0, "evaluations": 0}
+    assert counts == {"sources": 0, "markdowns": 0}
     assert store.list_all_paper_ids() == []
 
 
 def test_reconcile_is_idempotent(store: SqliteBackend, tmp_path: Path):
-    (tmp_path / "p1.pdf").write_bytes(b"x")
+    (tmp_path / "paperstore" / "p1.pdf").write_bytes(b"x")
     first = store.reconcile()
     second = store.reconcile()
-    assert first == {"sources": 1, "markdowns": 0, "evaluations": 0}
-    assert second == {"sources": 0, "markdowns": 0, "evaluations": 0}
-
-
-def test_reconcile_backfills_empty_eval_json_path(
-    store: SqliteBackend, tmp_path: Path
-):
-    """An evals row with empty eval_json_path is repaired from disk."""
-    store._conn.execute("INSERT INTO papers (paper_id) VALUES (?)", ("P1",))
-    store._conn.execute(
-        "INSERT INTO evals (paper_id, eval_json_path) VALUES (?, ?)",
-        ("P1", ""),
-    )
-    store._conn.commit()
-    (tmp_path / "p1.eval.json").write_text('{"summary": "ok"}')
-
-    counts = store.reconcile()
-    assert counts["evaluations"] == 1
-    assert store.get_evaluation("P1") == {"summary": "ok"}
+    assert first == {"sources": 1, "markdowns": 0}
+    assert second == {"sources": 0, "markdowns": 0}
 
 
 def test_list_papers_for_year_missing_raises(store: SqliteBackend):

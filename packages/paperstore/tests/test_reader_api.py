@@ -25,7 +25,7 @@ from paperstore import (
 def test_put_source_then_get_source_path_roundtrip(tmp_path: Path):
     store = SqliteBackend(tmp_path)
     path = store.put_source("p1234r0", b"%PDF-1.7\n", suffix=".pdf")
-    assert path == tmp_path / "p1234r0.pdf"
+    assert path == tmp_path / "paperstore" / "p1234r0.pdf"
     assert store.get_source_path("P1234R0") == path
     assert path.read_bytes() == b"%PDF-1.7\n"
 

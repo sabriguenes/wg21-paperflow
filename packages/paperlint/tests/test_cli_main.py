@@ -41,7 +41,7 @@ def test_top_level_help_exits_zero():
     assert "paperflow" in result.stdout.lower()
 
 
-@pytest.mark.parametrize("subcommand", ["mailing", "download", "convert", "eval", "full"])
+@pytest.mark.parametrize("subcommand", ["mailing", "download", "convert", "full"])
 def test_each_subcommand_help_exits_zero(subcommand: str):
     result = _run(subcommand, "--help")
     assert result.returncode == 0, (

@@ -25,11 +25,11 @@ flowchart LR
         mailingPkg["mailing\n(scrape open-std.org)"]
         downloadCmd["paperflow download\n(fetch PDF/HTML)"]
         tomdPkg["tomd\n(convert to .md)"]
-        paperlintPkg["paperlint\n(LLM evaluation)"]
+        paperlintPkg["paperlint\n(CLI orchestration)"]
     end
     subgraph storagePkg [paperstore]
-        dbFile["papers.db\n(SQLite)"]
-        fsFiles["workspace/\n*.pdf *.html *.md"]
+        dbFile["paperstore.db\n(SQLite)"]
+        fsFiles["paperstore/\n*.pdf *.html *.md"]
     end
     mailingPkg --> dbFile
     downloadCmd --> dbFile
@@ -337,17 +337,7 @@ These are pre-existing bugs, not introduced by our work. Fixing them would be a 
 
 ---
 
-## 14. Downstream Risk: paperlint Quote Verification
-
-From [paperlint CLAUDE.md](packages/paperlint/src/paperlint/CLAUDE.md): `step_verify_quotes` does **literal or whitespace-normalized substring matching** against the paper markdown. This means:
-
-- Any change to how tomd emits text (whitespace, line breaks, escaping) can cause previously-verified findings to fail verification and be dropped
-- This is not a blocker for quality improvements, but it means large emission changes should be tested against existing evaluations
-- The integration test (`tests/test_end_to_end_convert.py`) only checks non-empty output, not content stability
-
----
-
-## 15. Complete Documentation Inventory
+## 14. Complete Documentation Inventory
 
 All documentation files read during this analysis:
 
@@ -355,15 +345,15 @@ All documentation files read during this analysis:
 - [CLAUDE.md](CLAUDE.md) - Workspace rules, CLI commands, on-disk layout, invariants, style
 - [DESIGN.md](DESIGN.md) - Architecture, pipeline, paper model, YAML spec, backends, known limitations
 - [README.md](README.md) - User-facing install/usage docs
-- [CONCURRENCY-TODO.md](CONCURRENCY-TODO.md) - Race conditions in parallel convert/eval (open)
+- [CONCURRENCY-TODO.md](CONCURRENCY-TODO.md) - Race conditions in parallel convert (open)
 - [LICENSE_1_0.txt](LICENSE_1_0.txt) - Boost Software License 1.0
 
 ### Package CLAUDE.md Files (5 total, 0 AGENTS.md)
 - [root CLAUDE.md](CLAUDE.md) - Storage through backend, no em dashes, BSL-1.0 headers
 - [tomd CLAUDE.md](packages/tomd/src/tomd/CLAUDE.md) - 17-step pipeline, multi-signal confidence, dual-path, heading rules, honest output, QA scorer rules
-- [paperstore CLAUDE.md](packages/paperstore/src/paperstore/CLAUDE.md) - Flat workspace layout, typed errors, meta fallback to mailing index
+- [paperstore CLAUDE.md](packages/paperstore/src/paperstore/CLAUDE.md) - SqliteBackend layout, typed errors, no path arithmetic outside backend
 - [mailing CLAUDE.md](packages/mailing/src/mailing/CLAUDE.md) - No tomd dependency, put_source is the write seam
-- [paperlint CLAUDE.md](packages/paperlint/src/paperlint/CLAUDE.md) - Eval reads stored markdown, quote verification, prompt_hash
+- [paperlint CLAUDE.md](packages/paperlint/src/paperlint/CLAUDE.md) - CLI orchestration for mailing, download, convert
 
 ### tomd-Internal Documentation (12 .md files)
 - [README.md](packages/tomd/src/tomd/README.md) - CLI usage, QA mode, limitations
@@ -386,7 +376,7 @@ All documentation files read during this analysis:
 
 ---
 
-## 16. Key Answers from Deep Analysis
+## 15. Key Answers from Deep Analysis
 
 | Question | Answer |
 |---|---|

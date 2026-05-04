@@ -60,5 +60,5 @@ def test_run_convert_write_prompts_gate(
         [pid], store, force=True, concurrency=1, write_prompts=write_prompts,
     ))
 
-    prompts_path = tmp_path / f"{pid.lower()}.prompts.json"
+    prompts_path = tmp_path / "paperstore" / f"{pid.lower()}.prompts.json"
     assert prompts_path.exists() is expect_prompts_file

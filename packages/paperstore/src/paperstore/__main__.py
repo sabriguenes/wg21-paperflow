@@ -16,9 +16,8 @@ import json
 import sys
 from pathlib import Path
 
-from paperstore import SqliteBackend, WORKSPACE_ENV_VAR, default_workspace_dir
+from paperstore import SqliteBackend, WORKSPACE_ENV_VAR
 from paperstore.errors import (
-    MissingEvaluationError,
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
@@ -65,14 +64,6 @@ def _has_paper_md(backend: SqliteBackend, pid: str) -> bool:
         return False
 
 
-def _has_evaluation(backend: SqliteBackend, pid: str) -> bool:
-    try:
-        backend.get_evaluation(pid)
-        return True
-    except MissingEvaluationError:
-        return False
-
-
 def _cmd_ls_papers(backend: SqliteBackend, year: str | None) -> int:
     if year:
         try:
@@ -90,7 +81,6 @@ def _cmd_ls_papers(backend: SqliteBackend, year: str | None) -> int:
             for m, present in [
                 ("s", _has_source(backend, pid)),
                 ("m", _has_paper_md(backend, pid)),
-                ("e", _has_evaluation(backend, pid)),
             ]
             if present
         ) or "-"
@@ -112,8 +102,7 @@ def _cmd_reconcile(backend: SqliteBackend) -> int:
     counts = backend.reconcile()
     print(
         f"Backfilled: {counts['sources']} sources, "
-        f"{counts['markdowns']} markdowns, "
-        f"{counts['evaluations']} evaluations."
+        f"{counts['markdowns']} markdowns."
     )
     return 0
 
@@ -129,10 +118,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--workspace-dir",
-        default=default_workspace_dir(),
+        default=None,
         metavar="DIR",
         type=Path,
-        help=f"Paperstore backend root (default: ${WORKSPACE_ENV_VAR} or ./data).",
+        help=f"Paperstore backend root (default: ${WORKSPACE_ENV_VAR}).",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -143,7 +132,7 @@ def main() -> int:
 
     ls = sub.add_parser(
         "ls-papers",
-        help="List staged papers. Marks: s=source, m=paper.md, e=evaluation.json.",
+        help="List staged papers. Marks: s=source, m=paper.md.",
     )
     ls.add_argument("year", nargs="?", default=None)
 
@@ -156,7 +145,11 @@ def main() -> int:
     )
 
     args = parser.parse_args()
-    with SqliteBackend(args.workspace_dir) as backend:
+    if args.workspace_dir is None:
+        backend_inst = SqliteBackend.from_env()
+    else:
+        backend_inst = SqliteBackend(args.workspace_dir)
+    with backend_inst as backend:
         if args.command == "list-years":
             return _cmd_list_years(backend)
         if args.command == "show-year":

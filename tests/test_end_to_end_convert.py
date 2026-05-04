@@ -77,13 +77,13 @@ def test_end_to_end_convert(store):
     markdown, _prompts, _intent = convert_paper(paper_id, source_path, meta)
     md_path = store.write_paper_md(paper_id, markdown)
 
-    workspace = store.workspace_dir
+    papers_dir = store.workspace_dir / "paperstore"
     stem = paper_id.lower()
-    assert source_path == workspace / f"{stem}.pdf"
+    assert source_path == papers_dir / f"{stem}.pdf"
     assert source_path.is_file()
     assert source_path.read_bytes() == pdf_bytes
 
-    assert md_path == workspace / f"{stem}.md"
+    assert md_path == papers_dir / f"{stem}.md"
     assert md_path.is_file()
     assert md_path.read_text(encoding="utf-8").strip(), "convert_paper produced empty markdown"
 

@@ -9,9 +9,9 @@
 
 """SQLite-backed storage implementation.
 
-All metadata lives in ``papers.db`` (three tables: ``papers``, ``years``,
-``evals``). Source files, markdown, and eval JSON remain on disk; the DB
-stores paths to them.
+All metadata lives in ``paperstore.db`` (two tables: ``papers``, ``years``).
+Source files and markdown live under the ``paperstore/`` subdirectory;
+the DB stores paths to them.
 
 Designed for single-threaded access from the main coroutine in ``jobs.py``.
 No WAL or connection pool is needed because workers never touch the DB.
@@ -29,7 +29,6 @@ from typing import Any
 
 from paperstore.backend import StorageBackend
 from paperstore.errors import (
-    MissingEvaluationError,
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
@@ -56,17 +55,6 @@ CREATE TABLE IF NOT EXISTS years (
     added  TEXT DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS evals (
-    paper_id            TEXT PRIMARY KEY REFERENCES papers(paper_id),
-    pipeline_status     TEXT DEFAULT '',
-    model               TEXT DEFAULT '',
-    findings_discovered INTEGER,
-    findings_passed     INTEGER,
-    findings_rejected   INTEGER,
-    summary             TEXT DEFAULT '',
-    generated           TEXT DEFAULT '',
-    eval_json_path      TEXT DEFAULT ''
-);
 """
 
 
@@ -84,9 +72,10 @@ def _atomic_replace(src: Path, dst: Path) -> None:
 class SqliteBackend(StorageBackend):
     """Filesystem-backed paperstore using a SQLite database for metadata.
 
-    Constructor creates ``workspace_dir`` and ``papers.db`` on first use.
-    All read/write methods are synchronous and not thread-safe; call only
-    from the main event-loop coroutine.
+    Constructor creates ``workspace_dir``, the ``paperstore/`` artifact
+    subdirectory, and ``paperstore.db`` on first use. All read/write methods
+    are synchronous and not thread-safe; call only from the main event-loop
+    coroutine.
 
     Atomicity model: files are the source of truth, the DB is an index.
     Each writer first lands the artifact via an atomic ``.partial`` rename,
@@ -100,11 +89,30 @@ class SqliteBackend(StorageBackend):
     def __init__(self, workspace_dir: Path) -> None:
         self._workspace = Path(workspace_dir)
         self._workspace.mkdir(parents=True, exist_ok=True)
-        db_path = self._workspace / "papers.db"
+        self._papers_dir = self._workspace / "paperstore"
+        self._papers_dir.mkdir(exist_ok=True)
+        db_path = self._workspace / "paperstore.db"
         self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+
+    @classmethod
+    def from_env(cls) -> "SqliteBackend":
+        """Construct from ``$WG21_DATA_DIR``.
+
+        Raises :class:`EnvironmentError` with an actionable message when
+        the variable is unset or empty.
+        """
+        env_var = "WG21_DATA_DIR"
+        raw = os.environ.get(env_var, "").strip()
+        if not raw:
+            raise EnvironmentError(
+                f"{env_var} is not set. "
+                "Set it to the directory where paperflow stores its data.\n"
+                f"  export {env_var}=/path/to/wg21-data"
+            )
+        return cls(Path(raw))
 
     @property
     def workspace_dir(self) -> Path:
@@ -273,7 +281,7 @@ class SqliteBackend(StorageBackend):
             )
         pid = paper_id.strip().upper()
         final_path = self._atomic_write_bytes(
-            self._workspace / f"{pid.lower()}{suffix}", content
+            self._papers_dir / f"{pid.lower()}{suffix}", content
         )
         self.record_source(pid, final_path)
         return final_path
@@ -282,12 +290,12 @@ class SqliteBackend(StorageBackend):
         """Write markdown atomically and record the path in the DB."""
         pid = paper_id.strip().upper()
         final_path = self._atomic_write_text(
-            self._workspace / f"{pid.lower()}.md", markdown
+            self._papers_dir / f"{pid.lower()}.md", markdown
         )
         self.record_markdown(pid, final_path)
         return final_path
 
-    def write_meta_json(self, paper_id: str, meta: dict) -> Path:
+    def write_meta_json(self, paper_id: str, meta: dict) -> None:
         """Merge ``meta`` into the papers row, leaving omitted columns untouched.
 
         Only columns explicitly present in ``meta`` are written, so callers
@@ -326,44 +334,12 @@ class SqliteBackend(StorageBackend):
                 self._conn.execute(
                     f"UPDATE papers SET {cols} WHERE paper_id = ?", vals
                 )
-        return self._workspace / f"{pid.lower()}.meta.json"  # compat path
-
-    def write_evaluation_json(self, paper_id: str, evaluation: dict) -> Path:
-        """Write eval JSON to disk and upsert summary into evals table."""
-        pid = paper_id.strip().upper()
-        final_path = self._atomic_write_text(
-            self._workspace / f"{pid.lower()}.eval.json",
-            json.dumps(evaluation, indent=2, ensure_ascii=False),
-        )
-
-        with self._conn:
-            self._conn.execute(
-                """
-                INSERT OR REPLACE INTO evals
-                    (paper_id, pipeline_status, model,
-                     findings_discovered, findings_passed, findings_rejected,
-                     summary, generated, eval_json_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    pid,
-                    evaluation.get("pipeline_status") or "",
-                    evaluation.get("model") or "",
-                    evaluation.get("findings_discovered"),
-                    evaluation.get("findings_passed"),
-                    evaluation.get("findings_rejected"),
-                    evaluation.get("summary") or "",
-                    evaluation.get("generated") or "",
-                    str(final_path),
-                ),
-            )
-        return final_path
 
     def write_intermediate(self, paper_id: str, name: str, payload: Any) -> Path:
         """Write an intermediate artifact JSON to disk atomically."""
         pid = paper_id.strip().upper()
         return self._atomic_write_text(
-            self._workspace / f"{pid.lower()}.{name}.json",
+            self._papers_dir / f"{pid.lower()}.{name}.json",
             json.dumps(payload, indent=2, ensure_ascii=False),
         )
 
@@ -406,22 +382,14 @@ class SqliteBackend(StorageBackend):
         """Backfill DB rows from on-disk artifacts. See ABC for semantics."""
         sources: list[tuple[str, Path]] = []
         markdowns: list[tuple[str, Path]] = []
-        evaluations: list[tuple[str, Path]] = []
 
-        for path in sorted(self._workspace.iterdir()):
+        for path in sorted(self._papers_dir.iterdir()):
             if not path.is_file():
                 continue
             name = path.name
-            if name == "papers.db" or name.startswith("papers.db-"):
-                continue
             if name.endswith(".partial"):
                 continue
-            if name.endswith(".eval.json"):
-                evaluations.append((name[: -len(".eval.json")].upper(), path))
-                continue
             if name.endswith(".json"):
-                # .meta.json, .prompts.json, .1-findings.json, .2-gate.json,
-                # .2c-suppressed.json -- intermediates, not indexed.
                 continue
             if name.endswith(".md"):
                 markdowns.append((name[: -len(".md")].upper(), path))
@@ -431,7 +399,7 @@ class SqliteBackend(StorageBackend):
                     sources.append((name[: -len(suffix)].upper(), path))
                     break
 
-        counts = {"sources": 0, "markdowns": 0, "evaluations": 0}
+        counts = {"sources": 0, "markdowns": 0}
         with self._conn:
             for pid, path in sources:
                 self._conn.execute(
@@ -455,20 +423,6 @@ class SqliteBackend(StorageBackend):
                 )
                 if cursor.rowcount > 0:
                     counts["markdowns"] += 1
-            for pid, path in evaluations:
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
-                )
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO evals (paper_id) VALUES (?)", (pid,)
-                )
-                cursor = self._conn.execute(
-                    "UPDATE evals SET eval_json_path = ? "
-                    "WHERE paper_id = ? AND eval_json_path = ''",
-                    (str(path), pid),
-                )
-                if cursor.rowcount > 0:
-                    counts["evaluations"] += 1
         return counts
 
     # ---- reads ------------------------------------------------------------
@@ -514,32 +468,6 @@ class SqliteBackend(StorageBackend):
                 f"Run 'paperflow convert {paper_id}' again."
             )
         return path.read_text(encoding="utf-8")
-
-    def get_evaluation(self, paper_id: str) -> dict:
-        row = self._conn.execute(
-            "SELECT eval_json_path FROM evals WHERE paper_id = ?",
-            (paper_id.strip().upper(),),
-        ).fetchone()
-        if row is None or not row["eval_json_path"]:
-            raise MissingEvaluationError(
-                f"No evaluation for {paper_id!r}. "
-                f"Run 'paperflow eval {paper_id}' first."
-            )
-        path = Path(row["eval_json_path"])
-        if not path.exists():
-            raise MissingEvaluationError(
-                f"Evaluation file missing for {paper_id!r}: {path}."
-            )
-        return json.loads(path.read_text(encoding="utf-8"))
-
-    def get_eval_status(self, paper_id: str) -> str | None:
-        row = self._conn.execute(
-            "SELECT pipeline_status FROM evals WHERE paper_id = ?",
-            (paper_id.strip().upper(),),
-        ).fetchone()
-        if row is None:
-            return None
-        return row["pipeline_status"] or None
 
     def list_years(self) -> list[tuple[str, int]]:
         """Return ``[(year, paper_count)]`` sorted by year."""

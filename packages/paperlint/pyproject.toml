@@ -1,7 +1,7 @@
 [project]
 name = "paperlint"
 version = "0.2.1"
-description = "LLM pipeline for WG21 paper defect discovery"
+description = "CLI for WG21 paper ingestion and conversion"
 requires-python = ">=3.12"
 license = {text = "BSL-1.0"}
 authors = [{name = "Sergio DuBois", email = "sentientsergio@gmail.com"}]
@@ -9,8 +9,6 @@ dependencies = [
     "paperstore",
     "mailing",
     "tomd",
-    "openai",
-    "python-dotenv",
     "rich",
 ]
 

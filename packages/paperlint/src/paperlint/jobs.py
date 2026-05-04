@@ -16,7 +16,8 @@ result dicts - they never touch the storage backend. The main coroutine
 receives each result via ``asyncio.as_completed`` and writes to the
 backend serially, avoiding any SQLite concurrency issues.
 
-Command modules call ``asyncio.run(jobs.run_*(...))``.
+Stages: mailing, download, convert. Command modules call
+``asyncio.run(jobs.run_*(...))``.
 """
 
 from __future__ import annotations
@@ -421,68 +422,6 @@ def run_qa(
 
 
 # ---------------------------------------------------------------------------
-# run_eval
-# ---------------------------------------------------------------------------
-
-async def run_eval(
-    targets: list[str],
-    backend: StorageBackend,
-    *,
-    force: bool = False,
-    concurrency: int = 5,
-    discovery_passes: int = 3,
-) -> dict:
-    """Run the LLM eval pipeline on converted papers."""
-    from paperlint.orchestrator import run_paper_eval
-
-    target_type = _validate_targets(targets)
-    all_papers = _papers_from_scope(targets, target_type, backend)
-
-    # Filter: only papers with markdown; skip already-complete unless forced.
-    if not force:
-        to_process = [
-            p for p in all_papers
-            if p.get("markdown_path")
-            and backend.get_eval_status(p["paper_id"]) != "complete"
-        ]
-    else:
-        to_process = [p for p in all_papers if p.get("markdown_path")]
-
-    semaphore = asyncio.Semaphore(concurrency)
-
-    async def _one(paper_row: dict) -> dict:
-        pid = paper_row["paper_id"]
-        async with semaphore:
-            try:
-                result = await asyncio.to_thread(
-                    run_paper_eval,
-                    pid,
-                    mailing_meta=paper_row,
-                    storage=backend,
-                    discovery_passes=discovery_passes,
-                )
-                return {"paper_id": pid, "status": "ok", "result": result}
-            except Exception as exc:
-                logger.exception("Eval failed for %s", pid)
-                return {"paper_id": pid, "status": "error", "error": str(exc)}
-
-    tasks = [asyncio.create_task(_one(p)) for p in to_process]
-    succeeded = []
-    failed = []
-    to_process_ids = {p["paper_id"] for p in to_process}
-    skipped = [p["paper_id"] for p in all_papers if p["paper_id"] not in to_process_ids]
-
-    for coro in asyncio.as_completed(tasks):
-        result = await coro
-        if result["status"] == "ok":
-            succeeded.append(result["paper_id"])
-        else:
-            failed.append(result)
-
-    return {"succeeded": succeeded, "skipped": skipped, "failed": failed}
-
-
-# ---------------------------------------------------------------------------
 # run_full
 # ---------------------------------------------------------------------------
 
@@ -493,10 +432,9 @@ async def run_full(
     force: bool = False,
     verify: bool = False,
     concurrency: int = 10,
-    discovery_passes: int = 3,
     current_year: str | None = None,
 ) -> dict:
-    """Chain mailing -> download -> convert -> eval for the given targets."""
+    """Chain mailing -> download -> convert for the given targets."""
     target_type = _validate_targets(targets)
 
     # Determine years for mailing stage.
@@ -520,10 +458,6 @@ async def run_full(
     )
     results["convert"] = await run_convert(
         targets, backend, force=force, concurrency=(concurrency // 2) or 1
-    )
-    results["eval"] = await run_eval(
-        targets, backend, force=force, concurrency=concurrency,
-        discovery_passes=discovery_passes
     )
 
     return results

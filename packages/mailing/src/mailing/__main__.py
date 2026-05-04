@@ -9,8 +9,8 @@
 
 """Mailing CLI: scrape open-std.org mailing indexes (index only, no downloads).
 
-Workspace dir defaults to ``$PAPERFLOW_WORKSPACE`` or ``./data``; pass
-``--workspace-dir`` to override.
+Workspace dir defaults to ``$WG21_DATA_DIR``; pass ``--workspace-dir`` to
+override.
 
 Usage::
 
@@ -26,7 +26,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from paperstore import WORKSPACE_ENV_VAR, SqliteBackend, default_workspace_dir
+from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
 
 from mailing.scrape import discover_years, fetch_all_mailings_for_year
 
@@ -60,10 +60,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--workspace-dir",
-        default=default_workspace_dir(),
+        default=None,
         metavar="DIR",
         type=Path,
-        help=f"Paperstore backend root (default: ${WORKSPACE_ENV_VAR} or ./data).",
+        help=f"Paperstore backend root (default: ${WORKSPACE_ENV_VAR}).",
     )
     args = parser.parse_args()
 
@@ -71,7 +71,10 @@ def main() -> int:
         parser.print_help()
         return 0
 
-    store = SqliteBackend(args.workspace_dir)
+    if args.workspace_dir is None:
+        store = SqliteBackend.from_env()
+    else:
+        store = SqliteBackend(args.workspace_dir)
 
     if args.targets == ["all"]:
         print("Discovering available years from open-std.org...")

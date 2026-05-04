@@ -7,7 +7,7 @@
 # Official repository: https://github.com/cppalliance/paperlint
 #
 
-"""Paperflow CLI - WG21 paper ingestion, conversion, and evaluation.
+"""Paperflow CLI - WG21 paper ingestion and conversion.
 
 Commands:
 
@@ -15,10 +15,9 @@ Commands:
     paperflow mailing all              # scrape all years >= 2011
     paperflow download 2026            # download source files
     paperflow download P3642R4         # download a specific paper
-    paperflow convert 2026             # convert to markdown (no LLM)
-    paperflow eval 2026                # LLM eval all papers in a year
-    paperflow eval P3642R4             # LLM eval a single paper
-    paperflow full 2026                # all four stages
+    paperflow convert 2026             # convert to markdown
+    paperflow convert P3642R4          # convert a specific paper
+    paperflow full 2026                # all three stages
     paperflow 2026                     # same as 'full 2026' (no-verb alias)
     paperflow full all                 # full pipeline for everything
 
@@ -26,8 +25,7 @@ Flags:
     --force / -f               Redo stage even if already complete
     --verify                   HEAD-check sources against Content-Length (download/full)
     --concurrency N            Parallel workers (default varies by command)
-    --discovery-passes N       LLM discovery passes (eval/full, default 3)
-    --workspace-dir DIR        Backend root (default: $PAPERFLOW_WORKSPACE or ./data)
+    --workspace-dir DIR        Backend root (default: $WG21_DATA_DIR)
     -v / -vv                   Increase log verbosity
 """
 
@@ -40,12 +38,11 @@ from pathlib import Path
 import paperlint.mailing as _mailing_cmd
 import paperlint.download as _download_cmd
 import paperlint.convert as _convert_cmd
-import paperlint.eval as _eval_cmd
 import paperlint.full as _full_cmd
 from paperlint.logutil import configure_paperlint_console_logging
-from paperstore import WORKSPACE_ENV_VAR, SqliteBackend, default_workspace_dir
+from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
 
-_SUBCOMMAND_NAMES = {"mailing", "download", "convert", "eval", "full"}
+_SUBCOMMAND_NAMES = {"mailing", "download", "convert", "full"}
 
 _EPILOG = """
 Examples:
@@ -53,12 +50,13 @@ Examples:
   paperflow mailing 2026           scrape index only
   paperflow download P3642R4       download one paper
   paperflow convert all            convert all staged-but-not-converted
-  paperflow eval all               eval all converted-but-not-evaled
   paperflow full all               full pipeline for all pending work
 """
 
 
-def _backend_for(workspace_dir: Path) -> SqliteBackend:
+def _backend_for(workspace_dir: Path | None) -> SqliteBackend:
+    if workspace_dir is None:
+        return SqliteBackend.from_env()
     workspace_dir.mkdir(parents=True, exist_ok=True)
     return SqliteBackend(workspace_dir)
 
@@ -71,7 +69,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(
         prog="paperflow",
-        description="WG21 paper ingestion, conversion, and LLM evaluation.",
+        description="WG21 paper ingestion and conversion.",
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -80,9 +78,9 @@ def main() -> int:
         "--output-dir",
         dest="workspace_dir",
         metavar="DIR",
-        default=default_workspace_dir(),
+        default=None,
         type=Path,
-        help=f"Backend root directory (default: ${WORKSPACE_ENV_VAR} or ./data).",
+        help=f"Backend root directory (default: ${WORKSPACE_ENV_VAR}).",
     )
     parser.add_argument(
         "-v",
@@ -94,8 +92,7 @@ def main() -> int:
 
     subparsers = parser.add_subparsers(dest="command")
 
-    # Register each command module's subparser and store a back-reference.
-    for mod in (_mailing_cmd, _download_cmd, _convert_cmd, _eval_cmd, _full_cmd):
+    for mod in (_mailing_cmd, _download_cmd, _convert_cmd, _full_cmd):
         p = mod.add_parser(subparsers)
         p.set_defaults(_mod=mod, _parser=p)
 
@@ -110,7 +107,7 @@ def main() -> int:
         parser.print_help()
         return 0
 
-    backend = _backend_for(Path(args.workspace_dir))
+    backend = _backend_for(args.workspace_dir)
     return args._mod.command(args, backend)
 
 

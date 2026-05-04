@@ -28,8 +28,7 @@ with `uv run`.
 tomd is the conversion engine behind `paperflow convert`. Drive it through
 the paperflow CLI; sources must be staged in a paperstore workspace first
 (run `paperflow download` or `paperflow mailing` as needed). Workspace dir
-defaults to `$PAPERFLOW_WORKSPACE` or `./data`; override with
-`--workspace-dir`.
+defaults to `$WG21_DATA_DIR`; override with `--workspace-dir`.
 
 ```
 paperflow convert P3642R4                       # one paper
@@ -108,8 +107,8 @@ content.
   manual in this release.
 - **Slide decks and standards drafts are detected and skipped.**
   Presentation-style PDFs (landscape pages smaller than standard paper) and
-  long C++ standard documents (>= 200 pages) raise so the orchestrator can
-  surface a partial-status evaluation rather than producing empty markdown.
+  long C++ standard documents (>= 200 pages) raise so the caller can report
+  the skip rather than producing empty markdown.
 
 ## Design
 

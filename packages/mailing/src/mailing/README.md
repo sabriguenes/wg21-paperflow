@@ -12,7 +12,7 @@ The split is deliberate: scrape is reused outside any storage context (one-off m
 
 ## CLI
 
-After `uv sync && source .venv/bin/activate` from the workspace root (or prefix with `uv run`). Workspace dir defaults to `$PAPERFLOW_WORKSPACE` or `./data`; override per command with `--workspace-dir`.
+After `uv sync && source .venv/bin/activate` from the workspace root (or prefix with `uv run`). Workspace dir is `$WG21_DATA_DIR` (required); override per command with `--workspace-dir`.
 
 ```
 # Default: fetch index + download every paper's source. Idempotent;
@@ -31,7 +31,7 @@ mailing 2026-04 -p P3642R4 -p P3700R0
 # Single paper (also idempotent unless --force)
 mailing 2026-04/P3642R4
 
-# Explicit workspace override (alternative to $PAPERFLOW_WORKSPACE)
+# Explicit workspace override (alternative to $WG21_DATA_DIR)
 mailing 2026-04 --workspace-dir ./scratch
 ```
 

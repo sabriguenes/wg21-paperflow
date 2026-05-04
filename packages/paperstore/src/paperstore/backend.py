@@ -85,18 +85,12 @@ class StorageBackend(ABC):
         """Persist the converted markdown. Atomic write. Returns path."""
 
     @abstractmethod
-    def write_meta_json(self, paper_id: str, meta: dict) -> Path:
+    def write_meta_json(self, paper_id: str, meta: dict) -> None:
         """Merge ``meta`` into the paper row.
 
         Only keys present in ``meta`` are written; columns set by
         ``put_source`` / ``write_paper_md`` are preserved when omitted.
-        Returns a local path callers can use for legacy on-disk meta.json
-        compatibility.
         """
-
-    @abstractmethod
-    def write_evaluation_json(self, paper_id: str, evaluation: dict) -> Path:
-        """Persist the per-paper evaluation deliverable. Returns the file path."""
 
     @abstractmethod
     def write_intermediate(self, paper_id: str, name: str, payload: Any) -> Path:
@@ -130,12 +124,12 @@ class StorageBackend(ABC):
         """Backfill DB rows from on-disk artifacts. Non-destructive.
 
         Scans the workspace for known artifact filenames (sources,
-        markdowns, evaluations) and fills the corresponding DB columns
-        for any file that isn't currently indexed. Existing non-empty
-        values are preserved.
+        markdowns) and fills the corresponding DB columns for any file
+        that isn't currently indexed. Existing non-empty values are
+        preserved.
 
         Returns counts of newly-indexed artifacts:
-        ``{"sources": N, "markdowns": M, "evaluations": K}``.
+        ``{"sources": N, "markdowns": M}``.
         Useful as a recovery tool when the DB is lost or out of sync
         with the workspace, and as the basis for an admin/management
         command.
@@ -167,25 +161,7 @@ class StorageBackend(ABC):
             paperstore.MissingPaperMdError: markdown not written.
         """
 
-    @abstractmethod
-    def get_evaluation(self, paper_id: str) -> dict:
-        """Return the per-paper evaluation deliverable.
-
-        Raises:
-            paperstore.MissingEvaluationError: evaluation not written.
-        """
-
-    @abstractmethod
-    def get_eval_status(self, paper_id: str) -> str | None:
-        """Return ``pipeline_status`` for ``paper_id`` without reading the JSON.
-
-        Returns ``None`` if no evals row exists OR the row's status is
-        empty (the two are indistinguishable to callers). Cheap relative
-        to :meth:`get_evaluation`: a single column read, no file I/O. Use
-        for idempotency filters that only need to know completeness.
-        """
-
-    # ---- legacy aliases (JsonBackend compat; removed in SqliteBackend) ----
+    # ---- legacy aliases ----
 
     def upsert_mailing_index(
         self, mailing_id: str, papers: list[dict]

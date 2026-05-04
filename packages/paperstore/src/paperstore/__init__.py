@@ -18,7 +18,6 @@ from urllib.request import url2pathname
 
 from paperstore.backend import StorageBackend
 from paperstore.errors import (
-    MissingEvaluationError,
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperError,
@@ -28,16 +27,22 @@ from paperstore.errors import (
 )
 from paperstore.sqlite_backend import SqliteBackend
 
-WORKSPACE_ENV_VAR = "PAPERFLOW_WORKSPACE"
+WORKSPACE_ENV_VAR = "WG21_DATA_DIR"
 
 
 def default_workspace_dir() -> Path:
-    """Resolve the default workspace path: ``$PAPERFLOW_WORKSPACE`` or ``./data``.
+    """Resolve the workspace path from ``$WG21_DATA_DIR``.
 
-    Empty or unset env var yields ``./data`` (cwd-relative).
+    Raises :class:`EnvironmentError` when the variable is unset or empty.
     """
     env = os.environ.get(WORKSPACE_ENV_VAR, "").strip()
-    return Path(env) if env else Path("./data")
+    if not env:
+        raise EnvironmentError(
+            f"{WORKSPACE_ENV_VAR} is not set. "
+            "Set it to the directory where paperflow stores its data.\n"
+            f"  export {WORKSPACE_ENV_VAR}=/path/to/wg21-data"
+        )
+    return Path(env)
 
 
 def from_uri(
@@ -88,7 +93,6 @@ __all__ = [
     "MissingMetaError",
     "MissingSourceError",
     "MissingPaperMdError",
-    "MissingEvaluationError",
     "MissingMailingIndexError",
     "from_uri",
     "default_workspace_dir",

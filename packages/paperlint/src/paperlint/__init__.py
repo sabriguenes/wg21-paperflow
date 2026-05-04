@@ -7,7 +7,7 @@
 # Official repository: https://github.com/cppalliance/paperlint
 #
 
-"""Paperlint -- WG21 C++ standards paper evaluation pipeline."""
+"""Paperlint -- WG21 C++ standards paper ingestion and conversion."""
 
 from importlib.metadata import PackageNotFoundError, version
 

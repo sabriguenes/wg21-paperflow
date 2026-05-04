@@ -1,7 +1,7 @@
 [project]
 name = "wg21-paperflow"
 version = "0.2.0"
-description = "WG21 paperflow monorepo: paperstore + mailing + tomd + paperlint"
+description = "WG21 paper ingestion and conversion: paperstore + mailing + tomd + paperlint"
 requires-python = ">=3.12"
 license = {text = "BSL-1.0"}
 authors = [{name = "Sergio DuBois", email = "sentientsergio@gmail.com"}]
@@ -44,5 +44,5 @@ testpaths = [
 #         assert on the side-effected object instead of the return value.
 #   E741: use single-letter `l` as a stand-in for `line` in tight scopes.
 #   E402: insert sys.path before importing the package under test when run
-#         as a script (test_suppress, test_emit).
+#         as a script (test_emit).
 "**/tests/**" = ["F811", "F841", "E741", "E402"]
