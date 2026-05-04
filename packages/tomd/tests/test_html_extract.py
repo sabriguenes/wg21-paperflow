@@ -2,7 +2,7 @@
 
 from tomd.lib.html.extract import (
     parse_html, detect_generator, extract_metadata, strip_boilerplate,
-    _extract_generic_metadata, _extract_wg21_metadata, _match_field,
+    _extract_generic_metadata, _extract_wg21_metadata,
     _extract_mailto_email, _extract_mailto_authors, _enrich_reply_to,
     _extract_plaintext_authors,
 )

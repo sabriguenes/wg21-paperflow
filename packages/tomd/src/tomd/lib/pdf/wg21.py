@@ -94,7 +94,7 @@ def _parse_authors(lines: list[str]) -> list[str]:
     return parse_author_lines(
         lines,
         clean_line=_clean_author,
-        skip_line=lambda l: _is_label_line(l) or l.strip().isdigit(),
+        skip_line=lambda line: _is_label_line(line) or line.strip().isdigit(),
     )
 
 
