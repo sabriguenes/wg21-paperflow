@@ -28,7 +28,7 @@ def _seed(store: SqliteBackend, papers: list[dict]) -> None:
 def _stub_download(*, returns: dict[str, tuple[bytes, str]]):
     """Build a download_paper stub that returns canned content per paper id."""
 
-    def _impl(paper_id: str, *, source_url: str, timeout: float = 30.0):
+    async def _impl(paper_id: str, *, source_url: str, client=None, timeout: float = 30.0):
         return returns.get(paper_id)
 
     return _impl
@@ -44,7 +44,7 @@ def test_run_download_skips_already_staged_papers(tmp_path: Path, monkeypatch):
 
     calls: list[str] = []
 
-    def _record(paper_id: str, *, source_url: str, timeout: float = 30.0):
+    async def _record(paper_id: str, *, source_url: str, client=None, timeout: float = 30.0):
         calls.append(paper_id)
         return (b"%PDF-fresh", ".pdf")
 

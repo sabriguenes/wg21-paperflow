@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from mailing.download import content_length, download_paper
+from mailing.download import content_length, default_client, download_paper
 from mailing.scrape import (
     discover_years,
     fetch_all_mailings_for_year,
@@ -23,6 +23,7 @@ from mailing.scrape import (
 
 __all__ = [
     "content_length",
+    "default_client",
     "discover_years",
     "download_paper",
     "fetch_all_mailings_for_year",

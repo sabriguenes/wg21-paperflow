@@ -15,6 +15,8 @@ import sys
 
 from paperstore.backend import StorageBackend
 
+from paperlint.jobs import DEFAULT_DOWNLOAD_CONCURRENCY
+
 
 def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subparsers.add_parser(
@@ -45,9 +47,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParse
     p.add_argument(
         "--concurrency",
         type=int,
-        default=10,
+        default=DEFAULT_DOWNLOAD_CONCURRENCY,
         metavar="N",
-        help="Number of concurrent downloads (default: 10).",
+        help=f"Number of concurrent downloads (default: {DEFAULT_DOWNLOAD_CONCURRENCY}).",
     )
     return p
 

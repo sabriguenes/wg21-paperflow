@@ -11,8 +11,8 @@
 
 Each ``run_*`` function is ``async def`` and returns a result dict with
 ``succeeded``, ``failed``, and ``skipped`` lists. Workers are coroutines
-(or ``asyncio.to_thread`` wrappers for CPU-bound work) that return plain
-result dicts - they never touch the storage backend. The main coroutine
+that return plain result dicts - they never touch the storage backend.
+CPU-bound work (tomd conversion) uses ``asyncio.to_thread``. The main coroutine
 receives each result via ``asyncio.as_completed`` and writes to the
 backend serially, avoiding any SQLite concurrency issues.
 
@@ -38,6 +38,7 @@ from paperstore.errors import (
 logger = logging.getLogger(__name__)
 
 MAILING_EARLIEST_YEAR = 2011
+DEFAULT_DOWNLOAD_CONCURRENCY = 8
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +166,7 @@ async def run_download(
     *,
     force: bool = False,
     verify: bool = False,
-    concurrency: int = 10,
+    concurrency: int = DEFAULT_DOWNLOAD_CONCURRENCY,
     on_total: Callable[[int], None] | None = None,
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
@@ -175,7 +176,7 @@ async def run_download(
     attempted (after idempotency filtering). ``on_progress`` is invoked
     once per task completion with the worker's result dict.
     """
-    from mailing.download import content_length, download_paper
+    from mailing.download import content_length, default_client, download_paper
 
     target_type = _validate_targets(targets)
     all_papers = _papers_from_scope(targets, target_type, backend)
@@ -194,62 +195,62 @@ async def run_download(
 
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def _one(paper: dict) -> dict:
-        pid = paper["paper_id"]
-        url = paper.get("url", "")
-        if not url:
-            return {"paper_id": pid, "status": "skipped", "reason": "no_url"}
-        async with semaphore:
-            if verify and paper.get("source_file"):
-                cl = content_length(url)
-                if cl is not None:
-                    try:
-                        existing_size = Path(paper["source_file"]).stat().st_size
-                    except FileNotFoundError:
-                        existing_size = None
-                    if existing_size == cl:
-                        return {"paper_id": pid, "status": "skipped", "reason": "verified_match"}
-            try:
-                fetched = await asyncio.to_thread(
-                    download_paper, pid, source_url=url
+    async with default_client() as http:
+
+        async def _one(paper: dict) -> dict:
+            pid = paper["paper_id"]
+            url = paper.get("url", "")
+            if not url:
+                return {"paper_id": pid, "status": "skipped", "reason": "no_url"}
+            async with semaphore:
+                if verify and paper.get("source_file"):
+                    cl = await content_length(url, client=http)
+                    if cl is not None:
+                        try:
+                            existing_size = Path(paper["source_file"]).stat().st_size
+                        except FileNotFoundError:
+                            existing_size = None
+                        if existing_size == cl:
+                            return {"paper_id": pid, "status": "skipped", "reason": "verified_match"}
+                try:
+                    fetched = await download_paper(pid, source_url=url, client=http)
+                    if fetched is None:
+                        return {"paper_id": pid, "status": "skipped", "reason": "no_url"}
+                    content, suffix = fetched
+                    return {
+                        "paper_id": pid,
+                        "content": content,
+                        "suffix": suffix,
+                        "status": "ok",
+                    }
+                except Exception as exc:
+                    logger.exception("Download failed for %s", pid)
+                    return {"paper_id": pid, "status": "error", "error": str(exc)}
+
+        tasks = [asyncio.create_task(_one(p)) for p in to_process]
+        succeeded = []
+        failed = []
+        to_process_ids = {p["paper_id"] for p in to_process}
+        skipped_papers = [{"paper_id": p["paper_id"], "reason": "already_staged"}
+                          for p in all_papers if p["paper_id"] not in to_process_ids]
+
+        for coro in asyncio.as_completed(tasks):
+            result = await coro
+            if result["status"] == "ok":
+                backend.put_source(
+                    result["paper_id"], result["content"], suffix=result["suffix"]
                 )
-                if fetched is None:
-                    return {"paper_id": pid, "status": "skipped", "reason": "no_url"}
-                content, suffix = fetched
-                return {
-                    "paper_id": pid,
-                    "content": content,
-                    "suffix": suffix,
-                    "status": "ok",
-                }
-            except Exception as exc:
-                logger.exception("Download failed for %s", pid)
-                return {"paper_id": pid, "status": "error", "error": str(exc)}
-
-    tasks = [asyncio.create_task(_one(p)) for p in to_process]
-    succeeded = []
-    failed = []
-    to_process_ids = {p["paper_id"] for p in to_process}
-    skipped_papers = [{"paper_id": p["paper_id"], "reason": "already_staged"}
-                      for p in all_papers if p["paper_id"] not in to_process_ids]
-
-    for coro in asyncio.as_completed(tasks):
-        result = await coro
-        if result["status"] == "ok":
-            backend.put_source(
-                result["paper_id"], result["content"], suffix=result["suffix"]
-            )
-            succeeded.append(result["paper_id"])
-        elif result["status"] == "skipped":
-            skipped_papers.append(result)
-        else:
-            failed.append(result)
-        if on_progress is not None:
-            try:
-                on_progress(result)
-            except Exception:
-                logger.warning("on_progress progress hook raised; disabling for remainder of run", exc_info=True)
-                on_progress = None
+                succeeded.append(result["paper_id"])
+            elif result["status"] == "skipped":
+                skipped_papers.append(result)
+            else:
+                failed.append(result)
+            if on_progress is not None:
+                try:
+                    on_progress(result)
+                except Exception:
+                    logger.warning("on_progress progress hook raised; disabling for remainder of run", exc_info=True)
+                    on_progress = None
 
     return {"succeeded": succeeded, "skipped": skipped_papers, "failed": failed}
 
@@ -431,7 +432,7 @@ async def run_full(
     *,
     force: bool = False,
     verify: bool = False,
-    concurrency: int = 10,
+    concurrency: int = DEFAULT_DOWNLOAD_CONCURRENCY,
     current_year: str | None = None,
 ) -> dict:
     """Chain mailing -> download -> convert for the given targets."""

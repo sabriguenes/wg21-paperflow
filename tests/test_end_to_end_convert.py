@@ -9,15 +9,16 @@
 
 """End-to-end: mailing.download -> tomd.api.convert -> paperstore artifacts.
 
-Stubs ``httpx.Client`` so the test runs hermetically against a tomd fixture PDF.
+Stubs ``httpx.AsyncClient`` so the test runs hermetically against a tomd fixture PDF.
 This is the only cross-package test in the workspace; per-package suites cover
 their own surfaces.
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from mailing import download as mailing_download
 from paperstore.testing import store  # noqa: F401  (re-exports pytest fixture)
@@ -39,11 +40,11 @@ class _FakeResp:
         return None
 
 
-def _make_mock_client(content: bytes) -> MagicMock:
-    mock_client = MagicMock()
-    mock_client.__enter__ = MagicMock(return_value=mock_client)
-    mock_client.__exit__ = MagicMock(return_value=False)
-    mock_client.get.return_value = _FakeResp(content)
+def _make_mock_client(content: bytes) -> AsyncMock:
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = AsyncMock(return_value=_FakeResp(content))
     return mock_client
 
 
@@ -64,11 +65,11 @@ def test_end_to_end_convert(store):
         ],
     )
 
-    with patch("mailing.download.httpx.Client", return_value=_make_mock_client(pdf_bytes)):
-        fetched = mailing_download.download_paper(
+    with patch("mailing.download.httpx.AsyncClient", return_value=_make_mock_client(pdf_bytes)):
+        fetched = asyncio.run(mailing_download.download_paper(
             paper_id,
             source_url="https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2026/p1112r4.pdf",
-        )
+        ))
     assert fetched is not None
     content, suffix = fetched
     source_path = store.put_source(paper_id, content, suffix=suffix)
