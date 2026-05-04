@@ -42,13 +42,6 @@ def test_get_meta_from_upserted_row(tmp_path: Path):
     assert store.get_meta("P1")["title"] == "from mailing"
 
 
-def test_get_meta_updated_by_write_meta_json(tmp_path: Path):
-    store = SqliteBackend(tmp_path)
-    store.upsert_year("2026", [{"paper_id": "P1", "title": "original"}])
-    store.write_meta_json("P1", {"title": "updated", "year": "2026"})
-    assert store.get_meta("P1")["title"] == "updated"
-
-
 def test_get_meta_missing_raises(tmp_path: Path):
     store = SqliteBackend(tmp_path)
     with pytest.raises(MissingMetaError):

@@ -295,46 +295,6 @@ class SqliteBackend(StorageBackend):
         self.record_markdown(pid, final_path)
         return final_path
 
-    def write_meta_json(self, paper_id: str, meta: dict) -> None:
-        """Merge ``meta`` into the papers row, leaving omitted columns untouched.
-
-        Only columns explicitly present in ``meta`` are written, so callers
-        that omit ``source_file`` / ``markdown_path`` will not clobber values
-        previously set by ``put_source`` / ``write_paper_md``.
-        """
-        pid = paper_id.strip().upper()
-        column_map = {
-            "year": "year",
-            "title": "title",
-            "target_group": "target_group",
-            "intent": "intent",
-            "url": "url",
-            "document_date": "document_date",
-            "mailing_date": "mailing_date",
-            "source_file": "source_file",
-            "markdown_path": "markdown_path",
-        }
-        fields: dict[str, Any] = {}
-        for key, col in column_map.items():
-            if key in meta:
-                value = meta[key]
-                fields[col] = "" if value is None else value
-        if "authors" in meta:
-            authors = meta.get("authors") or []
-            fields["authors"] = (
-                json.dumps(authors) if isinstance(authors, list) else str(authors)
-            )
-        with self._conn:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
-            )
-            if fields:
-                cols = ", ".join(f"{k} = ?" for k in fields)
-                vals = list(fields.values()) + [pid]
-                self._conn.execute(
-                    f"UPDATE papers SET {cols} WHERE paper_id = ?", vals
-                )
-
     def write_intermediate(self, paper_id: str, name: str, payload: Any) -> Path:
         """Write an intermediate artifact JSON to disk atomically."""
         pid = paper_id.strip().upper()

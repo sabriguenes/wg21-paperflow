@@ -121,24 +121,6 @@ def test_upsert_year_preserves_source_file(store: SqliteBackend):
     assert meta["source_file"] == str(source_path)
 
 
-def test_write_meta_json_preserves_source_and_markdown(store: SqliteBackend):
-    """write_meta_json must not clobber source_file/markdown_path on omission."""
-    source_path = store.put_source("P1", b"bytes", suffix=".pdf")
-    md_path = store.write_paper_md("P1", "# body\n")
-    store.write_meta_json("P1", {"title": "T", "year": "2026"})
-    meta = store.get_meta("P1")
-    assert meta["title"] == "T"
-    assert meta["source_file"] == str(source_path)
-    assert meta["markdown_path"] == str(md_path)
-
-
-def test_write_meta_json_can_set_source_file_when_provided(store: SqliteBackend):
-    """write_meta_json still writes columns the caller explicitly supplies."""
-    store.write_meta_json("P1", {"title": "T", "source_file": "/tmp/explicit.pdf"})
-    meta = store.get_meta("P1")
-    assert meta["source_file"] == "/tmp/explicit.pdf"
-
-
 def test_close_is_idempotent(tmp_path: Path):
     backend = SqliteBackend(tmp_path)
     backend.close()
@@ -235,21 +217,6 @@ def test_write_paper_md_rolls_back_on_sql_failure(
         store.get_meta("P1")
 
 
-def test_write_meta_json_rolls_back_on_sql_failure(store: SqliteBackend):
-    """A failed UPDATE leaves the row's prior values intact."""
-    store.upsert_year("2026", [{"paper_id": "P1", "title": "original"}])
-    real = store._conn
-    store._conn = _FailingConn(real, fail_on_nth=2)
-    try:
-        with pytest.raises(sqlite3.OperationalError, match="simulated"):
-            store.write_meta_json("P1", {"title": "updated", "year": "2027"})
-    finally:
-        store._conn = real
-    meta = store.get_meta("P1")
-    assert meta["title"] == "original"
-    assert meta["year"] == "2026"
-
-
 def test_reconcile_empty_workspace(store: SqliteBackend):
     """Empty workspace is a clean no-op."""
     assert store.reconcile() == {"sources": 0, "markdowns": 0}
@@ -341,13 +308,6 @@ def test_resolve_year_for_paper_case_insensitive(store: SqliteBackend):
 def test_get_meta_missing_raises(store: SqliteBackend):
     with pytest.raises(MissingMetaError):
         store.get_meta("NOPE")
-
-
-def test_write_meta_json_upserts(store: SqliteBackend):
-    store.write_meta_json("P1", {"title": "Hello", "year": "2026"})
-    meta = store.get_meta("P1")
-    assert meta["title"] == "Hello"
-    assert meta["year"] == "2026"
 
 
 def test_authors_roundtrip_as_list(store: SqliteBackend):

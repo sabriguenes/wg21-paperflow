@@ -85,14 +85,6 @@ class StorageBackend(ABC):
         """Persist the converted markdown. Atomic write. Returns path."""
 
     @abstractmethod
-    def write_meta_json(self, paper_id: str, meta: dict) -> None:
-        """Merge ``meta`` into the paper row.
-
-        Only keys present in ``meta`` are written; columns set by
-        ``put_source`` / ``write_paper_md`` are preserved when omitted.
-        """
-
-    @abstractmethod
     def write_intermediate(self, paper_id: str, name: str, payload: Any) -> Path:
         """Persist a labeled intermediate artifact (e.g. ``1-findings``).
 
@@ -184,8 +176,8 @@ class StorageBackend(ABC):
         return self.list_all_paper_ids()
 
     def patch_meta(self, paper_id: str, fields: dict) -> None:
-        """Deprecated: internal implementation detail. Use specific write methods."""
+        """Deprecated: internal implementation detail."""
         raise NotImplementedError(
             "patch_meta is not part of the public API. "
-            "Use write_meta_json or specific update methods."
+            "Use upsert_year or specific update methods."
         )
