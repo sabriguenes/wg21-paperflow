@@ -5,7 +5,7 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Tests for the async ``paperlint.jobs.run_download`` orchestrator.
+"""Tests for the async ``cli.jobs.run_download`` orchestrator.
 
 Stubs ``mailing.download.download_paper`` so the tests run hermetically -
 no httpx, no network. The goal is to pin the orchestration contract:
@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from paperlint import jobs
+from cli import jobs
 from paperstore import SqliteBackend
 
 

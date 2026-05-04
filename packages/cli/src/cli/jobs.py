@@ -279,8 +279,8 @@ async def run_convert(
     attempted (after idempotency filtering). ``on_progress`` is invoked
     once per task completion with the worker's result dict.
     """
-    from paperlint.orchestrator import convert_one_paper
-    from paperlint.models import Paper
+    from cli.orchestrator import convert_one_paper
+    from cli.models import Paper
 
     target_type = _validate_targets(targets)
     all_papers = _papers_from_scope(targets, target_type, backend)

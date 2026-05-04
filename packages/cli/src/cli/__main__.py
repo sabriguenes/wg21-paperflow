@@ -35,11 +35,11 @@ import argparse
 import sys
 from pathlib import Path
 
-import paperlint.mailing as _mailing_cmd
-import paperlint.download as _download_cmd
-import paperlint.convert as _convert_cmd
-import paperlint.full as _full_cmd
-from paperlint.logutil import configure_paperlint_console_logging
+import cli.mailing as _mailing_cmd
+import cli.download as _download_cmd
+import cli.convert as _convert_cmd
+import cli.full as _full_cmd
+from cli.logutil import configure_paperlint_console_logging
 from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
 
 _SUBCOMMAND_NAMES = {"mailing", "download", "convert", "full"}

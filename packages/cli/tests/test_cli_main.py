@@ -7,7 +7,7 @@
 
 """Smoke tests for the ``paperflow`` CLI entry point.
 
-These run the package as a script (``python -m paperlint``) so they
+These run the package as a script (``python -m cli``) so they
 exercise the same code path users hit. The goal is to catch import
 errors, broken subcommand registration, or argparse setup regressions
 before they reach a release.
@@ -23,7 +23,7 @@ import pytest
 
 def _run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "paperlint", *args],
+        [sys.executable, "-m", "cli", *args],
         capture_output=True,
         text=True,
     )

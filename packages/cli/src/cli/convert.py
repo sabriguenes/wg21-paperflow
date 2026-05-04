@@ -85,8 +85,8 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
 
 
 def _convert_command(args: argparse.Namespace, backend: StorageBackend) -> int:
-    from paperlint.jobs import run_convert
-    from paperlint.progress import progress_callbacks
+    from cli.jobs import run_convert
+    from cli.progress import progress_callbacks
 
     progress_ctx, on_total, on_progress = progress_callbacks("Converting")
 
@@ -114,7 +114,7 @@ def _convert_command(args: argparse.Namespace, backend: StorageBackend) -> int:
 
 
 def _qa_command(args: argparse.Namespace, backend: StorageBackend) -> int:
-    from paperlint.jobs import run_qa
+    from cli.jobs import run_qa
 
     result = run_qa(
         args.targets,

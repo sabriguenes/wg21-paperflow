@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from paperlint import jobs
-from paperlint.models import ConvertResult
+from cli import jobs
+from cli.models import ConvertResult
 from paperstore.testing import store  # noqa: F401  (pytest fixture)
 
 
@@ -51,7 +51,7 @@ def test_run_convert_write_prompts_gate(
     store, tmp_path: Path, monkeypatch, write_prompts: bool, expect_prompts_file: bool
 ):
     monkeypatch.setattr(
-        "paperlint.orchestrator.convert_one_paper", _stub_convert
+        "cli.orchestrator.convert_one_paper", _stub_convert
     )
 
     pid = _seed_paper_with_source(store)

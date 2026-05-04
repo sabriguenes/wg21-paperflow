@@ -5,7 +5,7 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Logging wiring for paperlint.
+"""Logging wiring for the paperflow CLI.
 
 Two handlers live here:
 
@@ -24,12 +24,12 @@ import os
 import sys
 from pathlib import Path
 
-_LOGGER_NAME = "paperlint"
+_LOGGER_NAME = "cli"
 _pwl_file_handler: logging.FileHandler | None = None
 _pwl_console_handler: logging.StreamHandler | None = None
 
 
-def get_paperlint_logger() -> logging.Logger:
+def get_cli_logger() -> logging.Logger:
     return logging.getLogger(_LOGGER_NAME)
 
 
@@ -42,7 +42,7 @@ def _level_for_verbosity(verbosity: int) -> int:
 
 
 def configure_paperlint_console_logging(verbosity: int = 0) -> None:
-    """Attach a stderr stream handler to the paperlint logger. Idempotent per process."""
+    """Attach a stderr stream handler to the cli logger. Idempotent per process."""
     global _pwl_console_handler
     if _pwl_console_handler is not None:
         return
@@ -51,7 +51,7 @@ def configure_paperlint_console_logging(verbosity: int = 0) -> None:
     h.setLevel(level)
     h.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     _pwl_console_handler = h
-    log = get_paperlint_logger()
+    log = get_cli_logger()
     if log.level == logging.NOTSET or log.level > level:
         log.setLevel(level)
     log.addHandler(h)
@@ -76,7 +76,7 @@ def configure_paperlint_file_logging_if_needed(workspace: Path | None) -> None:
         "true",
         "yes",
     ):
-        path = str(Path(workspace) / "paperlint.log")
+        path = str(Path(workspace) / "paperflow.log")
     if not path:
         return
     p = Path(path)
@@ -84,9 +84,9 @@ def configure_paperlint_file_logging_if_needed(workspace: Path | None) -> None:
     h = logging.FileHandler(p, encoding="utf-8")
     h.setLevel(logging.DEBUG)
     h.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s [paperlint] %(message)s")
+        logging.Formatter("%(asctime)s %(levelname)s [paperflow] %(message)s")
     )
     _pwl_file_handler = h
-    log = get_paperlint_logger()
+    log = get_cli_logger()
     log.setLevel(logging.DEBUG)
     log.addHandler(h)

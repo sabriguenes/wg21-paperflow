@@ -51,7 +51,7 @@ def test_paperflow_convert_qa_scores_pre_converted_md(store, tmp_path: Path):
     qa_json = tmp_path / "qa.json"
     result = subprocess.run(
         [
-            sys.executable, "-m", "paperlint", "--workspace-dir", str(tmp_path),
+            sys.executable, "-m", "cli", "--workspace-dir", str(tmp_path),
             "convert", "2026", "--qa", "--qa-json", str(qa_json),
         ],
         capture_output=True, text=True, check=False,
@@ -69,7 +69,7 @@ def test_paperflow_convert_qa_skips_papers_without_md(store, tmp_path: Path):
 
     result = subprocess.run(
         [
-            sys.executable, "-m", "paperlint", "--workspace-dir", str(tmp_path),
+            sys.executable, "-m", "cli", "--workspace-dir", str(tmp_path),
             "convert", "2026", "--qa",
         ],
         capture_output=True, text=True, check=False,

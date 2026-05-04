@@ -15,7 +15,7 @@ import sys
 
 from paperstore.backend import StorageBackend
 
-from paperlint.jobs import DEFAULT_DOWNLOAD_CONCURRENCY
+from cli.jobs import DEFAULT_DOWNLOAD_CONCURRENCY
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -55,7 +55,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParse
 
 
 def command(args: argparse.Namespace, backend: StorageBackend) -> int:
-    from paperlint.jobs import run_full
+    from cli.jobs import run_full
     results = asyncio.run(run_full(
         args.targets,
         backend,

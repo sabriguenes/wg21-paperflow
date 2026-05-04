@@ -4,13 +4,13 @@
 # Distributed under the Boost Software License, Version 1.0.
 #
 
-"""Shape tests for the output-schema dataclasses in paperlint.models."""
+"""Shape tests for the output-schema dataclasses in cli.models."""
 
 from __future__ import annotations
 
 from dataclasses import fields
 
-from paperlint.models import (
+from cli.models import (
     Paper,
 )
 

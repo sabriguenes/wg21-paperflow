@@ -7,7 +7,7 @@
 # Official repository: https://github.com/cppalliance/paperlint
 #
 
-"""Core data models for paperlint.
+"""Core data models for the paperflow CLI.
 
 ``Paper`` is the canonical in-memory representation of a row in the ``papers``
 table. ``ConvertResult`` is the output of a single tomd conversion pass.
@@ -59,7 +59,7 @@ class Paper:
 class ConvertResult:
     """Output of a single tomd conversion pass for one paper.
 
-    Returned by :func:`paperlint.orchestrator.convert_one_paper`. The
+    Returned by :func:`cli.orchestrator.convert_one_paper`. The
     worker performs no I/O beyond reading the source file; the main
     coroutine persists ``markdown`` and ``prompts`` through the storage
     backend.

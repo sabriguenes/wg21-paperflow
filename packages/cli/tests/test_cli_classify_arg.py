@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from paperlint.jobs import _validate_targets
+from cli.jobs import _validate_targets
 
 
 def test_all_target():

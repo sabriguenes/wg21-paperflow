@@ -5,7 +5,7 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Tests for the ``force`` flag on ``paperlint.jobs.run_mailing``."""
+"""Tests for the ``force`` flag on ``cli.jobs.run_mailing``."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
-from paperlint.jobs import run_mailing
+from cli.jobs import run_mailing
 from paperstore import SqliteBackend
 
 

@@ -54,7 +54,7 @@ uv run pytest
 - **paperstore** - SQLite storage backend (`SqliteBackend`). All metadata in `paperstore.db`; source files and markdown in the `paperstore/` subdirectory.
 - **mailing** - Scrapes the open-std.org mailing index and downloads paper sources.
 - **tomd** - Converts paper PDFs and HTML to clean markdown.
-- **paperlint** - Ingestion and conversion CLI (`paperflow`).
+- **cli** - Ingestion and conversion CLI (`paperflow`).
 
 ## License
 

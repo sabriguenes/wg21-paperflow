@@ -136,7 +136,7 @@ cppalliance/wg21-paperflow/   (public - users clone this to replicate)
 │   ├── mailing/              # scrape open-std.org, download paper sources
 │   ├── tomd/                 # PDF/HTML -> Markdown converter
 │   ├── paperstore/           # storage abstraction (SqliteBackend)
-│   └── paperlint/            # ingestion + conversion CLI (paperflow)
+│   └── cli/                  # ingestion + conversion CLI (paperflow)
 ├── tests/                    # cross-package integration tests
 └── DESIGN.md                 # this file
 ```
@@ -151,7 +151,7 @@ How `wg21-website` (private) calls into `cppalliance/wg21-paperflow` (public):
 
 ```python
 # In wg21-website (private):
-from paperlint.orchestrator import convert_one_paper
+from cli.orchestrator import convert_one_paper
 from mailing.scrape import fetch_papers_for_mailing
 
 @app.task

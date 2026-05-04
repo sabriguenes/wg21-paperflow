@@ -4,8 +4,8 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
+    "cli",
     "mailing",
-    "paperlint",
     "paperstore",
     "tomd",
     "wg21-paperflow",
@@ -117,6 +117,25 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7a/1d/29d32e0fb40864b1f878c7f5a0b343ae676c6e2b271a2d55cc3a152391da/charset_normalizer-3.4.7-cp314-cp314t-win_amd64.whl", hash = "sha256:03853ed82eeebbce3c2abfdbc98c96dc205f32a79627688ac9a27370ea61a49c", size = 174168, upload-time = "2026-04-02T09:27:49.795Z" },
     { url = "https://files.pythonhosted.org/packages/de/32/d92444ad05c7a6e41fb2036749777c163baf7a0301a040cb672d6b2b1ae9/charset_normalizer-3.4.7-cp314-cp314t-win_arm64.whl", hash = "sha256:c35abb8bfff0185efac5878da64c45dafd2b37fb0383add1be155a763c1f083d", size = 153018, upload-time = "2026-04-02T09:27:51.116Z" },
     { url = "https://files.pythonhosted.org/packages/db/8f/61959034484a4a7c527811f4721e75d02d653a35afb0b6054474d8185d4c/charset_normalizer-3.4.7-py3-none-any.whl", hash = "sha256:3dce51d0f5e7951f8bb4900c257dad282f49190fdbebecd4ba99bcc41fef404d", size = 61958, upload-time = "2026-04-02T09:28:37.794Z" },
+]
+
+[[package]]
+name = "cli"
+version = "0.2.1"
+source = { editable = "packages/cli" }
+dependencies = [
+    { name = "mailing" },
+    { name = "paperstore" },
+    { name = "rich" },
+    { name = "tomd" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mailing", editable = "packages/mailing" },
+    { name = "paperstore", editable = "packages/paperstore" },
+    { name = "rich" },
+    { name = "tomd", editable = "packages/tomd" },
 ]
 
 [[package]]
@@ -251,25 +270,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d7/f1/e7a6dd94a8d4a5626c03e4e99c87f241ba9e350cd9e6d75123f992427270/packaging-26.2.tar.gz", hash = "sha256:ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661", size = 228134, upload-time = "2026-04-24T20:15:23.917Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl", hash = "sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e", size = 100195, upload-time = "2026-04-24T20:15:22.081Z" },
-]
-
-[[package]]
-name = "paperlint"
-version = "0.2.1"
-source = { editable = "packages/paperlint" }
-dependencies = [
-    { name = "mailing" },
-    { name = "paperstore" },
-    { name = "rich" },
-    { name = "tomd" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "mailing", editable = "packages/mailing" },
-    { name = "paperstore", editable = "packages/paperstore" },
-    { name = "rich" },
-    { name = "tomd", editable = "packages/tomd" },
 ]
 
 [[package]]
@@ -444,8 +444,8 @@ name = "wg21-paperflow"
 version = "0.2.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "cli" },
     { name = "mailing" },
-    { name = "paperlint" },
     { name = "paperstore" },
     { name = "tomd" },
 ]
@@ -458,8 +458,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cli", editable = "packages/cli" },
     { name = "mailing", editable = "packages/mailing" },
-    { name = "paperlint", editable = "packages/paperlint" },
     { name = "paperstore", editable = "packages/paperstore" },
     { name = "tomd", editable = "packages/tomd" },
 ]

@@ -2,7 +2,7 @@
 
 ## Spellings
 
-- **PaperLint** (prose), **paperlint** (package), **paperflow** (CLI alias, system, repo)
+- **cli** (package), **paperflow** (CLI alias, system, repo)
 - `paperflow full` is the end-to-end command (mailing + download + convert); `paperflow` bare is an alias for it
 - **tomd** (lowercase always), **WG21** (no space)
 
@@ -13,7 +13,7 @@ packages/
   paperstore/   -> storage abstraction (SqliteBackend)
   mailing/      -> scrape open-std.org + download paper sources
   tomd/         -> PDF/HTML to Markdown
-  paperlint/    -> ingestion + conversion CLI; `paperflow full` is the end-to-end command, `paperflow` is its alias
+  cli/          -> ingestion + conversion CLI; `paperflow full` is the end-to-end command, `paperflow` is its alias
 tests/          -> cross-package integration test
 ```
 
@@ -53,7 +53,7 @@ paperflow          all
 - `all` processes every paper not already at the target stage (idempotent).
 - `full` / bare `paperflow` require the paper to be present in a local mailing index. Run `paperflow mailing` first.
 
-Each subcommand is implemented in its own module inside `packages/paperlint/src/paperlint/`:
+Each subcommand is implemented in its own module inside `packages/cli/src/cli/`:
 
 | Command | Module |
 |---|---|

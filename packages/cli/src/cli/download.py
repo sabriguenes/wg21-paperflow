@@ -15,7 +15,7 @@ import sys
 
 from paperstore.backend import StorageBackend
 
-from paperlint.jobs import DEFAULT_DOWNLOAD_CONCURRENCY
+from cli.jobs import DEFAULT_DOWNLOAD_CONCURRENCY
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -55,8 +55,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParse
 
 
 def command(args: argparse.Namespace, backend: StorageBackend) -> int:
-    from paperlint.jobs import run_download
-    from paperlint.progress import progress_callbacks
+    from cli.jobs import run_download
+    from cli.progress import progress_callbacks
 
     progress_ctx, on_total, on_progress = progress_callbacks("Downloading")
 

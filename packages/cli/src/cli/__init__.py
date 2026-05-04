@@ -7,11 +7,11 @@
 # Official repository: https://github.com/cppalliance/paperlint
 #
 
-"""Paperlint -- WG21 C++ standards paper ingestion and conversion."""
+"""Paperflow CLI -- WG21 C++ standards paper ingestion and conversion."""
 
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("paperlint")
+    __version__ = version("cli")
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"

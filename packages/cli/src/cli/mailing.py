@@ -49,7 +49,7 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
         args._parser.print_help()
         return 0
 
-    from paperlint.jobs import run_mailing
+    from cli.jobs import run_mailing
     result = asyncio.run(run_mailing(args.targets, backend, force=args.force))
 
     succeeded = result.get("succeeded", [])

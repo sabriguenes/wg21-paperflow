@@ -1,12 +1,14 @@
+/.pytest_cache
+__pycache__/
+.venv/
+
 .env
 .env.local
-.paperlint_cache/
-__pycache__/
+.cli_cache/
 *.pyc
 *.egg-info/
 dist/
 build/
-.venv/
 .venv_min/
 
 # macOS / Finder / AppleDouble

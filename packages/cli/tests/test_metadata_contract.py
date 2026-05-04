@@ -9,7 +9,7 @@ These are pure-function tests; no network, no LLM, no filesystem.
 
 import pytest
 
-from paperlint.jobs import _validate_targets
+from cli.jobs import _validate_targets
 from mailing.scrape import _infer_intent
 
 

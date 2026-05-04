@@ -7,7 +7,7 @@
 # Official repository: https://github.com/cppalliance/paperlint
 #
 
-"""Paperlint pipeline orchestrator.
+"""Paperflow pipeline orchestrator.
 
 Provides per-paper conversion via ``convert_one_paper`` and storage
 resolution via ``_resolve_storage``.
@@ -15,7 +15,7 @@ resolution via ``_resolve_storage``.
 
 from pathlib import Path
 
-from paperlint.models import ConvertResult, Paper
+from cli.models import ConvertResult, Paper
 from paperstore import SqliteBackend, StorageBackend
 from tomd.api import convert_paper as tomd_convert_paper
 
