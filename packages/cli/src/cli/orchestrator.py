@@ -4,34 +4,23 @@
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
-# Official repository: https://github.com/cppalliance/paperlint
+# Official repository: https://github.com/cppalliance/wg21-paperflow
 #
 
 """Paperflow pipeline orchestrator.
 
-Provides per-paper conversion via ``convert_one_paper`` and storage
-resolution via ``_resolve_storage``.
+Provides per-paper conversion via ``convert_one_paper``.
 """
 
 from pathlib import Path
 
 from cli.models import ConvertResult, Paper
-from paperstore import SqliteBackend, StorageBackend
+from paperstore import StorageBackend
 from tomd.api import convert_paper as tomd_convert_paper
 
 __all__ = [
     "convert_one_paper",
 ]
-
-
-def _resolve_storage(
-    workspace_dir: Path | None, storage: StorageBackend | None
-) -> StorageBackend:
-    if storage is not None:
-        return storage
-    if workspace_dir is None:
-        return SqliteBackend.from_env()
-    return SqliteBackend(workspace_dir)
 
 
 def convert_one_paper(paper: "Paper") -> "ConvertResult":

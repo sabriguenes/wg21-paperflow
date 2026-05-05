@@ -202,8 +202,8 @@ def collect_line_drawings(page) -> list[tuple[float, float, float, tuple]]:
                     x1 = max(p1.x, p2.x)
                     if x1 - x0 > _HORIZ_LINE_MIN_WIDTH:
                         lines.append((y, x0, x1, tuple(color)))
-    except Exception:
-        _log.debug("get_drawings() failed", exc_info=True)
+    except RuntimeError:
+        _log.warning("get_drawings() failed", exc_info=True)
     return lines
 
 

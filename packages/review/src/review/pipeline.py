@@ -65,6 +65,9 @@ _STEP_KEYS: list[tuple[str, type[BaseModel]]] = [
     ("Step 8 - Write Output", WriteOutputOutput),
 ]
 
+_VERIFY_CITATIONS_KEY = "Step 7 - Verify Citations"
+_WRITE_OUTPUT_KEY = "Step 8 - Write Output"
+
 
 @functools.cache
 def load_sections() -> dict[str, str]:
@@ -170,11 +173,16 @@ async def review_paper(
         for step_index, (key, response_model) in enumerate(_STEP_KEYS):
             step_body = secs[key]
             model_slot = _extract_model_slot(step_body)
-            model = slots[model_slot]
+            model = slots.get(model_slot)
+            if model is None:
+                raise ReviewError(
+                    f"Step '{key}' requests model slot '{model_slot}' "
+                    f"but available slots are: {sorted(slots)}"
+                )
             reads = _extract_reads(step_body)
             tools = _extract_tools(step_body)
 
-            if step_index == 7:
+            if key == _VERIFY_CITATIONS_KEY:
                 if state.surviving_findings is None or len(state.surviving_findings) > 0:
                     continue
 
@@ -220,10 +228,8 @@ async def review_paper(
             if stop_after is not None and step_index >= stop_after:
                 return ""
 
-            if step_index == 8:
+            if key == _WRITE_OUTPUT_KEY:
                 assert isinstance(output, WriteOutputOutput)
                 report = output.report
 
-    review_path = backend.write_review_md(pid, report)
-    logger.info("Review written to %s", review_path)
     return report

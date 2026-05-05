@@ -68,7 +68,7 @@ class BraveBackend(SearchBackend):
                 "Get a key at https://api-dashboard.search.brave.com/register"
             )
         self._api_key = key
-        self._client = httpx.AsyncClient()
+        self._client = httpx.AsyncClient(timeout=60.0)
         self._limiter = _TokenBucket(rate=50)
 
     async def search(

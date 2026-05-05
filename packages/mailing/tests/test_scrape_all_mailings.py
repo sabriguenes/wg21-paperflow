@@ -96,7 +96,7 @@ def test_fetch_papers_for_year_empty_year(monkeypatch):
 
 
 def test_discover_years_parses_root(monkeypatch):
-    import requests
+    import httpx
 
     class FakeResponse:
         status_code = 200
@@ -104,7 +104,7 @@ def test_discover_years_parses_root(monkeypatch):
         def raise_for_status(self):
             pass
 
-    monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse())
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResponse())
     years = discover_years()
     assert years == ["2024", "2025", "2026"]
 
@@ -127,7 +127,7 @@ def test_discover_years_parses_root_relative_hrefs(monkeypatch):
 
     Regression: the old absolute-only pattern returned ``[]`` against this layout.
     """
-    import requests
+    import httpx
 
     class FakeResponse:
         status_code = 200
@@ -135,6 +135,6 @@ def test_discover_years_parses_root_relative_hrefs(monkeypatch):
         def raise_for_status(self):
             pass
 
-    monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse())
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResponse())
     years = discover_years()
     assert years == ["1989", "2025", "2026"]

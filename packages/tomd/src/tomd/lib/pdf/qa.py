@@ -10,10 +10,13 @@ format-agnostic (works on PDF output, HTML output, or any Markdown)
 and prevents coupling between the scorer and the converter.
 """
 
+import contextlib
 import json
 import logging
+import os
 import re
 import sys
+import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -160,6 +163,26 @@ def _count_unfenced_code(paragraphs: list[dict]) -> int:
 
 
 _MOJIBAKE_BADNESS_THRESHOLD = 3
+
+_LONG_DOC_MIN_PARAGRAPHS = 10
+_UNCERTAIN_MAX_PENALTY = 20
+_UNCERTAIN_PENALTY_PER = 5
+_NO_HEADINGS_PENALTY = 25
+_NO_FRONT_MATTER_PENALTY = 10
+_UNFENCED_MINOR_PENALTY = 15
+_UNFENCED_PER_BLOCK = 5
+_UNFENCED_MAJOR_THRESHOLD = 20
+_UNFENCED_MAJOR_EXTRA = 15
+_UNFENCED_MAX_PENALTY = 30
+_NO_STRUCTURE_VARIETY_PENALTY = 10
+_MOJIBAKE_MAX_PENALTY = 20
+_MOJIBAKE_PENALTY_PER = 5
+_HEADING_SKIP_MAX_PENALTY = 15
+_HEADING_SKIP_PENALTY_PER = 5
+_QA_BATCH_TIMEOUT_SEC = 120
+_WORKER_POLL_INTERVAL = 0.5
+_NEEDS_REVIEW_THRESHOLD = 70
+_WORST_FILES_DISPLAY_LIMIT = 30
 
 
 _CODE_FENCE_RE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
@@ -330,9 +353,6 @@ def compute_metrics(md_text: str, file: str = "") -> QAMetrics:
     return m
 
 
-_LONG_DOC_PARAGRAPHS = 10
-
-
 def _score(m: QAMetrics) -> tuple[int, list[str]]:
     """Compute 0-100 quality score purely from Markdown structure."""
     score = 100
@@ -341,10 +361,10 @@ def _score(m: QAMetrics) -> tuple[int, list[str]]:
     if m.empty_output:
         return 0, ["empty output"]
 
-    is_long = m.paragraph_count >= _LONG_DOC_PARAGRAPHS
+    is_long = m.paragraph_count >= _LONG_DOC_MIN_PARAGRAPHS
 
     if m.uncertain_count > 0:
-        penalty = min(20, 5 * m.uncertain_count)
+        penalty = min(_UNCERTAIN_MAX_PENALTY, _UNCERTAIN_PENALTY_PER * m.uncertain_count)
         score -= penalty
         issues.append(f"{m.uncertain_count} uncertain regions")
 
@@ -352,24 +372,24 @@ def _score(m: QAMetrics) -> tuple[int, list[str]]:
         issues.append(f"{m.lossy_table_count} lossy tables")
 
     if m.heading_count == 0 and is_long:
-        score -= 25
+        score -= _NO_HEADINGS_PENALTY
         issues.append("no headings")
 
     if m.front_matter_count == 0 and is_long:
-        score -= 10
+        score -= _NO_FRONT_MATTER_PENALTY
         issues.append("no front matter")
 
-    if m.unfenced_code_lines > 5:
-        penalty = min(15, m.unfenced_code_lines)
-        if m.code_block_count == 0 and m.unfenced_code_lines > 20:
-            penalty = min(30, penalty + 15)
+    if m.unfenced_code_lines > _UNFENCED_PER_BLOCK:
+        penalty = min(_UNFENCED_MINOR_PENALTY, m.unfenced_code_lines)
+        if m.code_block_count == 0 and m.unfenced_code_lines > _UNFENCED_MAJOR_THRESHOLD:
+            penalty = min(_UNFENCED_MAX_PENALTY, penalty + _UNFENCED_MAJOR_EXTRA)
         score -= penalty
         issues.append(f"{m.unfenced_code_lines} unfenced code lines")
 
     has_structure = (m.heading_count > 0) + (m.code_block_count > 0) + \
                     (m.list_count > 0) + (m.table_count > 0)
     if is_long and has_structure <= 1:
-        score -= 10
+        score -= _NO_STRUCTURE_VARIETY_PENALTY
         issues.append(f"low variety ({has_structure} structural types)")
 
     # Mojibake: encoding corruption is always a conversion bug.
@@ -377,7 +397,7 @@ def _score(m: QAMetrics) -> tuple[int, list[str]]:
     # with a single corrupted paragraph.
     # Decision: plans/QA-001-extend-qa-scoring.md, Phase 2.
     if m.mojibake_count > 0:
-        penalty = min(20, 5 * m.mojibake_count)
+        penalty = min(_MOJIBAKE_MAX_PENALTY, _MOJIBAKE_PENALTY_PER * m.mojibake_count)
         score -= penalty
         issues.append(f"{m.mojibake_count} mojibake sequences")
 
@@ -387,7 +407,7 @@ def _score(m: QAMetrics) -> tuple[int, list[str]]:
     # as severe as encoding corruption (mojibake).
     # Decision: plans/QA-001-extend-qa-scoring.md, Phase 3.
     if m.heading_level_skips > 0:
-        penalty = min(15, 5 * m.heading_level_skips)
+        penalty = min(_HEADING_SKIP_MAX_PENALTY, _HEADING_SKIP_PENALTY_PER * m.heading_level_skips)
         score -= penalty
         issues.append(f"{m.heading_level_skips} heading level skips")
 
@@ -400,6 +420,7 @@ def _qa_one(item: tuple[str, str]) -> dict:
     try:
         m = compute_metrics(md_text, file=paper_id)
         return asdict(m)
+    # Batch robustness: one bad paper must not crash the run
     except Exception as exc:
         _log.error("QA failed for %s: %s", paper_id, exc)
         m = QAMetrics(file=paper_id, score=0,
@@ -415,7 +436,7 @@ def run_qa_report(
     items: list[tuple[str, str]],
     json_path: Path | None = None,
     workers: int = 1,
-    timeout: int = 120,
+    timeout: int = _QA_BATCH_TIMEOUT_SEC,
 ) -> None:
     """Score a batch of converted papers and print a ranked report.
 
@@ -454,6 +475,7 @@ def run_qa_report(
                         try:
                             d = f.result()
                             results.append(_qa_metrics_from_dict(d))
+                        # Batch robustness: one bad paper must not crash the run
                         except Exception as exc:
                             results.append(QAMetrics(
                                 file=pid, score=0,
@@ -474,7 +496,7 @@ def run_qa_report(
                     break
 
                 else:
-                    time.sleep(0.5)
+                    time.sleep(_WORKER_POLL_INTERVAL)
 
             pool.shutdown(wait=False, cancel_futures=True)
     else:
@@ -515,11 +537,11 @@ def run_qa_report(
         pct = 100 * count / total if total else 0
         print(f"  {label}: {count:>6}  ({pct:.1f}%)")
 
-    needs_review = sum(1 for r in results if r.score < 70)
-    print(f"\nFiles needing review (score < 70): {needs_review}")
-    print(f"Files probably OK (score >= 70):   {total - needs_review}")
+    needs_review = sum(1 for r in results if r.score < _NEEDS_REVIEW_THRESHOLD)
+    print(f"\nFiles needing review (score < {_NEEDS_REVIEW_THRESHOLD}): {needs_review}")
+    print(f"Files probably OK (score >= {_NEEDS_REVIEW_THRESHOLD}):   {total - needs_review}")
 
-    worst = [r for r in results if r.score < 100][:30]
+    worst = [r for r in results if r.score < 100][:_WORST_FILES_DISPLAY_LIMIT]
     if worst:
         print(f"\nWorst {len(worst)} files:")
         print(f"  {'Score':>5}  {'File':<40}  Issues")
@@ -534,5 +556,17 @@ def run_qa_report(
     if json_path is not None:
         rows = [asdict(r) for r in results]
         json_path.parent.mkdir(parents=True, exist_ok=True)
-        json_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        json_bytes = json.dumps(rows, indent=2).encode("utf-8")
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=json_path.parent, suffix=".tmp"
+        )
+        try:
+            os.write(tmp_fd, json_bytes)
+            os.close(tmp_fd)
+            os.replace(tmp_path, json_path)
+        except BaseException:
+            os.close(tmp_fd)
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
         print(f"\nDetailed metrics written to {json_path}")

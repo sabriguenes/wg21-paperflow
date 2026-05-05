@@ -25,6 +25,10 @@ _TITLE_SIZE_RATIO = 1.2
 # them downstream. Real WG21 section titles are 1-8 words.
 _HEADING_MAX_WORDS = 12
 
+_TITLE_MAX_LENGTH = 120
+_BODY_MARGIN_FRACTION = 0.1
+_BULLET_JOIN_MAX_CHARS = 3
+
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 # Quick-strip pattern for removing email addresses from reply-to values.
 # Intentionally broader than lib.EMAIL_RE which is for precise matching.
@@ -420,7 +424,7 @@ def structure_sections(sections: list[Section],
             is_section_num = bool(SECTION_NUM_RE.match(first_line))
             has_email = "@" in first_line
             is_date = bool(DATE_RE.match(first_line))
-            too_long = len(first_line) > 120
+            too_long = len(first_line) > _TITLE_MAX_LENGTH
 
             if is_large and (is_known or is_section_num):
                 title_found = True
@@ -510,7 +514,7 @@ def _get_body_margin(sections: list[Section]) -> float:
     if not x_counts:
         return 0.0
     total = sum(x_counts.values())
-    threshold = total * 0.1
+    threshold = total * _BODY_MARGIN_FRACTION
     for x in sorted(x_counts.keys()):
         if x_counts[x] >= threshold:
             return x
@@ -569,7 +573,7 @@ def _join_bullet_marker_lines(lines: list) -> list:
             result.append(line)
             i += 1
             continue
-        if (text and text[0] in BULLET_CHARS and len(text) <= 3
+        if (text and text[0] in BULLET_CHARS and len(text) <= _BULLET_JOIN_MAX_CHARS
                 and i + 1 < len(lines)):
             next_line = lines[i + 1]
             bullet = strip_format_chars(text).rstrip()

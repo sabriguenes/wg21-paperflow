@@ -4,7 +4,7 @@
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
-# Official repository: https://github.com/cppalliance/paperlint
+# Official repository: https://github.com/cppalliance/wg21-paperflow
 #
 
 """Public tomd API: convert a staged paper source to markdown.
@@ -30,8 +30,8 @@ invariant.
 
 from __future__ import annotations
 
+import logging
 import re
-import sys
 from pathlib import Path
 
 from tomd.lib import format_front_matter, sanitize_metadata, FRONT_MATTER_ORDER
@@ -40,6 +40,7 @@ from tomd.lib.pdf import convert_pdf
 
 __all__ = ["convert_paper"]
 
+logger = logging.getLogger(__name__)
 
 _TOC_MAX_LINES = 300
 _TOC_RE = re.compile(
@@ -310,6 +311,9 @@ _METADATA_TABLE_LINE_RE = re.compile(
 _PIPE_TABLE_ROW_RE = re.compile(r"^\|.*\|$")
 _PIPE_SEPARATOR_RE = re.compile(r"^\|[\s\-:|]+\|$")
 
+_METADATA_TABLE_SCAN_DEPTH = 30
+_MIN_LABEL_ROWS_FOR_TABLE_STRIP = 2
+
 
 _TITLE_VALUE_RE = re.compile(
     r'^(title:\s*)"((?:[^"\\]|\\.)*)"(.*)$|^(title:\s*)(.+)$',
@@ -389,7 +393,7 @@ def _strip_body_metadata_text(md: str) -> str:
     lines = body.split("\n")
     to_remove: set[int] = set()
     i = 0
-    scan_limit = min(len(lines), 30)
+    scan_limit = min(len(lines), _METADATA_TABLE_SCAN_DEPTH)
 
     while i < scan_limit:
         if not lines[i].strip():
@@ -409,7 +413,7 @@ def _strip_body_metadata_text(md: str) -> str:
                     label_count += 1
                 table_end += 1
 
-            if label_count >= 2:
+            if label_count >= _MIN_LABEL_ROWS_FOR_TABLE_STRIP:
                 for j in range(table_start, table_end):
                     to_remove.add(j)
                 i = table_end
@@ -487,9 +491,9 @@ def convert_paper(
     md, prompts = _convert_with_tomd(source_path)
 
     if prompts:
-        print(
-            f"tomd [{paper_id}] flagged {len(prompts)} uncertain region(s)",
-            file=sys.stderr,
+        logger.warning(
+            "tomd [%s] flagged %d uncertain region(s)",
+            paper_id, len(prompts),
         )
 
     if not md or not md.strip():

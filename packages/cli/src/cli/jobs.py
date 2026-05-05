@@ -4,7 +4,7 @@
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
-# Official repository: https://github.com/cppalliance/paperlint
+# Official repository: https://github.com/cppalliance/wg21-paperflow
 #
 
 """Batch job library for the paperflow pipeline.
@@ -33,6 +33,7 @@ from paperstore.backend import StorageBackend
 from paperstore.errors import (
     MissingMailingIndexError,
     MissingPaperMdError,
+    MissingSourceError,
 )
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,7 @@ async def run_mailing(
                 backend.upsert_year(year, papers)
             total = len(backend.list_papers_for_year(year))
             succeeded.append({"year": year, "papers": total})
+        # Batch robustness: one bad paper must not crash the run
         except Exception as exc:
             logger.exception("Failed to fetch year %s", year)
             failed.append({"year": year, "error": str(exc)})
@@ -190,6 +192,7 @@ async def run_download(
     if on_total is not None:
         try:
             on_total(len(to_process))
+        # Callback firewall: caller hooks must not crash the batch
         except Exception:
             logger.warning("on_total progress hook raised; continuing", exc_info=True)
 
@@ -207,8 +210,9 @@ async def run_download(
                     cl = await content_length(url, client=http)
                     if cl is not None:
                         try:
-                            existing_size = Path(paper["source_file"]).stat().st_size
-                        except FileNotFoundError:
+                            source_path = backend.get_source_path(pid)
+                            existing_size = source_path.stat().st_size
+                        except (MissingSourceError, FileNotFoundError):
                             existing_size = None
                         if existing_size == cl:
                             return {"paper_id": pid, "status": "skipped", "reason": "verified_match"}
@@ -223,6 +227,7 @@ async def run_download(
                         "suffix": suffix,
                         "status": "ok",
                     }
+                # Batch robustness: one bad paper must not crash the run
                 except Exception as exc:
                     logger.exception("Download failed for %s", pid)
                     return {"paper_id": pid, "status": "error", "error": str(exc)}
@@ -248,6 +253,7 @@ async def run_download(
             if on_progress is not None:
                 try:
                     on_progress(result)
+                # Callback firewall: caller hooks must not crash the batch
                 except Exception:
                     logger.warning("on_progress progress hook raised; disabling for remainder of run", exc_info=True)
                     on_progress = None
@@ -294,6 +300,7 @@ async def run_convert(
     if on_total is not None:
         try:
             on_total(len(to_process))
+        # Callback firewall: caller hooks must not crash the batch
         except Exception:
             logger.warning("on_total progress hook raised; continuing", exc_info=True)
 
@@ -343,6 +350,7 @@ async def run_convert(
                     return {"paper_id": pid, "status": "skipped", "reason": "unreadable_source"}
                 logger.exception("Convert failed for %s", pid)
                 return {"paper_id": pid, "status": "error", "error": msg}
+            # Batch robustness: one bad paper must not crash the run
             except Exception as exc:
                 logger.exception("Convert failed for %s", pid)
                 return {"paper_id": pid, "status": "error", "error": str(exc)}
@@ -370,6 +378,7 @@ async def run_convert(
         if on_progress is not None:
             try:
                 on_progress(result)
+            # Callback firewall: caller hooks must not crash the batch
             except Exception:
                 logger.warning("on_progress progress hook raised; disabling for remainder of run", exc_info=True)
                 on_progress = None

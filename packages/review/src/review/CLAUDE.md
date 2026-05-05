@@ -4,7 +4,7 @@
 
 LLM-driven paper review pipeline for WG21 papers. Takes a paper ID,
 pulls markdown from paperstore, runs a multi-step review workflow via
-Instructor + Anthropic, returns a rendered markdown report.
+Pydantic AI + Anthropic, returns a rendered markdown report.
 
 ## Layout
 

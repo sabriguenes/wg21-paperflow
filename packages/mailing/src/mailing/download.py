@@ -4,7 +4,7 @@
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
-# Official repository: https://github.com/cppalliance/paperlint
+# Official repository: https://github.com/cppalliance/wg21-paperflow
 #
 
 """Fetch paper source bytes over HTTP. Pure network I/O, no storage."""
@@ -20,7 +20,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _FETCH_TIMEOUT_SEC = 120
-_USER_AGENT = "paperflow/0.1 (+https://github.com/cppalliance/paperlint)"
+_USER_AGENT = "paperflow/0.1 (+https://github.com/cppalliance/wg21-paperflow)"
 _ALLOWED_SUFFIXES = (".pdf", ".html", ".htm")
 
 
@@ -76,8 +76,8 @@ async def content_length(
                 resp.raise_for_status()
         cl = resp.headers.get("content-length")
         return int(cl) if cl is not None else None
-    except Exception:
-        logger.debug("HEAD request failed for %s", url, exc_info=True)
+    except (httpx.HTTPStatusError, httpx.RequestError, ValueError):
+        logger.warning("HEAD request failed for %s", url, exc_info=True)
         return None
 
 

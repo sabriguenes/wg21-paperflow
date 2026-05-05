@@ -4,7 +4,7 @@
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
-# Official repository: https://github.com/cppalliance/paperlint
+# Official repository: https://github.com/cppalliance/wg21-paperflow
 #
 
 """WG21 mailing page scraper: fetches paper lists from open-std.org."""
@@ -16,14 +16,14 @@ import re
 import urllib.parse
 from typing import Optional
 
-import requests
+import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.open-std.org/jtc1/sc22/wg21/docs/papers"
-DEFAULT_USER_AGENT = "paperflow/0.1 (+https://github.com/cppalliance/paperlint)"
+DEFAULT_USER_AGENT = "paperflow/0.1 (+https://github.com/cppalliance/wg21-paperflow)"
 
 _MAILING_ANCHOR_RE = re.compile(r"^mailing\d{4}-\d{2}$")
 _PAPER_LINK_PATTERN = re.compile(
@@ -257,7 +257,7 @@ def _fetch_year_page(year: str, *, timeout: float = 60.0) -> tuple[str, str]:
     """Fetch a year index page. Returns ``(html, page_url)``."""
     url = f"{BASE_URL}/{year}/"
     logger.info("Fetching year page %s from %s", year, url)
-    response = requests.get(
+    response = httpx.get(
         url,
         timeout=timeout,
         headers={"User-Agent": DEFAULT_USER_AGENT},
@@ -270,7 +270,7 @@ def discover_years(*, timeout: float = 60.0) -> list[str]:
     """Fetch the root papers index and return all available year strings, sorted."""
     root_url = f"{BASE_URL}/"
     logger.info("Discovering years from %s", root_url)
-    response = requests.get(
+    response = httpx.get(
         root_url,
         timeout=timeout,
         headers={"User-Agent": DEFAULT_USER_AGENT},
@@ -297,7 +297,7 @@ def fetch_all_mailings_for_year(
     """
     try:
         html, page_url = _fetch_year_page(year, timeout=timeout)
-    except requests.RequestException:
+    except httpx.HTTPError:
         logger.exception("Failed to fetch year page for %s.", year)
         return {}
 

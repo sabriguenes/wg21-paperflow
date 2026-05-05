@@ -8,7 +8,7 @@
 """Pydantic models for the review pipeline.
 
 Domain models match the Classes section of review.md. Per-step output
-models group the Writes fields for each step so Instructor can return
+models group the Writes fields for each step so Pydantic AI can return
 structured data.
 """
 

@@ -1511,7 +1511,6 @@ dependencies = [
     { name = "beautifulsoup4" },
     { name = "httpx" },
     { name = "paperstore" },
-    { name = "requests" },
 ]
 
 [package.metadata]
@@ -1519,7 +1518,6 @@ requires-dist = [
     { name = "beautifulsoup4", specifier = "~=4.14.0" },
     { name = "httpx" },
     { name = "paperstore", editable = "packages/paperstore" },
-    { name = "requests" },
 ]
 
 [[package]]

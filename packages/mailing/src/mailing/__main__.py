@@ -4,7 +4,7 @@
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
-# Official repository: https://github.com/cppalliance/paperlint
+# Official repository: https://github.com/cppalliance/wg21-paperflow
 #
 
 """Mailing CLI: scrape open-std.org mailing indexes (index only, no downloads).
@@ -41,7 +41,7 @@ def _scrape_year(year: str, store: SqliteBackend) -> int:
         return 0
     total = 0
     for mailing_id, papers in sorted(all_mailings.items()):
-        merged = store.upsert_mailing_index(mailing_id, papers)
+        merged = store.upsert_year(year, papers)
         total += len(merged)
     print(f"  {year}: {total} papers across {len(all_mailings)} mailing(s)")
     return total

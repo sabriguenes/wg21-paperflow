@@ -24,7 +24,7 @@ import cli.download as _download_mod
 import cli.convert as _convert_mod
 import cli.full as _full_mod
 import cli.review as _review_mod
-from cli.logutil import configure_paperlint_console_logging
+from cli.logutil import configure_console_logging
 from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
 
 _VERB_NAMES = {"mailing", "download", "convert", "full", "review"}
@@ -262,7 +262,7 @@ def main() -> int:
         return 0
 
     args = parser.parse_args(argv)
-    configure_paperlint_console_logging(args.verbose)
+    configure_console_logging(args.verbose)
 
     if args.command is None:
         parser.print_help()

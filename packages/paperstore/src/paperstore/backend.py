@@ -4,12 +4,12 @@
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
-# Official repository: https://github.com/cppalliance/paperlint
+# Official repository: https://github.com/cppalliance/wg21-paperflow
 #
 
 """Abstract storage interface for paperflow artifacts.
 
-All reads and writes done by the mailing, tomd, and paperlint packages go
+All reads and writes done by the mailing, tomd, and cli packages go
 through a :class:`StorageBackend` instance. :class:`SqliteBackend` is the
 production implementation; an in-memory test double can drop in without
 touching call sites.
@@ -172,32 +172,3 @@ class StorageBackend(ABC):
         Raises:
             paperstore.MissingReviewError: no review for ``paper_id``.
         """
-
-    # ---- legacy aliases ----
-
-    def upsert_mailing_index(
-        self, mailing_id: str, papers: list[dict]
-    ) -> list[dict]:
-        """Deprecated: use upsert_year."""
-        year = mailing_id.split("-")[0] if "-" in mailing_id else mailing_id
-        return self.upsert_year(year, papers)
-
-    def list_mailing(self, mailing_id: str) -> list[dict]:
-        """Deprecated: use list_papers_for_year."""
-        year = mailing_id.split("-")[0] if "-" in mailing_id else mailing_id
-        return self.list_papers_for_year(year)
-
-    def resolve_mailing_for_paper(self, paper_id: str) -> tuple[str, dict] | None:
-        """Deprecated: use resolve_year_for_paper."""
-        return self.resolve_year_for_paper(paper_id)
-
-    def list_paper_ids(self) -> list[str]:
-        """Deprecated: use list_all_paper_ids."""
-        return self.list_all_paper_ids()
-
-    def patch_meta(self, paper_id: str, fields: dict) -> None:
-        """Deprecated: internal implementation detail."""
-        raise NotImplementedError(
-            "patch_meta is not part of the public API. "
-            "Use upsert_year or specific update methods."
-        )

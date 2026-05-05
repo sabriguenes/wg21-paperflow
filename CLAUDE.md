@@ -115,9 +115,13 @@ WG21_DATA_DIR/
 
 ## Invariants
 
-- **All storage goes through `paperstore.StorageBackend`.** Never write files directly. Never construct paths from `backend.workspace_dir`.
+- **All storage goes through `paperstore.StorageBackend`.** Never write files directly. Never construct paths from `backend.workspace_dir` or from DB column strings. Use backend accessors.
 - **`convert` never re-downloads.** It reads the staged source via the backend.
 - **Public and reproducible.** This repository is designed to be inspectable. Anyone can clone it, run `paperflow review <pid>`, and replicate the same review findings. No external proprietary dependencies. No black boxes. The review pipeline, prompt text, and models are all visible in this repo. The review package must remain self-contained within wg21-paperflow with no dependencies on cppa-forge or other private repos.
+- **Library functions return data. Callers persist.** Never call `write_*` inside a pipeline or conversion function. The CLI module owns persistence.
+- **Broad catches must be commented.** `except Exception` in batch workers and callback firewalls is acceptable. Uncommented broad catches are treated as bugs during review.
+- **Tunable thresholds are named constants.** No bare numeric literals for scoring penalties, timeouts, display limits, or heuristic cutoffs. Module-level constant with a descriptive name.
+- **Library code uses `logging`, never `print()`.** No `print(file=sys.stderr)` in any package except `cli`.
 
 ## Tests
 
@@ -127,7 +131,7 @@ uv run --package paperstore pytest             # one package
 uv run pytest tests/test_end_to_end_convert.py # integration
 ```
 
-Stub seams: `requests.get` on `mailing.download` for downloads.
+Stub seams: `httpx.AsyncClient` on `mailing.download` for downloads; `httpx.get` on `mailing.scrape` for scraping.
 
 ## `__init__.py`
 
@@ -144,3 +148,4 @@ adding to it.
 
 - No em dashes. Use commas, periods, or colons.
 - BSL-1.0 copyright headers on new `.py` files. Attribute to whoever authors the file. Leave existing headers alone.
+- When renaming the project or swapping a dependency, grep the entire repo for the old name. Headers, user-agents, env vars, docstrings, CLAUDE.md files. One pass, same commit.

@@ -92,7 +92,7 @@ class WebResearcher:
 
         self._backend = backend or get_default_backend()
         self._owns_backend = backend is None
-        self._client = httpx.AsyncClient()
+        self._client = httpx.AsyncClient(timeout=60.0)
         self._closed = False
 
     async def __aenter__(self) -> WebResearcher:
