@@ -15,7 +15,6 @@ Provides per-paper conversion via ``convert_one_paper``.
 from pathlib import Path
 
 from cli.models import ConvertResult, Paper
-from paperstore import StorageBackend
 from tomd.api import convert_paper as tomd_convert_paper
 
 __all__ = [

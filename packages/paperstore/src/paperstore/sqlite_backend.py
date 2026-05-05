@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from paperstore.backend import StorageBackend
+from paperstore.backend import PaperRow, StorageBackend, parse_authors_raw
 from paperstore.errors import (
     MissingMailingIndexError,
     MissingMetaError,
@@ -180,17 +180,9 @@ class SqliteBackend(StorageBackend):
             raise
         return path
 
-    def _row_to_dict(self, row: sqlite3.Row) -> dict:
+    def _row_to_dict(self, row: sqlite3.Row) -> PaperRow:
         d = dict(row)
-        # Decode JSON-encoded authors back to a list.
-        raw = d.get("authors", "")
-        if raw and raw.startswith("["):
-            try:
-                d["authors"] = json.loads(raw)
-            except (json.JSONDecodeError, ValueError):
-                d["authors"] = [a.strip() for a in raw.split(",") if a.strip()]
-        else:
-            d["authors"] = [a.strip() for a in raw.split(",") if a.strip()] if raw else []
+        d["authors"] = parse_authors_raw(d.get("authors", ""))
         return d
 
     # ---- year-based mailing index -----------------------------------------
@@ -201,7 +193,7 @@ class SqliteBackend(StorageBackend):
         ).fetchone()
         return row is not None
 
-    def upsert_year(self, year: str, papers: list[dict]) -> list[dict]:
+    def upsert_year(self, year: str, papers: list[dict]) -> list[PaperRow]:
         """Insert or update all papers for year. Returns merged list."""
         now = datetime.now(timezone.utc).isoformat()
         with self._conn:
@@ -261,7 +253,7 @@ class SqliteBackend(StorageBackend):
                 )
         return self.list_papers_for_year(year)
 
-    def list_papers_for_year(self, year: str) -> list[dict]:
+    def list_papers_for_year(self, year: str) -> list[PaperRow]:
         rows = self._conn.execute(
             "SELECT * FROM papers WHERE year = ?", (year,)
         ).fetchall()
@@ -276,7 +268,7 @@ class SqliteBackend(StorageBackend):
         rows = self._conn.execute("SELECT paper_id FROM papers").fetchall()
         return [r["paper_id"] for r in rows]
 
-    def resolve_year_for_paper(self, paper_id: str) -> tuple[str, dict] | None:
+    def resolve_year_for_paper(self, paper_id: str) -> tuple[str, PaperRow] | None:
         row = self._conn.execute(
             "SELECT * FROM papers WHERE paper_id = ?", (paper_id.strip().upper(),)
         ).fetchone()
@@ -448,7 +440,7 @@ class SqliteBackend(StorageBackend):
 
     # ---- reads ------------------------------------------------------------
 
-    def get_meta(self, paper_id: str) -> dict:
+    def get_meta(self, paper_id: str) -> PaperRow:
         row = self._conn.execute(
             "SELECT * FROM papers WHERE paper_id = ?",
             (paper_id.strip().upper(),),

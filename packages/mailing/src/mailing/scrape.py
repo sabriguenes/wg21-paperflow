@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import re
 import urllib.parse
-from typing import Optional
 
 import httpx
 from bs4 import BeautifulSoup
@@ -52,7 +51,7 @@ def _infer_intent(title: str) -> str | None:
 def _extract_paper_metadata_from_row(
     cells: list[Tag],
     page_url: str,
-) -> Optional[dict]:
+) -> dict | None:
     """Extract paper metadata from a WG21 mailing table row.
 
     Handles both 8-column (current year) and 5-column (older) layouts.
@@ -137,7 +136,7 @@ def _extract_paper_metadata_from_row(
     return None
 
 
-def _find_table_in_section(anchor) -> Optional[Tag]:
+def _find_table_in_section(anchor) -> Tag | None:
     """Find the first <table> belonging to a mailing section.
 
     Stops at the next mailing anchor to avoid cross-mailing attribution.

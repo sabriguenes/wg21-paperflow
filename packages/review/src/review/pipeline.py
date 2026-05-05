@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
-from paperstore.backend import StorageBackend
+from paperstore.backend import PaperRow, StorageBackend
 from paperstore.errors import MissingMetaError, MissingPaperMdError
 
 from review.errors import ReviewError
@@ -108,7 +108,7 @@ def _build_state_context(state: PipelineState, reads: list[str]) -> str:
     return json.dumps(filtered, indent=2, ensure_ascii=False, default=str)
 
 
-def _load_paper(pid: str, backend: StorageBackend) -> tuple[dict, str]:
+def _load_paper(pid: str, backend: StorageBackend) -> tuple[PaperRow, str]:
     """Load paper metadata and markdown, raising ReviewError on failure."""
     try:
         meta = backend.get_meta(pid)

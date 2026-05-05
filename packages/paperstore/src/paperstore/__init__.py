@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from paperstore.backend import StorageBackend
+from paperstore.backend import PaperRow, StorageBackend, parse_authors_raw
 from paperstore.errors import (
     MissingMailingIndexError,
     MissingMetaError,
@@ -23,7 +23,9 @@ from paperstore.factory import WORKSPACE_ENV_VAR, default_workspace_dir, from_ur
 from paperstore.sqlite_backend import SqliteBackend
 
 __all__ = [
+    "PaperRow",
     "StorageBackend",
+    "parse_authors_raw",
     "SqliteBackend",
     "PaperstoreError",
     "MissingPaperError",

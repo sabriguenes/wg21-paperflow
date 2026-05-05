@@ -21,9 +21,56 @@ value as a local :class:`pathlib.Path`.
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
+
+
+def parse_authors_raw(raw: str | list[str]) -> list[str]:
+    """Deserialize an authors value from storage into a list of strings.
+
+    Handles three shapes:
+
+    - Already a ``list`` - returned as-is.
+    - A JSON array string (starts with ``[``) - decoded via ``json.loads``,
+      with a comma-split fallback on decode error.
+    - A bare comma-separated string - split and stripped.
+
+    Returns an empty list for empty / falsy input.
+    """
+    if isinstance(raw, list):
+        return raw
+    if not raw:
+        return []
+    if raw.startswith("["):
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return [a.strip() for a in raw.split(",") if a.strip()]
+
+
+class PaperRow(TypedDict):
+    """Typed dict for a paper row returned by storage backend read methods.
+
+    ``authors`` is always a ``list[str]`` (deserialized from JSON or
+    comma-separated storage). ``source_file`` and ``markdown_path`` are
+    empty strings when the corresponding artifact has not been staged.
+    """
+
+    paper_id: str
+    year: str
+    title: str
+    authors: list[str]
+    target_group: str
+    intent: str
+    url: str
+    document_date: str
+    mailing_date: str
+    source_file: str
+    markdown_path: str
+    review_path: str
 
 
 class StorageBackend(ABC):
@@ -35,7 +82,7 @@ class StorageBackend(ABC):
         """Return True if at least one paper row exists for ``year``."""
 
     @abstractmethod
-    def upsert_year(self, year: str, papers: list[dict]) -> list[dict]:
+    def upsert_year(self, year: str, papers: list[dict]) -> list[PaperRow]:
         """Insert or update all ``papers`` for ``year``.
 
         Each entry is matched by uppercased ``paper_id``. New rows are
@@ -51,7 +98,7 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
-    def list_papers_for_year(self, year: str) -> list[dict]:
+    def list_papers_for_year(self, year: str) -> list[PaperRow]:
         """Return all paper rows for ``year``.
 
         Raises:
@@ -63,7 +110,7 @@ class StorageBackend(ABC):
         """Return all known paper IDs (uppercase). Order is unspecified."""
 
     @abstractmethod
-    def resolve_year_for_paper(self, paper_id: str) -> tuple[str, dict] | None:
+    def resolve_year_for_paper(self, paper_id: str) -> tuple[str, PaperRow] | None:
         """Find ``paper_id`` across all stored papers.
 
         Returns ``(year, paper_row)`` on success, ``None`` if not found.
@@ -142,7 +189,7 @@ class StorageBackend(ABC):
     # ---- reads ------------------------------------------------------------
 
     @abstractmethod
-    def get_meta(self, paper_id: str) -> dict:
+    def get_meta(self, paper_id: str) -> PaperRow:
         """Return per-paper metadata as a dict.
 
         Raises:

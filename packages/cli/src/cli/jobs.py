@@ -23,13 +23,13 @@ Stages: mailing, download, convert. Command modules call
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from paperstore.backend import StorageBackend
+from paperstore import parse_authors_raw
+from paperstore.backend import PaperRow, StorageBackend
 from paperstore.errors import (
     MissingMailingIndexError,
     MissingPaperMdError,
@@ -70,7 +70,7 @@ def _validate_targets(targets: list[str]) -> str:
 
 def _papers_from_scope(
     targets: list[str], target_type: str, backend: StorageBackend
-) -> list[dict]:
+) -> list[PaperRow]:
     """Return paper rows matching the scope, without idempotency filtering."""
     if target_type == "all":
         ids = backend.list_all_paper_ids()
@@ -306,13 +306,8 @@ async def run_convert(
 
     semaphore = asyncio.Semaphore(concurrency)
 
-    def _make_paper(row: dict) -> Paper:
-        authors = row.get("authors") or []
-        if isinstance(authors, str):
-            try:
-                authors = json.loads(authors)
-            except (json.JSONDecodeError, ValueError):
-                authors = [a.strip() for a in authors.split(",") if a.strip()]
+    def _make_paper(row: PaperRow) -> Paper:
+        authors = parse_authors_raw(row.get("authors") or [])
         return Paper(
             document_id=row["paper_id"],
             year=row.get("year", ""),

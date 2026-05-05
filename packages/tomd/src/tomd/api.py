@@ -24,7 +24,7 @@ The returned markdown's front matter is always emitted in the strict
 canonical key order ``title, document, revision, date, intent, audience,
 reply-to`` (unknown keys after ``audience``, ``reply-to`` always last),
 regardless of the source format or the order in which fallback fields
-were merged. A final ``_canonicalize_front_matter`` pass enforces this
+were merged. The ``_normalize_front_matter`` pass enforces this
 invariant.
 """
 
@@ -34,7 +34,7 @@ import logging
 import re
 from pathlib import Path
 
-from tomd.lib import format_front_matter, sanitize_metadata, FRONT_MATTER_ORDER
+from tomd.lib import format_front_matter, sanitize_metadata
 from tomd.lib.html import convert_html
 from tomd.lib.pdf import convert_pdf
 
@@ -80,127 +80,6 @@ def _strip_toc_replace(m: re.Match[str]) -> str:
 def _strip_toc(text: str) -> str:
     """Remove Table of Contents sections that produce phantom findings."""
     return _TOC_RE.sub(_strip_toc_replace, text)
-
-
-def _yaml_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-
-
-def _format_yaml_value(key: str, val) -> str:
-    if isinstance(val, list):
-        items = "\n".join(f'  - "{_yaml_escape(str(v))}"' for v in val)
-        return f"{key}:\n{items}"
-    s = str(val)
-    if key == "title" or any(c in s for c in ':{}[]#&*?|>!%@`"\'\n\\'):
-        return f'{key}: "{_yaml_escape(s)}"'
-    return f"{key}: {s}"
-
-
-def _present_keys(front_matter_body: str) -> set[str]:
-    keys: set[str] = set()
-    for line in front_matter_body.splitlines():
-        if not line or line.startswith((" ", "\t", "-", "#")):
-            continue
-        head, sep, _ = line.partition(":")
-        if sep:
-            keys.add(head.strip())
-    return keys
-
-
-def _reorder_yaml_body(body: str) -> str:
-    """Re-sort YAML front-matter lines into FRONT_MATTER_ORDER."""
-    blocks: dict[str, list[str]] = {}
-    order: list[str] = []
-    current_key: str | None = None
-    for line in body.splitlines():
-        if line and not line.startswith((" ", "\t", "-")):
-            head, sep, _ = line.partition(":")
-            if sep:
-                current_key = head.strip()
-                if current_key not in blocks:
-                    order.append(current_key)
-                    blocks[current_key] = []
-                blocks[current_key].append(line)
-                continue
-        if current_key is not None:
-            blocks[current_key].append(line)
-
-    priority = {k: i for i, k in enumerate(FRONT_MATTER_ORDER)}
-    fallback = len(FRONT_MATTER_ORDER)
-    sorted_keys = sorted(order, key=lambda k: (priority.get(k, fallback), order.index(k)))
-    lines: list[str] = []
-    for k in sorted_keys:
-        lines.extend(blocks[k])
-    return "\n".join(lines)
-
-
-def _remove_yaml_key(body: str, key: str) -> str:
-    """Remove a top-level YAML key and its continuation lines from *body*."""
-    out: list[str] = []
-    skipping = False
-    for line in body.splitlines():
-        if line and not line.startswith((" ", "\t", "-")):
-            head, sep, _ = line.partition(":")
-            if sep and head.strip() == key:
-                skipping = True
-                continue
-            skipping = False
-        elif skipping:
-            continue
-        out.append(line)
-    return "\n".join(out)
-
-
-def _apply_metadata_fallback(md: str, mailing_meta: dict | None) -> str:
-    """Inject missing YAML front-matter fields from ``mailing_meta``.
-
-    Keys listed in ``_OVERRIDE_KEYS`` are replaced even when already
-    present, because the mailing metadata is authoritative for those
-    fields (e.g. ``document`` uses the published P/N-number, not the
-    draft D-number the author embedded in the source).
-    """
-    if not mailing_meta:
-        return md
-
-    match = _FRONT_MATTER_RE.match(md)
-    if match:
-        body = match.group("body")
-        present = _present_keys(body)
-        rest = md[match.end():]
-    else:
-        body = ""
-        present = set()
-        rest = md
-
-    additions: list[str] = []
-    added_yaml_keys: set[str] = set()
-    changed = False
-    for src_key, yaml_key in _FALLBACK_KEY_MAP.items():
-        if yaml_key in added_yaml_keys:
-            continue
-        is_override = yaml_key in _OVERRIDE_KEYS
-        if yaml_key in present and not is_override:
-            continue
-        val = mailing_meta.get(src_key)
-        if val in (None, "", []):
-            continue
-        if yaml_key in present and is_override:
-            body = _remove_yaml_key(body, yaml_key)
-            changed = True
-        additions.append(_format_yaml_value(yaml_key, val))
-        added_yaml_keys.add(yaml_key)
-
-    if not additions and not changed and match:
-        return md
-
-    new_body_lines = [body.rstrip()] if body.strip() else []
-    new_body_lines.extend(additions)
-    new_body = "\n".join(line for line in new_body_lines if line)
-
-    if new_body:
-        new_body = _reorder_yaml_body(new_body)
-        return f"---\n{new_body}\n---\n\n{rest.lstrip()}"
-    return md
 
 
 _LIST_ITEM_RE = re.compile(r"^\s+-\s+(.*)$")
@@ -280,25 +159,49 @@ def _parse_front_matter_body(body: str) -> dict:
     return parsed
 
 
-def _canonicalize_front_matter(md: str) -> str:
-    """Re-emit front matter in strict canonical key order.
+def _normalize_front_matter(md: str, mailing_meta: dict | None) -> str:
+    """Parse front matter once, sanitize, apply mailing fallback, and re-emit.
 
-    Parses the existing YAML front-matter body, rebuilds it via
-    ``format_front_matter`` so keys appear in ``FRONT_MATTER_ORDER``
-    (with unknown keys after ``audience`` and ``reply-to`` last), and
-    splices it back in. Returns ``md`` unchanged when there is no
-    front matter or when the body parses to nothing.
+    Replaces the former three-pass sequence of ``_sanitize_front_matter``,
+    ``_apply_metadata_fallback``, and ``_canonicalize_front_matter``.
     """
     match = _FRONT_MATTER_RE.match(md)
-    if not match:
+    if match:
+        parsed = _parse_front_matter_body(match.group("body"))
+        rest = md[match.end():]
+    else:
+        parsed = {}
+        rest = md
+
+    if not parsed and not mailing_meta:
         return md
-    parsed = _parse_front_matter_body(match.group("body"))
+
+    # Sanitize title and reply-to values.
+    parsed = sanitize_metadata(parsed)
+
+    # Inject missing fields (or override authoritative ones) from mailing.
+    if mailing_meta:
+        present = set(parsed)
+        added_yaml_keys: set[str] = set()
+        for src_key, yaml_key in _FALLBACK_KEY_MAP.items():
+            if yaml_key in added_yaml_keys:
+                continue
+            is_override = yaml_key in _OVERRIDE_KEYS
+            if yaml_key in present and not is_override:
+                continue
+            val = mailing_meta.get(src_key)
+            if val in (None, "", []):
+                continue
+            parsed[yaml_key] = val
+            added_yaml_keys.add(yaml_key)
+
     if not parsed:
         return md
+
     new_block = format_front_matter(parsed)
     if not new_block:
         return md
-    rest = md[match.end():]
+
     return f"{new_block}\n\n{rest.lstrip()}"
 
 
@@ -313,67 +216,6 @@ _PIPE_SEPARATOR_RE = re.compile(r"^\|[\s\-:|]+\|$")
 
 _METADATA_TABLE_SCAN_DEPTH = 30
 _MIN_LABEL_ROWS_FOR_TABLE_STRIP = 2
-
-
-_TITLE_VALUE_RE = re.compile(
-    r'^(title:\s*)"((?:[^"\\]|\\.)*)"(.*)$|^(title:\s*)(.+)$',
-    re.MULTILINE,
-)
-
-_REPLYTO_ITEM_RE = re.compile(r'^  - "(.+)"$', re.MULTILINE)
-
-
-def _sanitize_front_matter(md: str) -> str:
-    """Apply targeted sanitization to title and reply-to in front matter.
-
-    Only modifies values that need cleaning. Preserves original formatting
-    and quoting for unchanged fields.
-    """
-    match = _FRONT_MATTER_RE.match(md)
-    if not match:
-        return md
-
-    body = match.group("body")
-    rest = md[match.end():]
-    changed = False
-
-    raw_meta: dict = {}
-    for line in body.splitlines():
-        head, sep, tail = line.partition(":")
-        if sep and not line.startswith((" ", "\t", "-")):
-            raw_meta[head.strip()] = tail.strip().strip('"')
-
-    if "title" in raw_meta:
-        old_title = raw_meta["title"]
-        cleaned_title = sanitize_metadata({"title": old_title}).get("title", old_title)
-        if cleaned_title != old_title:
-            body = body.replace(old_title, cleaned_title, 1)
-            changed = True
-
-    items = _REPLYTO_ITEM_RE.findall(body)
-    if items:
-        cleaned_items = sanitize_metadata({"reply-to": list(items)}).get("reply-to", [])
-        if cleaned_items != items:
-            new_lines = []
-            in_replyto = False
-            for line in body.splitlines():
-                if line.strip() == "reply-to:":
-                    in_replyto = True
-                    new_lines.append(line)
-                    for item in cleaned_items:
-                        new_lines.append(f'  - "{_yaml_escape(item)}"')
-                    continue
-                if in_replyto and line.startswith("  - "):
-                    continue
-                in_replyto = False
-                new_lines.append(line)
-            body = "\n".join(new_lines)
-            changed = True
-
-    if not changed:
-        return md
-
-    return f"---\n{body}\n---\n\n{rest.lstrip()}"
 
 
 def _strip_body_metadata_text(md: str) -> str:
@@ -438,7 +280,10 @@ def _convert_with_tomd(path: Path) -> tuple[str, list[str] | None]:
         return convert_pdf(path)
     if suffix in (".html", ".htm"):
         return convert_html(path)
-    return convert_html(path)
+    raise ValueError(
+        f"Unsupported source format {suffix!r} for {path.name}; "
+        f"expected .pdf, .html, or .htm"
+    )
 
 
 _INTENT_LINE_RE = re.compile(r"^intent\s*:\s*(\S+)", re.MULTILINE)
@@ -502,9 +347,7 @@ def convert_paper(
             f"standards draft, or unreadable source)."
         )
 
-    md = _sanitize_front_matter(md)
-    md = _apply_metadata_fallback(md, meta)
-    md = _canonicalize_front_matter(md)
+    md = _normalize_front_matter(md, meta)
     md = _strip_body_metadata_text(md)
     md = _strip_toc(md)
 

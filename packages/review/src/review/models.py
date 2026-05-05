@@ -14,7 +14,7 @@ structured data.
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -61,7 +61,7 @@ class Evidence(BaseModel, frozen=True):
 class Assumption(BaseModel, frozen=True):
     assumption: str
     status: Literal["verified", "plausible", "unsupported"]
-    source: Optional[str] = None
+    source: str | None = None
 
 
 class ConfirmedCounterexample(BaseModel, frozen=True):
@@ -100,16 +100,16 @@ class InterpretedFinding(BaseModel, frozen=True):
 
 class CertifiedSection(BaseModel, frozen=True):
     section: str
-    killed_finding: Optional[str] = None
+    killed_finding: str | None = None
     reason: str
 
 
 class CitationEntry(BaseModel, frozen=True):
     link: str
     status: Literal["resolved", "unresolved_self", "unresolved_third_party"]
-    target_url: Optional[str] = None
-    quote_match: Optional[bool] = None
-    notes: Optional[str] = None
+    target_url: str | None = None
+    quote_match: bool | None = None
+    notes: str | None = None
 
 
 # -- Pipeline state ----------------------------------------------------------
@@ -118,43 +118,43 @@ class PipelineState(BaseModel):
     """Mutable accumulator threaded through every step."""
 
     # Step 0
-    title: Optional[str] = None
-    document_number: Optional[str] = None
-    author: Optional[str] = None
-    audience: Optional[str] = None
-    paper_type: Optional[Literal["ask", "inform"]] = None
+    title: str | None = None
+    document_number: str | None = None
+    author: str | None = None
+    audience: str | None = None
+    paper_type: Literal["ask", "inform"] | None = None
 
     # Step 1
-    thesis: Optional[str] = None
-    claims: Optional[list[Claim]] = None
-    boundaries: Optional[list[str]] = None
-    premises: Optional[list[Premise]] = None
-    thin_sections: Optional[list[ThinSection]] = None
-    argument_structures: Optional[list[ArgumentStructure]] = None
+    thesis: str | None = None
+    claims: list[Claim] | None = None
+    boundaries: list[str] | None = None
+    premises: list[Premise] | None = None
+    thin_sections: list[ThinSection] | None = None
+    argument_structures: list[ArgumentStructure] | None = None
 
     # Step 2
-    evidence: Optional[Evidence] = None
+    evidence: Evidence | None = None
 
     # Step 3
-    verified_assumptions: Optional[list[Assumption]] = None
-    confirmed_counterexamples: Optional[list[ConfirmedCounterexample]] = None
+    verified_assumptions: list[Assumption] | None = None
+    confirmed_counterexamples: list[ConfirmedCounterexample] | None = None
 
     # Step 4
-    candidate_findings: Optional[list[CandidateFinding]] = None
+    candidate_findings: list[CandidateFinding] | None = None
 
     # Step 5
-    surviving_findings: Optional[list[CandidateFinding]] = None
-    killed_findings: Optional[list[KilledFinding]] = None
-    minor_notes: Optional[list[str]] = None
+    surviving_findings: list[CandidateFinding] | None = None
+    killed_findings: list[KilledFinding] | None = None
+    minor_notes: list[str] | None = None
 
     # Step 6
-    interpreted_findings: Optional[list[InterpretedFinding]] = None
-    certified_sections: Optional[list[CertifiedSection]] = None
-    whole_paper_assessment: Optional[str] = None
-    verdict: Optional[Literal["no_objections", "with_objections"]] = None
+    interpreted_findings: list[InterpretedFinding] | None = None
+    certified_sections: list[CertifiedSection] | None = None
+    whole_paper_assessment: str | None = None
+    verdict: Literal["no_objections", "with_objections"] | None = None
 
     # Step 7
-    citation_table: Optional[list[CitationEntry]] = None
+    citation_table: list[CitationEntry] | None = None
 
 
 # -- Per-step output models --------------------------------------------------
