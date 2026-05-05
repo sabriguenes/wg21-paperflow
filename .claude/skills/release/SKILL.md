@@ -19,14 +19,23 @@ Bump the version, tag, push, and create a GitHub release.
 
 2. **Sanity checks before touching anything.**
    - `git status --porcelain` must be empty. If not, stop and ask.
-   - Current branch should be `main` and up to date with `origin/main`. If not, stop and ask.
+   - Determine the canonical remote: if `git remote get-url upstream` succeeds, use `upstream`; otherwise use `origin`. Use this remote for all push/fetch in this skill (the user's `origin` is often a personal fork).
+   - Current branch should be `main` and up to date with `<remote>/main`. If not, stop and ask.
    - `git tag -l v<new>` must be empty. If the tag exists, stop.
+   - The root `pyproject.toml` version should match the previous tag. If they differ (e.g. root says `0.2.0` but the latest tag is `v0.2.1`), the root is stale: treat the **latest tag** as the previous version when computing the bump, and surface this drift to the user.
 
-3. **Bump versions.** Update `version = "..."` in:
+3. **Bump versions.** All packages should track the root version. Update `version = "..."` in:
    - Root `pyproject.toml`.
-   - Every `packages/*/pyproject.toml` whose current version equals the root's previous version. Leave packages that intentionally diverge (e.g. unreleased sub-packages on `0.1.0`) alone unless the user says otherwise — show the user which packages will move and which will not before editing.
+   - Every `packages/*/pyproject.toml`, regardless of current value. If a package was intentionally on a different track, the user will say so explicitly; otherwise sync everything. Show the user the before/after table before editing.
 
-4. **Run the workspace `uv sync`** to refresh `uv.lock`, then `uv run pytest -q` as a smoke check. If tests fail, stop.
+4. **Run the workspace `uv sync`** to refresh `uv.lock`, then run tests per-package the way CI does (a single root `uv run pytest` collides on duplicate test module basenames):
+   ```
+   for pkg in paperstore mailing tomd cli review web_tools; do
+     uv run pytest "packages/$pkg/tests" -q || exit 1
+   done
+   uv run pytest tests -q
+   ```
+   If anything fails, stop.
 
 5. **Draft release notes.** Collect input from:
    - `git log --oneline <prev-tag>..HEAD`
@@ -48,13 +57,13 @@ Bump the version, tag, push, and create a GitHub release.
    ```
    Show the draft to the user and wait for approval before continuing.
 
-6. **Commit, tag, push.** After approval:
+6. **Commit, tag, push.** After approval (use the remote chosen in step 2):
    ```
    git add pyproject.toml packages/*/pyproject.toml uv.lock
    git commit -m "Release v<new>"
    git tag -a v<new> -m "v<new>"
-   git push origin main
-   git push origin v<new>
+   git push <remote> main
+   git push <remote> v<new>
    ```
 
 7. **Create the release.**
