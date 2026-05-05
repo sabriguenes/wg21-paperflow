@@ -1,6 +1,6 @@
 [project]
 name = "review"
-version = "0.1.0"
+version = "0.3.0"
 description = "WG21 paper review pipeline (LLM-driven, paperstore-aware)"
 requires-python = ">=3.12"
 license = {text = "BSL-1.0"}

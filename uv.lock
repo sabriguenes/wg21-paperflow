@@ -455,7 +455,7 @@ wheels = [
 
 [[package]]
 name = "cli"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "packages/cli" }
 dependencies = [
     { name = "mailing" },
@@ -1505,7 +1505,7 @@ wheels = [
 
 [[package]]
 name = "mailing"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "packages/mailing" }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -1878,7 +1878,7 @@ wheels = [
 
 [[package]]
 name = "paperstore"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "packages/paperstore" }
 
 [[package]]
@@ -2620,7 +2620,7 @@ wheels = [
 
 [[package]]
 name = "review"
-version = "0.1.0"
+version = "0.3.0"
 source = { editable = "packages/review" }
 dependencies = [
     { name = "paperstore" },
@@ -2969,7 +2969,7 @@ wheels = [
 
 [[package]]
 name = "tomd"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "packages/tomd" }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -3210,7 +3210,7 @@ wheels = [
 
 [[package]]
 name = "web-tools"
-version = "0.1.0"
+version = "0.3.0"
 source = { editable = "packages/web_tools" }
 dependencies = [
     { name = "httpx" },
@@ -3270,7 +3270,7 @@ wheels = [
 
 [[package]]
 name = "wg21-paperflow"
-version = "0.2.0"
+version = "0.3.0"
 source = { virtual = "." }
 dependencies = [
     { name = "cli" },

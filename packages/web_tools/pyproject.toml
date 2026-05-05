@@ -1,6 +1,6 @@
 [project]
 name = "web_tools"
-version = "0.1.0"
+version = "0.3.0"
 description = "Resilient multi-backend web search and fetch for LLM pipelines"
 requires-python = ">=3.12"
 license = {text = "BSL-1.0"}
