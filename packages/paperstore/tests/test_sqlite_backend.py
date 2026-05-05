@@ -19,6 +19,7 @@ from paperstore.errors import (
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
+    MissingReviewError,
     MissingSourceError,
 )
 
@@ -219,7 +220,7 @@ def test_write_paper_md_rolls_back_on_sql_failure(
 
 def test_reconcile_empty_workspace(store: SqliteBackend):
     """Empty workspace is a clean no-op."""
-    assert store.reconcile() == {"sources": 0, "markdowns": 0}
+    assert store.reconcile() == {"sources": 0, "markdowns": 0, "reviews": 0}
 
 
 def test_reconcile_backfills_orphan_artifacts(
@@ -232,7 +233,7 @@ def test_reconcile_backfills_orphan_artifacts(
     (papers_dir / "p3.md").write_text("# body\n")
 
     counts = store.reconcile()
-    assert counts == {"sources": 2, "markdowns": 1}
+    assert counts == {"sources": 2, "markdowns": 1, "reviews": 0}
     assert store.get_source_path("P1") == papers_dir / "p1.pdf"
     assert store.get_source_path("P2") == papers_dir / "p2.html"
     assert store.get_paper_md("P3") == "# body\n"
@@ -257,7 +258,7 @@ def test_reconcile_skips_intermediates_partials_and_db(
     (papers_dir / "p1.prompts.json").write_text("[]")
     (papers_dir / "p1.pdf.partial").write_bytes(b"in-flight")
     counts = store.reconcile()
-    assert counts == {"sources": 0, "markdowns": 0}
+    assert counts == {"sources": 0, "markdowns": 0, "reviews": 0}
     assert store.list_all_paper_ids() == []
 
 
@@ -265,8 +266,8 @@ def test_reconcile_is_idempotent(store: SqliteBackend, tmp_path: Path):
     (tmp_path / "paperstore" / "p1.pdf").write_bytes(b"x")
     first = store.reconcile()
     second = store.reconcile()
-    assert first == {"sources": 1, "markdowns": 0}
-    assert second == {"sources": 0, "markdowns": 0}
+    assert first == {"sources": 1, "markdowns": 0, "reviews": 0}
+    assert second == {"sources": 0, "markdowns": 0, "reviews": 0}
 
 
 def test_list_papers_for_year_missing_raises(store: SqliteBackend):
@@ -322,3 +323,68 @@ def test_list_years(store: SqliteBackend):
     years = store.list_years()
     assert ("2025", 1) in years
     assert ("2026", 2) in years
+
+
+# ---- review lifecycle -----------------------------------------------------
+
+
+def test_write_review_md(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    path = store.write_review_md("P1000R0", "# Review\n\nContent.")
+    assert path.exists()
+    assert path.name == "p1000r0.review.md"
+    assert path.read_text(encoding="utf-8") == "# Review\n\nContent."
+    meta = store.get_meta("P1000R0")
+    assert meta["review_path"] == str(path)
+
+
+def test_get_review_path(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    store.write_review_md("P1000R0", "# Review")
+    path = store.get_review_path("P1000R0")
+    assert path.exists()
+
+
+def test_get_review_path_missing_raises(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    with pytest.raises(MissingReviewError):
+        store.get_review_path("P1000R0")
+
+
+def test_get_review_path_no_paper_raises(store: SqliteBackend):
+    with pytest.raises(MissingReviewError):
+        store.get_review_path("NOPE")
+
+
+def test_clear_review_deletes_file(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    path = store.write_review_md("P1000R0", "# Review")
+    assert path.exists()
+    store.clear_review("P1000R0")
+    assert not path.exists()
+    with pytest.raises(MissingReviewError):
+        store.get_review_path("P1000R0")
+
+
+def test_clear_review_idempotent(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    store.clear_review("P1000R0")
+    store.clear_review("P1000R0")
+
+
+def test_write_review_md_overwrites(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    store.write_review_md("P1000R0", "# Old")
+    store.write_review_md("P1000R0", "# New")
+    path = store.get_review_path("P1000R0")
+    assert path.read_text(encoding="utf-8") == "# New"
+
+
+def test_reconcile_finds_review_files(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    review_path = store._papers_dir / "p1000r0.review.md"
+    review_path.write_text("# Review", encoding="utf-8")
+    counts = store.reconcile()
+    assert counts["reviews"] == 1
+    meta = store.get_meta("P1000R0")
+    assert meta["review_path"] == str(review_path)

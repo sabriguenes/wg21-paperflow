@@ -32,6 +32,7 @@ from paperstore.errors import (
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
+    MissingReviewError,
     MissingSourceError,
 )
 
@@ -47,7 +48,8 @@ CREATE TABLE IF NOT EXISTS papers (
     document_date TEXT DEFAULT '',
     mailing_date  TEXT DEFAULT '',
     source_file   TEXT DEFAULT '',
-    markdown_path TEXT DEFAULT ''
+    markdown_path TEXT DEFAULT '',
+    review_path   TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS years (
@@ -56,6 +58,13 @@ CREATE TABLE IF NOT EXISTS years (
 );
 
 """
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the initial schema."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(papers)").fetchall()}
+    if "review_path" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN review_path TEXT DEFAULT ''")
 
 
 def _atomic_replace(src: Path, dst: Path) -> None:
@@ -95,6 +104,7 @@ class SqliteBackend(StorageBackend):
         self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        _migrate(self._conn)
         self._conn.commit()
 
     @classmethod
@@ -295,6 +305,38 @@ class SqliteBackend(StorageBackend):
         self.record_markdown(pid, final_path)
         return final_path
 
+    def write_review_md(self, paper_id: str, markdown: str) -> Path:
+        """Write review markdown atomically and record the path in the DB."""
+        pid = paper_id.strip().upper()
+        final_path = self._atomic_write_text(
+            self._papers_dir / f"{pid.lower()}.review.md", markdown
+        )
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
+            )
+            self._conn.execute(
+                "UPDATE papers SET review_path = ? WHERE paper_id = ?",
+                (str(final_path), pid),
+            )
+        return final_path
+
+    def clear_review(self, paper_id: str) -> None:
+        """Delete the review file and clear ``review_path`` in the DB."""
+        pid = paper_id.strip().upper()
+        row = self._conn.execute(
+            "SELECT review_path FROM papers WHERE paper_id = ?", (pid,)
+        ).fetchone()
+        if row and row["review_path"]:
+            path = Path(row["review_path"])
+            if path.exists():
+                path.unlink()
+        with self._conn:
+            self._conn.execute(
+                "UPDATE papers SET review_path = '' WHERE paper_id = ?",
+                (pid,),
+            )
+
     def write_intermediate(self, paper_id: str, name: str, payload: Any) -> Path:
         """Write an intermediate artifact JSON to disk atomically."""
         pid = paper_id.strip().upper()
@@ -342,6 +384,7 @@ class SqliteBackend(StorageBackend):
         """Backfill DB rows from on-disk artifacts. See ABC for semantics."""
         sources: list[tuple[str, Path]] = []
         markdowns: list[tuple[str, Path]] = []
+        reviews: list[tuple[str, Path]] = []
 
         for path in sorted(self._papers_dir.iterdir()):
             if not path.is_file():
@@ -351,6 +394,9 @@ class SqliteBackend(StorageBackend):
                 continue
             if name.endswith(".json"):
                 continue
+            if name.endswith(".review.md"):
+                reviews.append((name[: -len(".review.md")].upper(), path))
+                continue
             if name.endswith(".md"):
                 markdowns.append((name[: -len(".md")].upper(), path))
                 continue
@@ -359,7 +405,7 @@ class SqliteBackend(StorageBackend):
                     sources.append((name[: -len(suffix)].upper(), path))
                     break
 
-        counts = {"sources": 0, "markdowns": 0}
+        counts = {"sources": 0, "markdowns": 0, "reviews": 0}
         with self._conn:
             for pid, path in sources:
                 self._conn.execute(
@@ -383,6 +429,17 @@ class SqliteBackend(StorageBackend):
                 )
                 if cursor.rowcount > 0:
                     counts["markdowns"] += 1
+            for pid, path in reviews:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
+                )
+                cursor = self._conn.execute(
+                    "UPDATE papers SET review_path = ? "
+                    "WHERE paper_id = ? AND review_path = ''",
+                    (str(path), pid),
+                )
+                if cursor.rowcount > 0:
+                    counts["reviews"] += 1
         return counts
 
     # ---- reads ------------------------------------------------------------
@@ -428,6 +485,24 @@ class SqliteBackend(StorageBackend):
                 f"Run 'paperflow convert {paper_id}' again."
             )
         return path.read_text(encoding="utf-8")
+
+    def get_review_path(self, paper_id: str) -> Path:
+        row = self._conn.execute(
+            "SELECT review_path FROM papers WHERE paper_id = ?",
+            (paper_id.strip().upper(),),
+        ).fetchone()
+        if row is None or not row["review_path"]:
+            raise MissingReviewError(
+                f"No review for {paper_id!r}. "
+                f"Run 'paperflow review {paper_id}' first."
+            )
+        path = Path(row["review_path"])
+        if not path.exists():
+            raise MissingReviewError(
+                f"Review file missing for {paper_id!r}: {path}. "
+                f"Run 'paperflow review {paper_id}' again."
+            )
+        return path
 
     def list_years(self) -> list[tuple[str, int]]:
         """Return ``[(year, paper_count)]`` sorted by year."""

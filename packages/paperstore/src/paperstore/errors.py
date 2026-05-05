@@ -37,5 +37,9 @@ class MissingPaperMdError(MissingPaperError):
     """Raised when no converted markdown is stored for the paper."""
 
 
+class MissingReviewError(MissingPaperError):
+    """Raised when no review file is stored for the paper."""
+
+
 class MissingMailingIndexError(PaperstoreError):
     """Raised when the requested mailing index has never been upserted."""

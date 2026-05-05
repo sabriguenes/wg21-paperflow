@@ -18,42 +18,6 @@ from paperstore.backend import StorageBackend
 from cli.jobs import DEFAULT_DOWNLOAD_CONCURRENCY
 
 
-def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
-    p = subparsers.add_parser(
-        "download",
-        help="Download paper source files (PDF/HTML)",
-        description=(
-            "Download source files for papers. Reads URLs from the local index. "
-            "Idempotent: skips papers already staged unless --force is given."
-        ),
-    )
-    p.add_argument(
-        "targets",
-        nargs="+",
-        metavar="TARGET",
-        help='Year (2026), paper id(s) (P3642R4 ...), or "all".',
-    )
-    p.add_argument(
-        "--force",
-        "-f",
-        action="store_true",
-        help="Re-download even if source is already staged.",
-    )
-    p.add_argument(
-        "--verify",
-        action="store_true",
-        help="HEAD-check staged files against Content-Length; re-download on mismatch.",
-    )
-    p.add_argument(
-        "--concurrency",
-        type=int,
-        default=DEFAULT_DOWNLOAD_CONCURRENCY,
-        metavar="N",
-        help=f"Number of concurrent downloads (default: {DEFAULT_DOWNLOAD_CONCURRENCY}).",
-    )
-    return p
-
-
 def command(args: argparse.Namespace, backend: StorageBackend) -> int:
     from cli.jobs import run_download
     from cli.progress import progress_callbacks
@@ -66,7 +30,7 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
             backend,
             force=args.force,
             verify=args.verify,
-            concurrency=args.concurrency,
+            concurrency=args.concurrency or DEFAULT_DOWNLOAD_CONCURRENCY,
             on_total=on_total,
             on_progress=on_progress,
         ))

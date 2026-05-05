@@ -16,34 +16,6 @@ import sys
 from paperstore.backend import StorageBackend
 
 
-def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
-    p = subparsers.add_parser(
-        "mailing",
-        help="Scrape mailing indexes from open-std.org (no downloads)",
-        description=(
-            "Scrape WG21 mailing indexes from open-std.org and persist locally. "
-            "Does not download any paper source files. Idempotent for past years."
-        ),
-    )
-    p.add_argument(
-        "targets",
-        nargs="*",
-        metavar="YEAR_OR_ALL",
-        help='Year(s) to scrape (e.g. 2026 2025), or "all" for all years >= 2011.',
-    )
-    p.add_argument(
-        "--force",
-        "-f",
-        action="store_true",
-        help=(
-            "Re-fetch even years already in the local index. Refreshes mailing "
-            "metadata (title, authors, url, dates) and adds any new papers; "
-            "preserves downloaded sources and converted markdown."
-        ),
-    )
-    return p
-
-
 def command(args: argparse.Namespace, backend: StorageBackend) -> int:
     if not args.targets:
         args._parser.print_help()

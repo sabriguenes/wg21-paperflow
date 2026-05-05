@@ -18,42 +18,6 @@ from paperstore.backend import StorageBackend
 from cli.jobs import DEFAULT_DOWNLOAD_CONCURRENCY
 
 
-def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
-    p = subparsers.add_parser(
-        "full",
-        help="Run all three stages: mailing + download + convert",
-        description=(
-            "Full pipeline: scrape mailing index, download sources, and convert to "
-            "markdown. Each stage is idempotent; already-done work is skipped."
-        ),
-    )
-    p.add_argument(
-        "targets",
-        nargs="+",
-        metavar="TARGET",
-        help='Year (2026), paper id(s) (P3642R4 ...), or "all".',
-    )
-    p.add_argument(
-        "--force",
-        "-f",
-        action="store_true",
-        help="Redo every stage even if already complete.",
-    )
-    p.add_argument(
-        "--verify",
-        action="store_true",
-        help="HEAD-check staged source files against Content-Length.",
-    )
-    p.add_argument(
-        "--concurrency",
-        type=int,
-        default=DEFAULT_DOWNLOAD_CONCURRENCY,
-        metavar="N",
-        help=f"Concurrency limit for network stages (default: {DEFAULT_DOWNLOAD_CONCURRENCY}).",
-    )
-    return p
-
-
 def command(args: argparse.Namespace, backend: StorageBackend) -> int:
     from cli.jobs import run_full
     results = asyncio.run(run_full(
@@ -61,7 +25,7 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
         backend,
         force=args.force,
         verify=args.verify,
-        concurrency=args.concurrency,
+        concurrency=args.concurrency or DEFAULT_DOWNLOAD_CONCURRENCY,
     ))
 
     any_failed = False

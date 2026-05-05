@@ -17,65 +17,9 @@ from pathlib import Path
 from paperstore.backend import StorageBackend
 
 
-def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
-    p = subparsers.add_parser(
-        "convert",
-        help="Convert staged source files to markdown (no LLM)",
-        description=(
-            "Convert staged PDF/HTML sources to markdown using tomd. "
-            "Hard-fails if the source is not yet staged - run 'paperflow download' first."
-        ),
-    )
-    p.add_argument(
-        "targets",
-        nargs="+",
-        metavar="TARGET",
-        help='Year (2026), paper id(s) (P3642R4 ...), or "all".',
-    )
-    p.add_argument(
-        "--force",
-        "-f",
-        action="store_true",
-        help="Re-convert even if markdown already exists.",
-    )
-    p.add_argument(
-        "--concurrency",
-        type=int,
-        default=4,
-        metavar="N",
-        help="Number of concurrent conversion threads (default: 4).",
-    )
-    p.add_argument(
-        "--no-prompts",
-        action="store_true",
-        help="Skip writing the .prompts.json intermediate.",
-    )
-    p.add_argument(
-        "--qa",
-        action="store_true",
-        help="Score existing markdown quality instead of converting (dev/debug; reads paper.md only, never reconverts).",
-    )
-    p.add_argument(
-        "--qa-json",
-        type=Path,
-        metavar="PATH",
-        help="Write per-paper QA metrics as JSON to PATH (implies --qa).",
-    )
-    p.add_argument(
-        "--workers",
-        type=int,
-        default=1,
-        metavar="N",
-        help="QA parallelism (default: 1).",
-    )
-    p.add_argument(
-        "--timeout",
-        type=int,
-        default=120,
-        metavar="SEC",
-        help="QA straggler timeout in seconds (default: 120).",
-    )
-    return p
+_DEFAULT_CONVERT_CONCURRENCY = 4
+_DEFAULT_QA_WORKERS = 1
+_DEFAULT_QA_TIMEOUT = 120
 
 
 def command(args: argparse.Namespace, backend: StorageBackend) -> int:
@@ -95,7 +39,7 @@ def _convert_command(args: argparse.Namespace, backend: StorageBackend) -> int:
             args.targets,
             backend,
             force=args.force,
-            concurrency=args.concurrency,
+            concurrency=args.concurrency or _DEFAULT_CONVERT_CONCURRENCY,
             write_prompts=not args.no_prompts,
             on_total=on_total,
             on_progress=on_progress,
@@ -120,8 +64,8 @@ def _qa_command(args: argparse.Namespace, backend: StorageBackend) -> int:
         args.targets,
         backend,
         json_path=args.qa_json,
-        workers=args.workers,
-        timeout=args.timeout,
+        workers=args.workers or _DEFAULT_QA_WORKERS,
+        timeout=args.timeout or _DEFAULT_QA_TIMEOUT,
     )
 
     for entry in result["skipped"]:

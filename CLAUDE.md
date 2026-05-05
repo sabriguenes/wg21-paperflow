@@ -13,7 +13,8 @@ packages/
   paperstore/   -> storage abstraction (SqliteBackend)
   mailing/      -> scrape open-std.org + download paper sources
   tomd/         -> PDF/HTML to Markdown
-  cli/          -> ingestion + conversion CLI; `paperflow full` is the end-to-end command, `paperflow` is its alias
+  review/       -> LLM-driven paper review pipeline (Pydantic AI + web search)
+  cli/          -> ingestion + conversion + review CLI
 tests/          -> cross-package integration test
 ```
 
@@ -61,8 +62,9 @@ Each subcommand is implemented in its own module inside `packages/cli/src/cli/`:
 | `mailing` | `mailing.py` |
 | `download` | `download.py` |
 | `convert` | `convert.py` |
+| `review` | `review.py` |
 
-The Click group entry point is `__main__.py`.
+The argparse entry point is `__main__.py`.
 
 Outside a venv, prefix with `uv run`. Workspace directory is `$WG21_DATA_DIR` (required).
 
@@ -103,10 +105,19 @@ reply-to:
 - `reply-to`: YAML list of `"Name <email>"` strings. All author-like metadata (Reply-to, Authors, Editors, Co-Authors) is merged into this single field. Field name chosen for consistency with cppalliance/wg21-papers `source/CLAUDE.md` (Mungo/Vinnie decision, April 2026).
 - Body headings start at H2. The front-matter `title` renders as H1; no `# H1` in body.
 
+## On-disk layout (review output)
+
+```
+WG21_DATA_DIR/
+  paperstore/
+    <pid>.review.md               # review report
+```
+
 ## Invariants
 
 - **All storage goes through `paperstore.StorageBackend`.** Never write files directly. Never construct paths from `backend.workspace_dir`.
 - **`convert` never re-downloads.** It reads the staged source via the backend.
+- **Public and reproducible.** This repository is designed to be inspectable. Anyone can clone it, run `paperflow review <pid>`, and replicate the same review findings. No external proprietary dependencies. No black boxes. The review pipeline, prompt text, and models are all visible in this repo. The review package must remain self-contained within wg21-paperflow with no dependencies on cppa-forge or other private repos.
 
 ## Tests
 
@@ -117,6 +128,17 @@ uv run pytest tests/test_end_to_end_convert.py # integration
 ```
 
 Stub seams: `requests.get` on `mailing.download` for downloads.
+
+## `__init__.py`
+
+`__init__.py` files must contain only:
+- Re-exports (`from module import Name`)
+- `__all__` definitions
+- Version strings (`__version__`)
+
+All logic, factories, utilities, and pipeline code must live in named
+modules. If you find logic in an `__init__.py`, move it out before
+adding to it.
 
 ## Style
 

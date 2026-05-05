@@ -85,6 +85,18 @@ class StorageBackend(ABC):
         """Persist the converted markdown. Atomic write. Returns path."""
 
     @abstractmethod
+    def write_review_md(self, paper_id: str, markdown: str) -> Path:
+        """Persist the review markdown. Atomic write. Returns path."""
+
+    @abstractmethod
+    def clear_review(self, paper_id: str) -> None:
+        """Delete the review file and clear its path in the store.
+
+        Called at the start of a review run so a crash does not leave
+        a stale review from a previous run.
+        """
+
+    @abstractmethod
     def write_intermediate(self, paper_id: str, name: str, payload: Any) -> Path:
         """Persist a labeled intermediate artifact (e.g. ``1-findings``).
 
@@ -151,6 +163,14 @@ class StorageBackend(ABC):
 
         Raises:
             paperstore.MissingPaperMdError: markdown not written.
+        """
+
+    @abstractmethod
+    def get_review_path(self, paper_id: str) -> Path:
+        """Return the local path to the review file.
+
+        Raises:
+            paperstore.MissingReviewError: no review for ``paper_id``.
         """
 
     # ---- legacy aliases ----

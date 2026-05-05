@@ -1,0 +1,20 @@
+[project]
+name = "review"
+version = "0.1.0"
+description = "WG21 paper review pipeline (LLM-driven, paperstore-aware)"
+requires-python = ">=3.12"
+license = {text = "BSL-1.0"}
+authors = [{name = "Vinnie Falco", email = "vinnie.falco@gmail.com"}]
+dependencies = [
+    "paperstore",
+    "web_tools",
+    "pydantic-ai",
+    "pydantic>=2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/review"]
