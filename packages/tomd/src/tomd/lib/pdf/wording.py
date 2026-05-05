@@ -278,7 +278,7 @@ def classify_wording(blocks: list[Block],
     del_count = sum(1 for _, r in candidates if r == "del")
     ctx_count = sum(1 for _, r in candidates if r == "context")
     _log.info("Wording detected: %d ins, %d del (%d promoted), %d context",
-               ins_count, del_count, unconfirmed_del if del_count > confirmed_del else 0,
+               ins_count, del_count, del_count - confirmed_del if del_count > confirmed_del else 0,
                ctx_count)
 
     return []

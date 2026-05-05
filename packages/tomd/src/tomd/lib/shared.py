@@ -43,8 +43,17 @@ def ascii_escape(text: str) -> str:
     return "".join(out)
 
 
+_CF_RANGES = [
+    range(0x0000, 0x10000),
+    range(0x1BCA0, 0x1BCA4),
+    range(0xE0001, 0xE0002),
+    range(0xE0020, 0xE0080),
+]
+
 FORMAT_CHARS = frozenset(
-    chr(c) for c in range(0x110000)
+    chr(c)
+    for r in _CF_RANGES
+    for c in r
     if unicodedata.category(chr(c)) == 'Cf'
 )
 
@@ -66,8 +75,8 @@ def dedup_paragraphs(md: str) -> str:
 
     Two passes:
     1. Consecutive identical paragraphs are collapsed to one.
-    2. Any paragraph longer than 40 chars appearing more than 3 times
-       total is capped at 3 occurrences (keeps the first 3).
+    2. Any paragraph longer than 40 chars appearing more than 10 times
+       total is capped at 10 occurrences (keeps the first 10).
 
     Headings and code fences are never dropped.
     """

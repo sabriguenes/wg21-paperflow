@@ -49,8 +49,12 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
 
     progress_ctx, on_total, _on_progress = progress_callbacks("Reviewing")
 
-    def on_step(index: int, name: str) -> None:
+    def on_step(_index: int, _name: str) -> None:
         pass
+
+    def on_step_skip(_index: int, name: str) -> None:
+        if _on_progress is not None:
+            _on_progress({"step": _index, "name": f"{name} (skipped)"})
 
     def on_step_complete(index: int, name: str, output: BaseModel) -> None:
         if _on_progress is not None:
@@ -71,6 +75,7 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
                     pid, backend,
                     on_step=on_step,
                     on_step_complete=on_step_complete,
+                    on_step_skip=on_step_skip,
                     stop_after=stop_after,
                 )
             )
@@ -79,6 +84,9 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
             return 1
         except pydantic_ai.exceptions.UsageLimitExceeded as exc:
             print(f"Review aborted: LLM usage limit reached ({exc})", file=sys.stderr)
+            return 1
+        except Exception as exc:  # LLM/network/validation errors
+            print(f"Review failed unexpectedly: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 1
 
     if stop_after is not None:

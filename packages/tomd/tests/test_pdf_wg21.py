@@ -88,11 +88,21 @@ class TestEnrichPdfReplyTo:
         _enrich_pdf_reply_to(metadata, blocks)
         assert metadata["reply-to"] == ["Hans Boehm <hboehm@google.com>"]
 
-    def test_skips_when_emails_already_present(self):
+    def test_adds_missing_emails_when_some_exist(self):
         from tomd.lib.pdf import _enrich_pdf_reply_to
 
         metadata = {"reply-to": ["Alice <alice@example.com>"]}
         blocks = [_block(["Bob <bob@example.com>"])]
+        _enrich_pdf_reply_to(metadata, blocks)
+        assert len(metadata["reply-to"]) == 2
+        assert "Alice <alice@example.com>" in metadata["reply-to"]
+        assert "Bob <bob@example.com>" in metadata["reply-to"]
+
+    def test_skips_duplicate_emails(self):
+        from tomd.lib.pdf import _enrich_pdf_reply_to
+
+        metadata = {"reply-to": ["Alice <alice@example.com>"]}
+        blocks = [_block(["Alice <alice@example.com>"])]
         _enrich_pdf_reply_to(metadata, blocks)
         assert len(metadata["reply-to"]) == 1
         assert "Alice <alice@example.com>" in metadata["reply-to"]

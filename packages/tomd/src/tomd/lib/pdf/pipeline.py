@@ -189,9 +189,6 @@ def _enrich_pdf_reply_to(
     existing_joined = " ".join(existing)
     existing_emails = {e.lower() for e in EMAIL_RE.findall(existing_joined)}
 
-    if existing_emails:
-        return
-
     page0_text = "\n".join(page0_lines)
     page0_emails = EMAIL_RE.findall(page0_text)
     missing = [e for e in page0_emails if e.lower() not in existing_emails]
@@ -258,9 +255,9 @@ def _run_pipeline(path: Path) -> PipelineResult:
                        result.page_count)
             result.skipped = True
             result.skip_reason = "slide deck"
-            result.prompts = "# tomd - Slide Deck Detected\n\n" \
-                "This PDF appears to be a presentation / slide deck. " \
-                "tomd does not convert slide decks to Markdown.\n"
+            result.prompts = ["# tomd - Slide Deck Detected\n\n"
+                "This PDF appears to be a presentation / slide deck. "
+                "tomd does not convert slide decks to Markdown.\n"]
             return result
 
         if _is_standards_draft(doc):
@@ -268,9 +265,9 @@ def _run_pipeline(path: Path) -> PipelineResult:
                        result.page_count)
             result.skipped = True
             result.skip_reason = "standards draft"
-            result.prompts = "# tomd - Standards Draft Detected\n\n" \
-                f"This PDF has {result.page_count} pages and appears to be " \
-                "a standards draft. tomd is designed for technical papers.\n"
+            result.prompts = ["# tomd - Standards Draft Detected\n\n"
+                f"This PDF has {result.page_count} pages and appears to be "
+                "a standards draft. tomd is designed for technical papers.\n"]
             return result
 
         all_mupdf_blocks = []

@@ -172,3 +172,7 @@ class StorageBackend(ABC):
         Raises:
             paperstore.MissingReviewError: no review for ``paper_id``.
         """
+
+    @abstractmethod
+    def list_years(self) -> list[tuple[str, int]]:
+        """Return ``[(year, paper_count)]`` sorted by year."""

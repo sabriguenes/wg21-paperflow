@@ -154,7 +154,7 @@ class SqliteBackend(StorageBackend):
         try:
             temp_path.write_bytes(content)
             _atomic_replace(temp_path, path)
-        except Exception:
+        except Exception:  # Cleanup firewall: remove partial file on any failure
             try:
                 temp_path.unlink()
             except OSError:
@@ -168,7 +168,7 @@ class SqliteBackend(StorageBackend):
         try:
             temp_path.write_text(content, encoding="utf-8")
             _atomic_replace(temp_path, path)
-        except Exception:
+        except Exception:  # Cleanup firewall: remove partial file on any failure
             try:
                 temp_path.unlink()
             except OSError:
@@ -200,61 +200,61 @@ class SqliteBackend(StorageBackend):
     def upsert_year(self, year: str, papers: list[dict]) -> list[dict]:
         """Insert or update all papers for year. Returns merged list."""
         now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            "INSERT OR IGNORE INTO years (year, added) VALUES (?, ?)",
-            (year, now),
-        )
-        for p in papers:
-            pid = (p.get("paper_id") or "").strip().upper()
-            if not pid:
-                continue
-            authors_raw = p.get("authors") or []
-            if isinstance(authors_raw, list):
-                authors_json = json.dumps(authors_raw)
-            else:
-                authors_json = str(authors_raw)
-            # INSERT OR IGNORE keeps existing source_file/markdown_path on updates.
+        with self._conn:
             self._conn.execute(
-                """
-                INSERT OR IGNORE INTO papers
-                    (paper_id, year, title, authors, target_group, intent,
-                     url, document_date, mailing_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    pid,
-                    year,
-                    p.get("title") or "",
-                    authors_json,
-                    p.get("subgroup") or "",
-                    p.get("intent") or "",
-                    p.get("url") or "",
-                    p.get("document_date") or "",
-                    p.get("mailing_date") or "",
-                ),
+                "INSERT OR IGNORE INTO years (year, added) VALUES (?, ?)",
+                (year, now),
             )
-            # Update non-completion fields without clobbering source_file/markdown_path.
-            self._conn.execute(
-                """
-                UPDATE papers SET
-                    year = ?, title = ?, authors = ?, target_group = ?,
-                    intent = CASE WHEN intent = '' THEN ? ELSE intent END,
-                    url = ?, document_date = ?, mailing_date = ?
-                WHERE paper_id = ?
-                """,
-                (
-                    year,
-                    p.get("title") or "",
-                    authors_json,
-                    p.get("subgroup") or "",
-                    p.get("intent") or "",
-                    p.get("url") or "",
-                    p.get("document_date") or "",
-                    p.get("mailing_date") or "",
-                    pid,
-                ),
-            )
-        self._conn.commit()
+            for p in papers:
+                pid = (p.get("paper_id") or "").strip().upper()
+                if not pid:
+                    continue
+                authors_raw = p.get("authors") or []
+                if isinstance(authors_raw, list):
+                    authors_json = json.dumps(authors_raw)
+                else:
+                    authors_json = str(authors_raw)
+                # INSERT OR IGNORE keeps existing source_file/markdown_path on updates.
+                self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO papers
+                        (paper_id, year, title, authors, target_group, intent,
+                         url, document_date, mailing_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        pid,
+                        year,
+                        p.get("title") or "",
+                        authors_json,
+                        p.get("subgroup") or "",
+                        p.get("intent") or "",
+                        p.get("url") or "",
+                        p.get("document_date") or "",
+                        p.get("mailing_date") or "",
+                    ),
+                )
+                # Update non-completion fields without clobbering source_file/markdown_path.
+                self._conn.execute(
+                    """
+                    UPDATE papers SET
+                        year = ?, title = ?, authors = ?, target_group = ?,
+                        intent = CASE WHEN intent = '' THEN ? ELSE intent END,
+                        url = ?, document_date = ?, mailing_date = ?
+                    WHERE paper_id = ?
+                    """,
+                    (
+                        year,
+                        p.get("title") or "",
+                        authors_json,
+                        p.get("subgroup") or "",
+                        p.get("intent") or "",
+                        p.get("url") or "",
+                        p.get("document_date") or "",
+                        p.get("mailing_date") or "",
+                        pid,
+                    ),
+                )
         return self.list_papers_for_year(year)
 
     def list_papers_for_year(self, year: str) -> list[dict]:
@@ -466,7 +466,13 @@ class SqliteBackend(StorageBackend):
                 f"No staged source for {paper_id!r}. "
                 f"Run 'paperflow download {paper_id}' first."
             )
-        return Path(row["source_file"])
+        path = Path(row["source_file"])
+        if not path.exists():
+            raise MissingSourceError(
+                f"Source file missing for {paper_id!r}: {path}. "
+                f"Run 'paperflow download {paper_id}' again."
+            )
+        return path
 
     def get_paper_md(self, paper_id: str) -> str:
         row = self._conn.execute(

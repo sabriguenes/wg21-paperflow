@@ -352,7 +352,9 @@ def _extract_metadata(sections: list[Section]) -> tuple[dict, list[Section]]:
                     raw = _MULTI_SPACE_RE.sub(" ", raw).strip()
                     raw = _LEADING_TRAILING_COMMA_RE.sub("", raw)
                     if raw:
-                        meta["reply-to"] = raw
+                        if "reply-to" not in meta:
+                            meta["reply-to"] = []
+                        meta["reply-to"].append(raw)
                     consumed = True
                     continue
 
@@ -927,7 +929,6 @@ def _coalesce_code_paragraphs(sections: list[Section]) -> list[Section]:
         sec = sections[i]
         lines = sec.text.splitlines()
         if (sec.kind != SectionKind.PARAGRAPH
-                or sec.kind in _WORDING_KINDS
                 or len(lines) > _COALESCE_MAX_LINES
                 or not _COALESCE_CODE_RE.search(sec.text)):
             result.append(sec)

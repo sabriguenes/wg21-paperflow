@@ -144,6 +144,7 @@ async def review_paper(
     model_slots: dict[str, str] | None = None,
     on_step: Callable[[int, str], None] | None = None,
     on_step_complete: Callable[[int, str, BaseModel], None] | None = None,
+    on_step_skip: Callable[[int, str], None] | None = None,
     stop_after: int | None = None,
 ) -> str:
     """Review a WG21 paper and return the rendered markdown report.
@@ -152,7 +153,8 @@ async def review_paper(
     review pipeline, and returns the final markdown report string.
 
     ``on_step_complete`` is called with (index, key, output) after each
-    step finishes. ``stop_after`` halts after step N and returns an
+    step finishes. ``on_step_skip`` is called with (index, key) when a
+    step is skipped. ``stop_after`` halts after step N and returns an
     empty string (for debugging).
 
     Raises :class:`ReviewError` if the paper is not found or has no
@@ -171,7 +173,12 @@ async def review_paper(
 
     async with WebResearcher() as researcher:
         for step_index, (key, response_model) in enumerate(_STEP_KEYS):
-            step_body = secs[key]
+            step_body = secs.get(key)
+            if step_body is None:
+                raise ReviewError(
+                    f"Step '{key}' not found in review.md. "
+                    f"Available sections: {sorted(secs)}"
+                )
             model_slot = _extract_model_slot(step_body)
             model = slots.get(model_slot)
             if model is None:
@@ -183,7 +190,9 @@ async def review_paper(
             tools = _extract_tools(step_body)
 
             if key == _VERIFY_CITATIONS_KEY:
-                if state.surviving_findings is None or len(state.surviving_findings) > 0:
+                if state.surviving_findings is not None and len(state.surviving_findings) == 0:
+                    if on_step_skip is not None:
+                        on_step_skip(step_index, key)
                     continue
 
             if on_step is not None:
