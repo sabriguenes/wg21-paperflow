@@ -27,7 +27,6 @@ import logging
 import queue
 import threading
 from pathlib import Path
-from typing import Optional
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
@@ -38,6 +37,8 @@ logger = logging.getLogger(__name__)
 # 200 ms collapses them into a single SSE push without making refresh
 # feel laggy.
 _DEBOUNCE_SECONDS = 0.2
+
+_RELEVANT_EVENT_TYPES = frozenset({"created", "modified", "moved"})
 
 
 class MarkdownWatcher:
@@ -54,16 +55,16 @@ class MarkdownWatcher:
         debounce_seconds: float = _DEBOUNCE_SECONDS,
     ) -> None:
         self._md_path = md_path
-        self._target_name = md_path.name
         self._debounce_seconds = debounce_seconds
 
         self._observer = Observer()
-        handler = _Handler(self._on_event, target_name=self._target_name)
+        handler = _Handler(self._on_event, target_name=md_path.name)
         self._observer.schedule(handler, str(md_path.parent), recursive=False)
 
         self._lock = threading.Lock()
         self._subscribers: list[queue.Queue[str]] = []
-        self._timer: Optional[threading.Timer] = None
+        self._timer: threading.Timer | None = None
+        self._stopped = False
 
     @property
     def target_path(self) -> Path:
@@ -75,6 +76,7 @@ class MarkdownWatcher:
 
     def stop(self) -> None:
         with self._lock:
+            self._stopped = True
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
@@ -102,11 +104,7 @@ class MarkdownWatcher:
                 pass
 
     def notify(self) -> None:
-        """Fan out a reload event to every current subscriber.
-
-        Public so tests and the CLI can trigger a synthetic reload
-        without going through the filesystem.
-        """
+        """Fan out a reload event to every current subscriber."""
         with self._lock:
             subs = list(self._subscribers)
         logger.info("notify: fan-out to %d subscriber(s)", len(subs))
@@ -116,6 +114,8 @@ class MarkdownWatcher:
     def _on_event(self) -> None:
         logger.info("fs event for %s", self._md_path.name)
         with self._lock:
+            if self._stopped:
+                return
             if self._timer is not None:
                 self._timer.cancel()
             self._timer = threading.Timer(self._debounce_seconds, self.notify)
@@ -131,26 +131,16 @@ class _Handler(FileSystemEventHandler):
         self._callback = callback
         self._target = target_name
 
+    def on_any_event(self, event: FileSystemEvent) -> None:
+        if event.is_directory:
+            return
+        if event.event_type not in _RELEVANT_EVENT_TYPES:
+            return
+        candidates = (event.src_path, getattr(event, "dest_path", ""))
+        if any(p and self._matches(p) for p in candidates):
+            self._callback()
+
     def _matches(self, path: str | bytes) -> bool:
         if isinstance(path, bytes):
             path = path.decode("utf-8", errors="replace")
         return Path(path).name == self._target
-
-    def on_created(self, event: FileSystemEvent) -> None:
-        if event.is_directory:
-            return
-        if self._matches(event.src_path):
-            self._callback()
-
-    def on_modified(self, event: FileSystemEvent) -> None:
-        if event.is_directory:
-            return
-        if self._matches(event.src_path):
-            self._callback()
-
-    def on_moved(self, event: FileSystemEvent) -> None:
-        if event.is_directory:
-            return
-        dest = getattr(event, "dest_path", "")
-        if self._matches(dest) or self._matches(event.src_path):
-            self._callback()

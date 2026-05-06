@@ -31,7 +31,7 @@
       };
       const es = new EventSource("/events");
       es.addEventListener("open", () => setStatus("live", "live"));
-      es.addEventListener("reload", () => {
+      es.addEventListener({{ reload_event | tojson }}, () => {
         frame.contentWindow.location.reload();
         const t = new Date().toLocaleTimeString();
         setStatus("reloaded " + t, "live");

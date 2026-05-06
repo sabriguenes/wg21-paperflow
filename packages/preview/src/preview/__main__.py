@@ -97,16 +97,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _configure_logging(verbosity: int) -> None:
+    """Wire stderr logging for the preview namespace only.
+
+    We deliberately avoid ``logging.basicConfig`` so ``-vv`` does not
+    crank watchdog/werkzeug/etc. up to DEBUG along with us.
+    """
     level = logging.WARNING
     if verbosity == 1:
         level = logging.INFO
     elif verbosity >= 2:
         level = logging.DEBUG
-    logging.basicConfig(
-        level=level,
-        format="%(levelname)s: %(message)s",
-        stream=sys.stderr,
-    )
+    handler = logging.StreamHandler(stream=sys.stderr)
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    log = logging.getLogger("preview")
+    log.setLevel(level)
+    # Idempotent: re-running main() in tests must not stack handlers.
+    if not any(isinstance(h, logging.StreamHandler) for h in log.handlers):
+        log.addHandler(handler)
+    log.propagate = False
 
 
 def _backend_for(workspace_dir: Path | None) -> SqliteBackend:
@@ -160,7 +169,6 @@ def main() -> int:
     _ensure_paper_known(backend, pid)
 
     md_path = backend.get_paper_md_path(pid)
-    md_path.parent.mkdir(parents=True, exist_ok=True)
 
     with MarkdownWatcher(md_path) as watcher:
         app = create_app(backend, pid, watcher)
