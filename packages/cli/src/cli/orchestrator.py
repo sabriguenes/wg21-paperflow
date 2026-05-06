@@ -43,6 +43,10 @@ def convert_one_paper(paper: "Paper") -> "ConvertResult":
         )
 
     source_path = Path(paper.source_file)
+    if not source_path.exists():
+        raise RuntimeError(
+            f"{paper_id} source file not found: {source_path}"
+        )
     meta = {
         "paper_id": paper_id,
         "title": paper.title,

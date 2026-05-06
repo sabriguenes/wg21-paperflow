@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -27,7 +28,6 @@ _DEFAULT_USER_AGENT = (
 )
 
 _trafilatura_config = trafilatura.settings.use_config()
-_trafilatura_config.set("DEFAULT", "EXTRACTION_TIMEOUT", "0")
 
 
 @dataclass(frozen=True)
@@ -104,10 +104,12 @@ class WebResearcher:
     async def close(self) -> None:
         """Close HTTP clients. Idempotent."""
         if not self._closed:
-            await self._client.aclose()
-            if self._owns_backend:
-                await self._backend.close()
-            self._closed = True
+            try:
+                await self._client.aclose()
+                if self._owns_backend:
+                    await self._backend.close()
+            finally:
+                self._closed = True
 
     async def search(
         self, query: str, max_results: int = 5
@@ -175,11 +177,13 @@ class WebResearcher:
         if not extract:
             return FetchResponse(status_code=resp.status_code, content=html)
 
-        text = trafilatura.extract(
+        text = await asyncio.to_thread(
+            trafilatura.extract,
             html, output_format="markdown", config=_trafilatura_config,
         )
         if not text:
-            text = trafilatura.extract(
+            text = await asyncio.to_thread(
+                trafilatura.extract,
                 html, output_format="txt", config=_trafilatura_config,
             )
         if not text:

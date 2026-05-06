@@ -80,7 +80,10 @@ def _toc_structural_hints(sections) -> list[bool]:
 
     result = [False] * len(sections)
     for i, x in candidates:
-        if med_x is None or x is None or abs(x - med_x) <= _TOC_X_TOLERANCE:
+        if med_x is None:
+            if x is None:
+                result[i] = True
+        elif x is None or abs(x - med_x) <= _TOC_X_TOLERANCE:
             result[i] = True
     return result
 
@@ -172,6 +175,8 @@ def _enrich_pdf_reply_to(
 
     Mirrors the HTML _enrich_reply_to pattern. Runs after wg21/structure merge.
     """
+    if not isinstance(metadata.get("reply-to"), list):
+        metadata["reply-to"] = []
     from .. import EMAIL_RE
 
     page0_lines: list[str] = []
@@ -276,14 +281,13 @@ def _run_pipeline(path: Path) -> PipelineResult:
 
         for pg_num in range(result.page_count):
             page = doc[pg_num]
-            page_height = page.rect.height
 
             mupdf_blocks = extract_mupdf(page, pg_num)
             spatial_blocks = extract_spatial(page, pg_num)
 
             edge_items = (
-                get_edge_items(mupdf_blocks, pg_num, page_height)
-                + get_edge_items(spatial_blocks, pg_num, page_height)
+                get_edge_items(mupdf_blocks, pg_num)
+                + get_edge_items(spatial_blocks, pg_num)
             )
             all_edge_items.append(edge_items)
 

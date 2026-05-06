@@ -27,25 +27,29 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 
-def parse_authors_raw(raw: str | list[str]) -> list[str]:
+def parse_authors_raw(raw: str | list) -> list[str]:
     """Deserialize an authors value from storage into a list of strings.
 
     Handles three shapes:
 
-    - Already a ``list`` - returned as-is.
-    - A JSON array string (starts with ``[``) - decoded via ``json.loads``,
-      with a comma-split fallback on decode error.
-    - A bare comma-separated string - split and stripped.
+    - Already a ``list`` -- elements are coerced to ``str``.
+    - A JSON array string (starts with ``[``) -- decoded via ``json.loads``,
+      with a comma-split fallback on decode error. Non-list JSON results
+      are wrapped in a single-element list.
+    - A bare comma-separated string -- split and stripped.
 
     Returns an empty list for empty / falsy input.
     """
     if isinstance(raw, list):
-        return raw
+        return [str(a) for a in raw]
     if not raw:
         return []
     if raw.startswith("["):
         try:
-            return json.loads(raw)
+            result = json.loads(raw)
+            if isinstance(result, list):
+                return [str(a) for a in result]
+            return [str(result)]
         except (json.JSONDecodeError, ValueError):
             pass
     return [a.strip() for a in raw.split(",") if a.strip()]

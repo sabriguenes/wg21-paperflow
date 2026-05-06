@@ -180,6 +180,7 @@ async def run_download(
     """
     from mailing.download import content_length, default_client, download_paper
 
+    concurrency = max(1, concurrency)
     target_type = _validate_targets(targets)
     all_papers = _papers_from_scope(targets, target_type, backend)
 
@@ -236,8 +237,11 @@ async def run_download(
         succeeded = []
         failed = []
         to_process_ids = {p["paper_id"] for p in to_process}
-        skipped_papers = [{"paper_id": p["paper_id"], "reason": "already_staged"}
-                          for p in all_papers if p["paper_id"] not in to_process_ids]
+        skipped_papers = [
+            {"paper_id": p["paper_id"],
+             "reason": "no_url" if not p.get("url") else "already_staged"}
+            for p in all_papers if p["paper_id"] not in to_process_ids
+        ]
 
         for coro in asyncio.as_completed(tasks):
             result = await coro
@@ -288,6 +292,7 @@ async def run_convert(
     from cli.orchestrator import convert_one_paper
     from cli.models import Paper
 
+    concurrency = max(1, concurrency)
     target_type = _validate_targets(targets)
     all_papers = _papers_from_scope(targets, target_type, backend)
 
@@ -354,7 +359,8 @@ async def run_convert(
     succeeded = []
     failed = []
     to_process_ids = {p["paper_id"] for p in to_process}
-    skipped = [p["paper_id"] for p in all_papers if p["paper_id"] not in to_process_ids]
+    skipped = [{"paper_id": p["paper_id"], "reason": "already_converted"}
+               for p in all_papers if p["paper_id"] not in to_process_ids]
 
     for coro in asyncio.as_completed(tasks):
         result = await coro
@@ -363,8 +369,7 @@ async def run_convert(
             md_path = backend.write_paper_md(pid, result["markdown"])
             if write_prompts and result["prompts"]:
                 backend.write_intermediate(pid, "prompts", result["prompts"])
-            if result["intent"]:
-                backend.record_markdown(pid, md_path, intent=result["intent"])
+            backend.record_markdown(pid, md_path, intent=result["intent"])
             succeeded.append(pid)
         elif result["status"] == "skipped":
             skipped.append(result)
@@ -401,6 +406,7 @@ def run_qa(
     """
     from tomd.lib.pdf.qa import run_qa_report
 
+    workers = max(1, workers)
     target_type = _validate_targets(targets)
     rows = _papers_from_scope(targets, target_type, backend)
 

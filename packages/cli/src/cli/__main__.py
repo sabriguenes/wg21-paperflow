@@ -186,7 +186,14 @@ def _validate_targets(verb: str, targets: list[str]) -> None:
             )
             sys.exit(1)
 
-    if len(kinds) > 1 and "all" not in kinds:
+    if "all" in kinds and len(targets) > 1:
+        print(
+            f"paperflow {verb}: 'all' cannot be combined with other targets.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if len(kinds) > 1:
         if "paper" in kinds and "year" in kinds:
             print(
                 f"paperflow {verb}: cannot mix paper IDs and years in the same invocation.",

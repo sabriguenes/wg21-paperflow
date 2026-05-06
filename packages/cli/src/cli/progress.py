@@ -42,7 +42,7 @@ def progress_callbacks(
         TimeElapsedColumn,
     )
 
-    console = Console()
+    console = Console(stderr=True)
     if not console.is_terminal:
         return nullcontext(), None, None
 

@@ -3,6 +3,7 @@
 from tomd.lib.shared import (  # noqa: F401
     ALLOWED_LINK_SCHEMES,
     DATE_RE,
+    DEFAULT_FENCE_LANG,
     DOC_NUM_PATTERN,
     DOC_NUM_RE,
     EMAIL_RE,

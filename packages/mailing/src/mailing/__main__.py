@@ -39,10 +39,10 @@ def _scrape_year(year: str, store: SqliteBackend) -> int:
     if not all_mailings:
         print(f"  {year}: no mailings found")
         return 0
-    total = 0
-    for mailing_id, papers in sorted(all_mailings.items()):
+    merged = []
+    for _mailing_id, papers in sorted(all_mailings.items()):
         merged = store.upsert_year(year, papers)
-        total += len(merged)
+    total = len(merged)
     print(f"  {year}: {total} papers across {len(all_mailings)} mailing(s)")
     return total
 

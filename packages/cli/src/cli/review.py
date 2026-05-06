@@ -40,12 +40,13 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
     import json
     from pydantic import BaseModel
     from review import ReviewError, review_paper
+    from review.pipeline import _STEP_KEYS
     from cli.progress import progress_callbacks
 
     pid = _resolve_pid(args.targets[0], backend)
     stop_after = args.stop_after
     dump_steps = args.dump_steps
-    total_steps = (stop_after + 1) if stop_after is not None else 9
+    total_steps = (stop_after + 1) if stop_after is not None else len(_STEP_KEYS)
 
     progress_ctx, on_total, _on_progress = progress_callbacks("Reviewing")
 

@@ -2,7 +2,8 @@
 
 import logging
 
-from .. import format_front_matter, dedup_paragraphs, strip_redundant_body_meta, strip_leading_h1
+from .. import format_front_matter, dedup_paragraphs, strip_redundant_body_meta, strip_leading_h1, DEFAULT_FENCE_LANG
+from ..shared import _find_front_matter_end
 from .cleanup import normalize_whitespace
 from .types import Line, Span, Section, SectionKind, BULLET_CHARS
 
@@ -153,7 +154,7 @@ def _render_code_block(sec: Section) -> str:
     of each line's first character from the block's left margin,
     divided by the monospace character width.
     """
-    lang = sec.fence_lang or "cpp"
+    lang = sec.fence_lang or DEFAULT_FENCE_LANG
     if not sec.lines:
         return f"```{lang}\n{sec.text}\n```"
 
@@ -340,24 +341,24 @@ def emit_markdown(metadata: dict, sections: list[Section]) -> str:
 
     if fm:
         title = metadata.get("title", "")
-        fm_end = md.find("---", 4)
-        if fm_end >= 0:
-            fm_end = md.find("\n", fm_end)
-            if fm_end >= 0:
-                body = md[fm_end + 1:]
+        fm_end = _find_front_matter_end(md)
+        if fm_end is not None:
+            line_end = md.find("\n", fm_end)
+            if line_end >= 0:
+                body = md[line_end + 1:]
                 body = strip_leading_h1(body, title)
-                md = md[:fm_end + 1] + body
+                md = md[:line_end + 1] + body
 
     md = strip_redundant_body_meta(md)
 
     if fm:
-        fm_end = md.find("---", 4)
-        if fm_end >= 0:
-            fm_end = md.find("\n", fm_end)
-            if fm_end >= 0:
-                body = md[fm_end + 1:]
+        fm_end = _find_front_matter_end(md)
+        if fm_end is not None:
+            line_end = md.find("\n", fm_end)
+            if line_end >= 0:
+                body = md[line_end + 1:]
                 body = strip_leading_h1(body, title)
-                md = md[:fm_end + 1] + body
+                md = md[:line_end + 1] + body
 
     md = md.rstrip() + "\n"
     return md

@@ -115,7 +115,7 @@ def _paragraph_plain_text(node: dict) -> str:
     """Get plain text from a paragraph, excluding inline code and HTML."""
     parts = []
     for child in node.get("children", []):
-        if child["type"] == "text":
+        if child.get("type", "") == "text":
             parts.append(child.get("raw", ""))
     return " ".join(parts)
 
@@ -123,7 +123,7 @@ def _paragraph_plain_text(node: dict) -> str:
 def _has_wording_markup(node: dict) -> bool:
     """True if a paragraph contains <ins> or <del> wording tags."""
     for child in node.get("children", []):
-        if child["type"] == "inline_html":
+        if child.get("type", "") == "inline_html":
             raw = child.get("raw", "")
             if raw.startswith(("<ins", "<del", "</ins", "</del")):
                 return True
@@ -145,8 +145,8 @@ def _looks_like_code(node: dict) -> bool:
         return False
     if _has_wording_markup(node):
         return False
-    text_children = [c for c in children if c["type"] == "text"]
-    code_children = [c for c in children if c["type"] == "codespan"]
+    text_children = [c for c in children if c.get("type", "") == "text"]
+    code_children = [c for c in children if c.get("type", "") == "codespan"]
     if code_children and not text_children:
         return False
     text = _paragraph_plain_text(node)
@@ -188,6 +188,8 @@ _WORST_FILES_DISPLAY_LIMIT = 30
 _CODE_FENCE_RE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 
 _INLINE_CODE_RE = re.compile(r"``[^`]+``|`[^`]+`")
+
+_AST_RENDERER = mistune.create_markdown(renderer="ast", plugins=["table"])
 
 
 _UNICODE_TOPIC_RE = re.compile(
@@ -263,13 +265,13 @@ def _heading_level_skips(tokens: list[dict]) -> int:
     inside blockquotes. See plans/QA-001-extend-qa-scoring.md,
     Research Finding #4 (Mistune AST completeness).
     """
-    headings = [t for t in tokens if t["type"] == "heading"]
+    headings = [t for t in tokens if t.get("type", "") == "heading"]
     if len(headings) < 2:
         return 0
     skips = 0
     for i in range(1, len(headings)):
-        prev_level = headings[i - 1]["attrs"]["level"]
-        curr_level = headings[i]["attrs"]["level"]
+        prev_level = headings[i - 1].get("attrs", {}).get("level", 0)
+        curr_level = headings[i].get("attrs", {}).get("level", 0)
         if curr_level > prev_level and curr_level - prev_level > 1:
             skips += 1
     return skips
@@ -279,14 +281,14 @@ def _count_table_parse_errors(tokens: list[dict]) -> int:
     """Count tables with inconsistent column counts across rows."""
     errors = 0
     for t in tokens:
-        if t["type"] != "table":
+        if t.get("type", "") != "table":
             continue
         children = t.get("children", [])
         col_counts: set[int] = set()
         for child in children:
-            if child["type"] in ("table_head", "table_body"):
+            if child.get("type", "") in ("table_head", "table_body"):
                 for row in child.get("children", []):
-                    if row["type"] == "table_row":
+                    if row.get("type", "") == "table_row":
                         col_counts.add(len(row.get("children", [])))
         if len(col_counts) > 1:
             errors += 1
@@ -308,19 +310,19 @@ def compute_metrics(md_text: str, file: str = "") -> QAMetrics:
         m.score, m.issues = 0, ["empty output"]
         return m
 
-    ast_renderer = mistune.create_markdown(renderer="ast", plugins=["table"])
-    tokens = ast_renderer(md_text)
+    tokens = _AST_RENDERER(md_text)
 
-    headings = [t for t in tokens if t["type"] == "heading"]
+    headings = [t for t in tokens if t.get("type", "") == "heading"]
     m.heading_count = len(headings)
     if headings:
-        m.max_heading_level = max(t["attrs"]["level"] for t in headings)
+        m.max_heading_level = max(
+            t.get("attrs", {}).get("level", 0) for t in headings)
 
-    m.code_block_count = sum(1 for t in tokens if t["type"] == "block_code")
+    m.code_block_count = sum(1 for t in tokens if t.get("type", "") == "block_code")
 
-    m.list_count = sum(1 for t in tokens if t["type"] == "list")
+    m.list_count = sum(1 for t in tokens if t.get("type", "") == "list")
 
-    m.table_count = sum(1 for t in tokens if t["type"] == "table")
+    m.table_count = sum(1 for t in tokens if t.get("type", "") == "table")
 
     # Front matter: mistune doesn't parse YAML, so we check raw text.
     # The AST's leading thematic_break confirms the --- opener.
@@ -331,15 +333,15 @@ def compute_metrics(md_text: str, file: str = "") -> QAMetrics:
 
     m.uncertain_count = sum(
         1 for t in tokens
-        if t["type"] == "block_html" and _UNCERTAIN_MARKER in t.get("raw", "")
+        if t.get("type", "") == "block_html" and _UNCERTAIN_MARKER in t.get("raw", "")
     )
 
     m.lossy_table_count = sum(
         1 for t in tokens
-        if t["type"] == "block_html" and _LOSSY_TABLE_MARKER in t.get("raw", "")
+        if t.get("type", "") == "block_html" and _LOSSY_TABLE_MARKER in t.get("raw", "")
     )
 
-    paragraphs = [t for t in tokens if t["type"] == "paragraph"]
+    paragraphs = [t for t in tokens if t.get("type", "") == "paragraph"]
     m.paragraph_count = len(paragraphs)
     m.unfenced_code_lines = _count_unfenced_code(paragraphs)
 
@@ -565,7 +567,10 @@ def run_qa_report(
             os.close(tmp_fd)
             os.replace(tmp_path, json_path)
         except BaseException:
-            os.close(tmp_fd)
+            try:
+                os.close(tmp_fd)
+            except OSError:
+                pass
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
             raise

@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest~=8.0", "ruff~=0.6"]
+dev = ["pytest~=8.0", "ruff~=0.6", "pyright>=1.1"]
 
 [tool.uv]
 package = false
@@ -45,6 +45,14 @@ testpaths = [
     "packages/preview/tests",
     "tests",
 ]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+include = ["packages"]
+exclude = ["**/tests/**"]
+reportPrivateImportUsage = "warning"
+reportOptionalMemberAccess = "warning"
 
 [tool.ruff.lint.per-file-ignores]
 # Tests intentionally:

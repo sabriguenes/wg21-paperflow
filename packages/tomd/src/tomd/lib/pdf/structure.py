@@ -6,7 +6,7 @@ import unicodedata
 from collections import Counter
 from dataclasses import replace
 
-from .. import DATE_RE, strip_format_chars
+from .. import DATE_RE, DEFAULT_FENCE_LANG, strip_format_chars
 from .types import (
     Block, Line, Span, Section, SectionKind, Confidence,
     SIMILARITY_THRESHOLD, TERMINAL_PUNCTUATION, FALLBACK_BODY_SIZE,
@@ -302,7 +302,7 @@ def heading_confidence(has_number: bool, number_level: int,
     return 0, Confidence.UNCERTAIN
 
 
-def _extract_metadata(sections: list[Section]) -> tuple[dict, list[Section]]:
+def _extract_metadata(sections: list[Section]) -> tuple[dict[str, str | list[str]], list[Section]]:
     """Pull WG21 metadata fields from early sections into a dict.
 
     PDF section line scan (pathway 1 of 3). Lower precedence than
@@ -310,7 +310,7 @@ def _extract_metadata(sections: list[Section]) -> tuple[dict, list[Section]]:
 
     Returns (metadata_dict, remaining_sections).
     """
-    meta: dict[str, str] = {}
+    meta: dict[str, str | list[str]] = {}
     remaining = []
     metadata_zone = True
 
@@ -802,7 +802,7 @@ def _detect_code_blocks(sections: list[Section]) -> list[Section]:
     """
     result: list[Section] = []
     mono_run: list[Section] = []
-    fence_lang = "cpp"
+    fence_lang = DEFAULT_FENCE_LANG
     pending_label_idx = -1
 
     def flush_mono():
@@ -824,11 +824,10 @@ def _detect_code_blocks(sections: list[Section]) -> list[Section]:
             page_num=mono_run[0].page_num,
             fence_lang=fence_lang,
         ))
-        # Remove the language label that preceded this block
         if pending_label_idx >= 0 and pending_label_idx < len(result) - 1:
             del result[pending_label_idx]
         mono_run.clear()
-        fence_lang = "cpp"
+        fence_lang = DEFAULT_FENCE_LANG
         pending_label_idx = -1
 
     for i, sec in enumerate(sections):
@@ -857,7 +856,7 @@ def _detect_code_blocks(sections: list[Section]) -> list[Section]:
         else:
             result.append(sec)
             if pending_label_idx >= 0:
-                fence_lang = "cpp"
+                fence_lang = DEFAULT_FENCE_LANG
                 pending_label_idx = -1
 
     flush_mono()
@@ -940,7 +939,6 @@ def _coalesce_code_paragraphs(sections: list[Section]) -> list[Section]:
             nxt = sections[j]
             nxt_lines = nxt.text.splitlines()
             if (nxt.kind != SectionKind.PARAGRAPH
-                    or nxt.kind in _WORDING_KINDS
                     or len(nxt_lines) > _COALESCE_MAX_LINES
                     or not _COALESCE_CODE_RE.search(nxt.text)):
                 break

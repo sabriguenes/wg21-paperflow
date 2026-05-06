@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+DEFAULT_USER_AGENT = "paperflow/0.1 (+https://github.com/cppalliance/wg21-paperflow)"
+
 from mailing.download import content_length, default_client, download_paper
 from mailing.scrape import (
     discover_years,
@@ -22,6 +24,7 @@ from mailing.scrape import (
 )
 
 __all__ = [
+    "DEFAULT_USER_AGENT",
     "content_length",
     "default_client",
     "discover_years",

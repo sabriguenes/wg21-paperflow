@@ -219,6 +219,8 @@ _HEADING_SKIP_CLASSES = frozenset({"header-section-number", "secno", "self-link"
 
 def _render_heading(el: Tag) -> str | None:
     """Render a heading element to ATX Markdown."""
+    if len(el.name) < 2 or not el.name[1].isdigit():
+        return ""
     level = int(el.name[1])
     text = _inline_text_excluding(el, _HEADING_SKIP_CLASSES).strip()
     if not text:
@@ -402,17 +404,6 @@ def _has_spans(el: Tag) -> bool:
     return False
 
 
-def _has_mangled_cells(el: Tag) -> bool:
-    """Return True if any cell contains nested cells (parser artifact).
-
-    html.parser does not auto-close <td>/<th> tags, creating nested cell
-    structures. These need the descendant-walking flat reconstruction path.
-    """
-    for cell in el.find_all(["th", "td"]):
-        if cell.find(["th", "td"]):
-            return True
-    return False
-
 
 def _needs_flat_reconstruction(el: Tag) -> bool:
     """Return True for tables that need the descendant-walking flat path.
@@ -476,7 +467,10 @@ def _denormalize_table(el: Tag) -> list[list[str]]:
     for tr in trs:
         col_count = 0
         for cell in tr.find_all(["th", "td"], recursive=False):
-            col_count += int(cell.get("colspan", 1))
+            try:
+                col_count += int(cell.get("colspan", 1))
+            except (ValueError, TypeError):
+                col_count += 1
         if col_count > max_cols:
             max_cols = col_count
     num_rows = len(trs)
@@ -498,8 +492,14 @@ def _denormalize_table(el: Tag) -> list[list[str]]:
 
             text = _inline_text(cell).strip().replace("|", "\\|")
             text = _COLLAPSE_WS_RE.sub(" ", text)
-            rs = int(cell.get("rowspan", 1))
-            cs = int(cell.get("colspan", 1))
+            try:
+                rs = int(cell.get("rowspan", 1))
+            except (ValueError, TypeError):
+                rs = 1
+            try:
+                cs = int(cell.get("colspan", 1))
+            except (ValueError, TypeError):
+                cs = 1
 
             for dr in range(rs):
                 for dc in range(cs):

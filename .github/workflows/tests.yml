@@ -33,6 +33,28 @@ jobs:
       - name: Run ruff
         run: uv run ruff check packages tests
 
+  typecheck:
+    name: pyright
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Sync workspace
+        run: uv sync --all-packages --group dev
+
+      - name: Run pyright
+        run: uv run pyright packages
+        continue-on-error: true
+
   package-tests:
     name: ${{ matrix.package }} tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

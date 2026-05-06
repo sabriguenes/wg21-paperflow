@@ -19,10 +19,11 @@ import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
+from mailing import DEFAULT_USER_AGENT
+
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.open-std.org/jtc1/sc22/wg21/docs/papers"
-DEFAULT_USER_AGENT = "paperflow/0.1 (+https://github.com/cppalliance/wg21-paperflow)"
 
 _MAILING_ANCHOR_RE = re.compile(r"^mailing\d{4}-\d{2}$")
 _PAPER_LINK_PATTERN = re.compile(
@@ -92,48 +93,47 @@ def _extract_paper_metadata_from_row(
         subgroup = cells[4].text.strip()
 
     raw_links: list[dict] = []
+    matched_url: str | None = None
+    matched_re: re.Match[str] | None = None
+
     for link in first_cell.find_all("a", href=True):
         href = link.get("href", "")
         absolute = urllib.parse.urljoin(page_url, href)
-        raw_links.append({
-            "href": absolute,
-            "text": link.text.strip(),
-        })
+        raw_links.append({"href": absolute, "text": link.text.strip()})
 
-    for link in first_cell.find_all("a", href=True):
-        href = link.get("href", "")
-        match = _PAPER_LINK_PATTERN.search(href)
-        if not match:
-            continue
+        if matched_re is None:
+            m = _PAPER_LINK_PATTERN.search(href)
+            if m:
+                parsed = urllib.parse.urlparse(absolute)
+                if parsed.scheme in ("https", "http") and parsed.netloc == base.netloc:
+                    matched_url = absolute
+                    matched_re = m
+                else:
+                    logger.warning("Skipping off-origin paper URL %s", absolute)
 
-        paper_url = urllib.parse.urljoin(page_url, href)
-        parsed = urllib.parse.urlparse(paper_url)
-        if parsed.scheme not in ("https", "http") or parsed.netloc != base.netloc:
-            logger.warning("Skipping off-origin paper URL %s", paper_url)
-            continue
+    if matched_re is None or matched_url is None:
+        return None
 
-        paper_id = match.group(1).lower()
-        file_ext = match.group(2).lower()
-        filename = match.group(0).lower()
+    paper_id = matched_re.group(1).lower()
+    file_ext = matched_re.group(2).lower()
+    filename = matched_re.group(0).lower()
 
-        row: dict = {
-            "url": paper_url,
-            "filename": filename,
-            "type": file_ext,
-            "paper_id": paper_id,
-            "title": title,
-            "authors": authors,
-            "document_date": document_date,
-            "subgroup": subgroup,
-            "raw_columns": raw_columns,
-            "raw_links": raw_links,
-        }
-        intent = _infer_intent(title)
-        if intent is not None:
-            row["intent"] = intent
-        return row
-
-    return None
+    row: dict = {
+        "url": matched_url,
+        "filename": filename,
+        "type": file_ext,
+        "paper_id": paper_id,
+        "title": title,
+        "authors": authors,
+        "document_date": document_date,
+        "subgroup": subgroup,
+        "raw_columns": raw_columns,
+        "raw_links": raw_links,
+    }
+    intent = _infer_intent(title)
+    if intent is not None:
+        row["intent"] = intent
+    return row
 
 
 def _find_table_in_section(anchor) -> Tag | None:
@@ -207,7 +207,10 @@ def parse_papers_for_mailing(
         logger.warning("No table found after anchor %s", anchor_id)
         return []
 
-    return _parse_table_rows(table, page_url)
+    papers = _parse_table_rows(table, page_url)
+    for paper in papers:
+        paper["mailing_date"] = mailing_date
+    return papers
 
 
 def parse_all_mailings(
@@ -231,6 +234,8 @@ def parse_all_mailings(
             continue
         papers = _parse_table_rows(table, page_url)
         if papers:
+            for paper in papers:
+                paper["mailing_date"] = mailing_id
             result[mailing_id] = papers
 
     for anchor in soup.find_all(attrs={"name": _MAILING_ANCHOR_RE}):
@@ -244,6 +249,8 @@ def parse_all_mailings(
             continue
         papers = _parse_table_rows(table, page_url)
         if papers:
+            for paper in papers:
+                paper["mailing_date"] = mailing_id
             result[mailing_id] = papers
 
     return result
@@ -330,7 +337,7 @@ def fetch_papers_for_year(
     return list(seen.values())
 
 
-def fetch_paper_ids_for_year(year: str) -> list[str]:
+def fetch_paper_ids_for_year(year: str, *, timeout: float = 60.0) -> list[str]:
     """Fetch just the paper IDs for a year."""
-    papers = fetch_papers_for_year(year)
+    papers = fetch_papers_for_year(year, timeout=timeout)
     return [p["paper_id"] for p in papers]

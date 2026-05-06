@@ -115,18 +115,13 @@ class SqliteBackend(StorageBackend):
     def from_env(cls) -> "SqliteBackend":
         """Construct from ``$WG21_DATA_DIR``.
 
-        Raises :class:`EnvironmentError` with an actionable message when
-        the variable is unset or empty.
+        Delegates to :func:`paperstore.factory.default_workspace_dir` for
+        env-var resolution. Raises :class:`EnvironmentError` with an
+        actionable message when the variable is unset or empty.
         """
-        env_var = "WG21_DATA_DIR"
-        raw = os.environ.get(env_var, "").strip()
-        if not raw:
-            raise EnvironmentError(
-                f"{env_var} is not set. "
-                "Set it to the directory where paperflow stores its data.\n"
-                f"  export {env_var}=/path/to/wg21-data"
-            )
-        return cls(Path(raw))
+        from paperstore.factory import default_workspace_dir
+
+        return cls(default_workspace_dir())
 
     @property
     def workspace_dir(self) -> Path:
@@ -210,45 +205,35 @@ class SqliteBackend(StorageBackend):
                     authors_json = json.dumps(authors_raw)
                 else:
                     authors_json = str(authors_raw)
-                # INSERT OR IGNORE keeps existing source_file/markdown_path on updates.
+                target_group = p.get("subgroup") or p.get("target_group") or ""
                 self._conn.execute(
                     """
-                    INSERT OR IGNORE INTO papers
+                    INSERT INTO papers
                         (paper_id, year, title, authors, target_group, intent,
                          url, document_date, mailing_date)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(paper_id) DO UPDATE SET
+                        year = excluded.year,
+                        title = excluded.title,
+                        authors = excluded.authors,
+                        target_group = excluded.target_group,
+                        intent = CASE WHEN papers.intent = ''
+                                      THEN excluded.intent
+                                      ELSE papers.intent END,
+                        url = excluded.url,
+                        document_date = excluded.document_date,
+                        mailing_date = excluded.mailing_date
                     """,
                     (
                         pid,
                         year,
                         p.get("title") or "",
                         authors_json,
-                        p.get("subgroup") or "",
+                        target_group,
                         p.get("intent") or "",
                         p.get("url") or "",
                         p.get("document_date") or "",
                         p.get("mailing_date") or "",
-                    ),
-                )
-                # Update non-completion fields without clobbering source_file/markdown_path.
-                self._conn.execute(
-                    """
-                    UPDATE papers SET
-                        year = ?, title = ?, authors = ?, target_group = ?,
-                        intent = CASE WHEN intent = '' THEN ? ELSE intent END,
-                        url = ?, document_date = ?, mailing_date = ?
-                    WHERE paper_id = ?
-                    """,
-                    (
-                        year,
-                        p.get("title") or "",
-                        authors_json,
-                        p.get("subgroup") or "",
-                        p.get("intent") or "",
-                        p.get("url") or "",
-                        p.get("document_date") or "",
-                        p.get("mailing_date") or "",
-                        pid,
                     ),
                 )
         return self.list_papers_for_year(year)
@@ -513,6 +498,7 @@ class SqliteBackend(StorageBackend):
     def list_years(self) -> list[tuple[str, int]]:
         """Return ``[(year, paper_count)]`` sorted by year."""
         rows = self._conn.execute(
-            "SELECT year, COUNT(*) AS n FROM papers GROUP BY year ORDER BY year"
+            "SELECT year, COUNT(*) AS n FROM papers "
+            "WHERE year != '' GROUP BY year ORDER BY year"
         ).fetchall()
         return [(r["year"], r["n"]) for r in rows]

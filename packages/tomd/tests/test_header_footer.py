@@ -35,7 +35,7 @@ def test_edge_items_picks_top_and_bottom():
     block_top = _make_block_at_y([("Header A", 30), ("Header B", 60), ("Header C", 90)])
     block_body = _make_block_at_y([("body line", 300)])
     block_bot = _make_block_at_y([("Footer X", 500), ("Footer Y", 540), ("Footer Z", 580)])
-    items = get_edge_items([block_top, block_body, block_bot], page_num=1, page_height=600)
+    items = get_edge_items([block_top, block_body, block_bot], page_num=1)
     texts = [it.text for it in items]
     # Top 3 by y (ascending): Header A/B/C. Bottom 3 by y (largest): Footer X/Y/Z
     # (and possibly body line too — the function takes items[:3] and items[-3:]).
@@ -51,19 +51,19 @@ def test_edge_items_dedups_same_text_same_y():
     # Two blocks contribute lines with identical text at identical y — dedup.
     b1 = _make_block_at_y([("Page 1", 30)])
     b2 = _make_block_at_y([("Page 1", 30)])
-    items = get_edge_items([b1, b2], page_num=1, page_height=600)
+    items = get_edge_items([b1, b2], page_num=1)
     texts = [it.text for it in items]
     assert texts.count("Page 1") == 1
 
 
 def test_edge_items_empty_page():
-    assert get_edge_items([], page_num=1, page_height=600) == []
+    assert get_edge_items([], page_num=1) == []
 
 
 def test_edge_items_skips_blank_lines():
     """Lines whose text is empty after strip are not edge items."""
     b = _make_block_at_y([("   ", 30), ("Real header", 60)])
-    items = get_edge_items([b], page_num=1, page_height=600)
+    items = get_edge_items([b], page_num=1)
     texts = [it.text for it in items]
     assert texts == ["Real header"]
 
@@ -73,7 +73,7 @@ def test_edge_items_limits_per_page():
     # 10 lines spread across y.
     lines_data = [(f"line {i}", 20.0 + i * 30) for i in range(10)]
     b = _make_block_at_y(lines_data)
-    items = get_edge_items([b], page_num=1, page_height=600)
+    items = get_edge_items([b], page_num=1)
     # Top 3 + bottom 3 = 6; dedup only when keys collide.
     assert len(items) <= 2 * EDGE_ITEMS_PER_PAGE
 

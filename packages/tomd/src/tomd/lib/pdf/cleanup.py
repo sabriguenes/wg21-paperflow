@@ -24,8 +24,7 @@ def _y_bucket(bbox: tuple[float, float, float, float]) -> float:
     return round(y_center / Y_TOLERANCE) * Y_TOLERANCE
 
 
-def get_edge_items(blocks: list[Block], page_num: int,
-                    page_height: float) -> list[PageEdgeItem]:
+def get_edge_items(blocks: list[Block], page_num: int) -> list[PageEdgeItem]:
     """Get the top N and bottom N text items from a page by y-coordinate.
 
     Deduplicates by (text, rounded y-position) to avoid counting the

@@ -161,8 +161,7 @@ def main() -> int:
             return _cmd_show_paper(backend, args.paper_id)
         if args.command == "reconcile":
             return _cmd_reconcile(backend)
-    parser.print_help()
-    return 1
+    return 1  # unreachable with required=True, but satisfies type checker
 
 
 if __name__ == "__main__":

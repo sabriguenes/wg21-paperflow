@@ -111,6 +111,8 @@ def dedup_paragraphs(md: str) -> str:
 
 FRONT_MATTER_ORDER = ("title", "document", "revision", "date", "intent", "audience", "reply-to")
 
+DEFAULT_FENCE_LANG = "cpp"
+
 _PID_REVISION_RE = re.compile(r"[PDpd]\d{3,5}[Rr](\d+)")
 
 
@@ -142,6 +144,9 @@ def sanitize_metadata(metadata: dict) -> dict:
     """
     md = dict(metadata)
 
+    if "title" in md and not isinstance(md["title"], str):
+        md["title"] = str(md["title"])
+
     if "title" in md:
         title = md["title"]
         title = title.replace("\n", " ").replace("\r", " ")
@@ -166,6 +171,9 @@ def sanitize_metadata(metadata: dict) -> dict:
                 elif after_label:
                     title = after_label
         md["title"] = title.strip()
+
+    if isinstance(md.get("reply-to"), str):
+        md["reply-to"] = [md["reply-to"]]
 
     if "reply-to" in md and isinstance(md["reply-to"], list):
         cleaned = []
@@ -207,7 +215,7 @@ def format_front_matter(metadata: dict) -> str:
     """Format metadata dict as YAML front matter in strict canonical order.
 
     Strict-order contract: keys are emitted exactly in the order
-    ``title, document, date, intent, audience, reply-to``. Missing keys
+    ``title, document, revision, date, intent, audience, reply-to``. Missing keys
     are skipped (no placeholders, no blank lines). Unknown keys appear
     after ``audience`` so ``reply-to`` is always last. Callers and
     downstream tools may rely on this ordering for diffs and parsing.
@@ -352,6 +360,19 @@ def _is_metadata_table(lines: list[str]) -> bool:
     return True
 
 
+_FRONT_MATTER_END_RE = re.compile(r"\A---[ \t]*\n.*?\n(---)", re.DOTALL)
+
+
+def _find_front_matter_end(md: str) -> int | None:
+    """Find the character offset of the closing ``---`` in YAML front matter.
+
+    Returns the offset where the closing ``---`` starts, or None if the
+    string does not begin with a valid YAML front matter block.
+    """
+    m = _FRONT_MATTER_END_RE.match(md)
+    return m.start(1) if m else None
+
+
 def _strip_metadata_table(md: str) -> str:
     """Strip a leading metadata pipe table + HR from the body after front matter.
 
@@ -359,8 +380,8 @@ def _strip_metadata_table(md: str) -> str:
     (Document, Date, Audience, Reply-to, Replaces, etc.).
     Tables with non-metadata rows are left intact.
     """
-    fm_end = md.find("---", 4)
-    if fm_end < 0:
+    fm_end = _find_front_matter_end(md)
+    if fm_end is None:
         return md
     body_start = md.find("\n", fm_end)
     if body_start < 0:

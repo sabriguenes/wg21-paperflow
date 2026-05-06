@@ -17,10 +17,11 @@ from urllib.parse import urlparse
 
 import httpx
 
+from mailing import DEFAULT_USER_AGENT
+
 logger = logging.getLogger(__name__)
 
 _FETCH_TIMEOUT_SEC = 120
-_USER_AGENT = "paperflow/0.1 (+https://github.com/cppalliance/wg21-paperflow)"
 _ALLOWED_SUFFIXES = (".pdf", ".html", ".htm")
 
 
@@ -44,7 +45,7 @@ def default_client(*, timeout: float = _FETCH_TIMEOUT_SEC) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         timeout=timeout,
         follow_redirects=True,
-        headers={"User-Agent": _USER_AGENT},
+        headers={"User-Agent": DEFAULT_USER_AGENT},
     )
 
 

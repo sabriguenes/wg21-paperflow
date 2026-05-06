@@ -101,11 +101,11 @@ def _extract_tools(section_body: str) -> list[str]:
 
 def _build_state_context(state: PipelineState, reads: list[str]) -> str:
     """Serialize only the Reads fields from the pipeline state."""
-    full = state.model_dump(exclude_none=True)
+    full = state.model_dump(exclude_none=False)
     filtered = {k: v for k, v in full.items() if k in reads}
     if not filtered:
         return "{}"
-    return json.dumps(filtered, indent=2, ensure_ascii=False, default=str)
+    return json.dumps(filtered, indent=2, ensure_ascii=False)
 
 
 def _load_paper(pid: str, backend: StorageBackend) -> tuple[PaperRow, str]:
@@ -133,7 +133,7 @@ def _load_paper(pid: str, backend: StorageBackend) -> tuple[PaperRow, str]:
 def _apply_output(state: PipelineState, output: BaseModel) -> None:
     """Copy fields from a step output onto the pipeline state."""
     for field_name in output.model_fields:
-        if hasattr(state, field_name):
+        if field_name in state.model_fields:
             setattr(state, field_name, getattr(output, field_name))
 
 
@@ -164,7 +164,12 @@ async def review_paper(
 
     slots = {**_DEFAULT_MODEL_SLOTS, **(model_slots or {})}
     secs = load_sections()
-    system_msg = secs["System Prompt"]
+    system_msg = secs.get("System Prompt")
+    if not system_msg:
+        raise ReviewError(
+            "'System Prompt' section not found in review.md. "
+            f"Available sections: {sorted(secs)}"
+        )
 
     _meta, paper_md = _load_paper(pid, backend)
     backend.clear_review(pid)
@@ -189,14 +194,17 @@ async def review_paper(
             reads = _extract_reads(step_body)
             tools = _extract_tools(step_body)
 
+            if on_step is not None:
+                on_step(step_index, key)
+
+            if stop_after is not None and step_index > stop_after:
+                return ""
+
             if key == _VERIFY_CITATIONS_KEY:
                 if state.surviving_findings is not None and len(state.surviving_findings) == 0:
                     if on_step_skip is not None:
                         on_step_skip(step_index, key)
                     continue
-
-            if on_step is not None:
-                on_step(step_index, key)
 
             logger.info(
                 "Step %d (%s) model_slot='%s' -> %s, tools=%s",
@@ -224,18 +232,20 @@ async def review_paper(
                 agent.tool_plain(researcher.web_search)
                 agent.tool_plain(researcher.web_fetch)
 
-            result = await agent.run(
-                user_content,
-                usage_limits=UsageLimits(request_limit=200),
-            )
+            try:
+                result = await agent.run(
+                    user_content,
+                    usage_limits=UsageLimits(request_limit=200),
+                )
+            except Exception as exc:
+                raise ReviewError(
+                    f"Step '{key}' failed: {exc}"
+                ) from exc
             output = result.output
             _apply_output(state, output)
 
             if on_step_complete is not None:
                 on_step_complete(step_index, key, output)
-
-            if stop_after is not None and step_index >= stop_after:
-                return ""
 
             if key == _WRITE_OUTPUT_KEY:
                 assert isinstance(output, WriteOutputOutput)

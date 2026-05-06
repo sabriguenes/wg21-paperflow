@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -21,6 +22,7 @@ from web_tools.session import SearchBackend, SearchResponse, SearchResult
 logger = logging.getLogger(__name__)
 
 _ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+_MAX_BRAVE_COUNT = 20
 
 
 class _TokenBucket:
@@ -75,11 +77,12 @@ class BraveBackend(SearchBackend):
         self, query: str, max_results: int
     ) -> SearchResponse:
         await self._limiter.acquire()
+        count = min(max(1, max_results), _MAX_BRAVE_COUNT)
 
         try:
             resp = await self._client.get(
                 _ENDPOINT,
-                params={"q": query, "count": max_results},
+                params={"q": query, "count": count},
                 headers={
                     "Accept": "application/json",
                     "Accept-Encoding": "gzip",
@@ -94,7 +97,11 @@ class BraveBackend(SearchBackend):
         if resp.status_code != 200:
             return SearchResponse(status_code=resp.status_code, results=[])
 
-        data = resp.json()
+        try:
+            data = resp.json()
+        except json.JSONDecodeError:
+            logger.warning("Brave returned non-JSON response for %r", query)
+            return SearchResponse(status_code=resp.status_code, results=[])
         results: list[SearchResult] = []
         for item in data.get("web", {}).get("results", []):
             results.append(SearchResult(
