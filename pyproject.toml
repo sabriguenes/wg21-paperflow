@@ -12,6 +12,7 @@ dependencies = [
     "web_tools",
     "review",
     "cli",
+    "preview",
 ]
 
 [dependency-groups]
@@ -30,6 +31,8 @@ tomd       = {workspace = true}
 web_tools  = {workspace = true}
 review     = {workspace = true}
 cli        = {workspace = true}
+preview    = {workspace = true}
+scrivener  = {git = "https://github.com/gregjkal/wg21-scrivener.git"}
 
 [tool.pytest.ini_options]
 testpaths = [
@@ -39,6 +42,7 @@ testpaths = [
     "packages/web_tools/tests",
     "packages/review/tests",
     "packages/cli/tests",
+    "packages/preview/tests",
     "tests",
 ]
 

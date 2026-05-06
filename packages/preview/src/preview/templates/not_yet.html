@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light">
+  <title>{{ paper_id }} - not converted yet</title>
+  <style>
+    html, body {
+      background: #ffffff;
+      color: #1f2328;
+      margin: 0;
+      padding: 0;
+      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+      height: 100%;
+    }
+    .empty {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      text-align: center;
+      padding: 24px;
+    }
+    .empty h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .empty p { margin: 0; color: #57606a; }
+    code {
+      background: #f6f8fa;
+      border: 1px solid #d0d7de;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="empty">
+    <h1>No converted markdown yet for {{ paper_id }}</h1>
+    <p>Run <code>paperflow convert {{ paper_id }}</code> in another terminal.</p>
+    <p>This pane will refresh automatically when the file lands.</p>
+  </div>
+</body>
+</html>

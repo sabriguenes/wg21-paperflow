@@ -56,6 +56,19 @@ def test_get_paper_md_roundtrip_and_missing(tmp_path: Path):
         store.get_paper_md("P2")
 
 
+def test_get_paper_md_path_is_deterministic_and_does_not_check_existence(
+    tmp_path: Path,
+):
+    store = SqliteBackend(tmp_path)
+    expected = tmp_path / "paperstore" / "p1234r0.md"
+    # Existence is intentionally not checked: callers (e.g. file
+    # watchers) need a stable path before the file lands.
+    assert store.get_paper_md_path("P1234R0") == expected
+    assert store.get_paper_md_path("p1234r0") == expected
+    written = store.write_paper_md("P1234R0", "# Hi\n")
+    assert store.get_paper_md_path("P1234R0") == written
+
+
 def test_list_papers_for_year_roundtrip_and_missing(tmp_path: Path):
     store = SqliteBackend(tmp_path)
     store.upsert_year("2026", [{"paper_id": "P1"}])

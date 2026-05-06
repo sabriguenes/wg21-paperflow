@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ paper_id }} - {{ title }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <header class="bar">
+    <span class="pid">{{ paper_id }}</span>
+    <span class="title">{{ title }}</span>
+    <span class="status" id="status" data-state="live">live</span>
+  </header>
+  <main class="panes">
+    <section class="pane">
+      <div class="label">Original</div>
+      <iframe class="frame" src="/source" title="Original source"></iframe>
+    </section>
+    <section class="pane">
+      <div class="label">Rendered Markdown</div>
+      <iframe class="frame" id="md-frame" src="/markdown" title="Rendered markdown"></iframe>
+    </section>
+  </main>
+  <script>
+    (function () {
+      const frame = document.getElementById("md-frame");
+      const status = document.getElementById("status");
+      const setStatus = (label, state) => {
+        status.textContent = label;
+        status.dataset.state = state;
+      };
+      const es = new EventSource("/events");
+      es.addEventListener("open", () => setStatus("live", "live"));
+      es.addEventListener("reload", () => {
+        frame.contentWindow.location.reload();
+        const t = new Date().toLocaleTimeString();
+        setStatus("reloaded " + t, "live");
+      });
+      es.onerror = () => setStatus("disconnected", "down");
+    })();
+  </script>
+</body>
+</html>

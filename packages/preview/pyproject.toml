@@ -1,0 +1,23 @@
+[project]
+name = "preview"
+version = "0.3.0"
+description = "Side-by-side preview server for WG21 paper sources and converted markdown"
+requires-python = ">=3.12"
+license = {text = "BSL-1.0"}
+authors = [{name = "Greg Kaleka", email = "greg@gregkaleka.com"}]
+dependencies = [
+    "paperstore",
+    "flask~=3.0",
+    "watchdog~=4.0",
+    "scrivener",
+]
+
+[project.scripts]
+preview = "preview.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/preview"]

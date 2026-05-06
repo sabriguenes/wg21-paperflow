@@ -166,6 +166,16 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
+    def get_paper_md_path(self, paper_id: str) -> Path:
+        """Return the canonical local path for the converted markdown.
+
+        Does not check existence. Use :meth:`get_paper_md` to read content
+        (which raises :class:`MissingPaperMdError` if not yet written). This
+        accessor exists for callers that need a stable filesystem path
+        before the file exists, such as file watchers.
+        """
+
+    @abstractmethod
     def get_review_path(self, paper_id: str) -> Path:
         """Return the local path to the review file.
 

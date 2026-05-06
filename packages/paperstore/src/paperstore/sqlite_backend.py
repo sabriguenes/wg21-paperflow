@@ -101,7 +101,11 @@ class SqliteBackend(StorageBackend):
         self._papers_dir = self._workspace / "paperstore"
         self._papers_dir.mkdir(exist_ok=True)
         db_path = self._workspace / "paperstore.db"
-        self._conn = sqlite3.connect(str(db_path))
+        # check_same_thread=False so long-lived servers (preview) can hand
+        # the backend off to Werkzeug worker threads. Python's sqlite3 is
+        # built SERIALIZED, so concurrent reads are safe; writes still go
+        # through `with self._conn:` blocks and a single process.
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         _migrate(self._conn)
@@ -491,6 +495,10 @@ class SqliteBackend(StorageBackend):
                 f"Run 'paperflow convert {paper_id}' again."
             )
         return path.read_text(encoding="utf-8")
+
+    def get_paper_md_path(self, paper_id: str) -> Path:
+        pid = paper_id.strip().upper()
+        return self._papers_dir / f"{pid.lower()}.md"
 
     def get_review_path(self, paper_id: str) -> Path:
         row = self._conn.execute(
