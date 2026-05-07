@@ -9,6 +9,7 @@ members = [
     "paperstore",
     "preview",
     "review",
+    "reviewstore",
     "tomd",
     "web-tools",
     "wg21-paperflow",
@@ -2860,6 +2861,7 @@ dependencies = [
     { name = "paperstore" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
+    { name = "reviewstore" },
     { name = "web-tools" },
 ]
 
@@ -2868,8 +2870,14 @@ requires-dist = [
     { name = "paperstore", editable = "packages/paperstore" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-ai" },
+    { name = "reviewstore", editable = "packages/reviewstore" },
     { name = "web-tools", editable = "packages/web_tools" },
 ]
+
+[[package]]
+name = "reviewstore"
+version = "0.1.0"
+source = { editable = "packages/reviewstore" }
 
 [[package]]
 name = "rich"
@@ -3559,6 +3567,7 @@ dependencies = [
     { name = "paperstore" },
     { name = "preview" },
     { name = "review" },
+    { name = "reviewstore" },
     { name = "tomd" },
     { name = "web-tools" },
 ]
@@ -3577,6 +3586,7 @@ requires-dist = [
     { name = "paperstore", editable = "packages/paperstore" },
     { name = "preview", editable = "packages/preview" },
     { name = "review", editable = "packages/review" },
+    { name = "reviewstore", editable = "packages/reviewstore" },
     { name = "tomd", editable = "packages/tomd" },
     { name = "web-tools", editable = "packages/web_tools" },
 ]

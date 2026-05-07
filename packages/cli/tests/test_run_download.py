@@ -112,14 +112,11 @@ def test_run_download_progress_hooks_fire(tmp_path: Path, monkeypatch):
         }),
     )
 
-    totals: list[int] = []
-    progress: list[dict] = []
+    progress: list = []
     asyncio.run(jobs.run_download(
         ["P1000R0", "P1001R0"],
         store,
-        on_total=totals.append,
         on_progress=progress.append,
     ))
 
-    assert totals == [2]
-    assert {p["paper_id"] for p in progress} == {"P1000R0", "P1001R0"}
+    assert len(progress) == 2

@@ -18,13 +18,15 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel
 
+Stance = Literal["supports", "contradicts"]
+
 
 # -- Domain models -----------------------------------------------------------
 
 
 class SourceLoc(BaseModel, frozen=True):
     line: int
-    start_char: int
+    start_char: int  # ordinal disambiguator when multiple items share a line
     end_char: int
 
 
@@ -92,7 +94,7 @@ class ExternalEvidence(BaseModel, frozen=True):
     source_title: str
     text: str
     finding: str
-    stance: Literal["supports", "contradicts"]
+    stance: Stance
     quantitative: bool
     cited: bool
     verifiable: bool
@@ -102,7 +104,7 @@ class ExternalEvidence(BaseModel, frozen=True):
 class WebResolution(BaseModel, frozen=True):
     external_loc: SourceLoc
     source_url: str
-    stance: Literal["supports", "contradicts"]
+    stance: Stance
     finding: str
     resolved_claims: list[SourceLoc]
 
@@ -112,6 +114,7 @@ class WebResolution(BaseModel, frozen=True):
 
 class RawClaim(BaseModel, frozen=True):
     text: str
+    start_line: int = 0
     original_quotes: list[str] = []
     section: str = ""
     question: str = ""
@@ -120,6 +123,7 @@ class RawClaim(BaseModel, frozen=True):
 
 class RawEvidence(BaseModel, frozen=True):
     text: str
+    start_line: int = 0
     original_quotes: list[str] = []
     section: str = ""
     supports: list[str] = []
@@ -153,8 +157,6 @@ class DedupGroupingOutput(BaseModel, frozen=True):
 class VerifyOutput(BaseModel, frozen=True):
     """Step 5: verify + deps + map + contradict."""
 
-    splits: list[int] = []
-    cross_deps: list[tuple[SourceLoc, SourceLoc]] = []
     support_map: list[SupportLink] = []
     internal_contradictions: list[InternalContradiction] = []
 

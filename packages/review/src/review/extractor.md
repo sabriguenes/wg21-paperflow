@@ -5,10 +5,10 @@ Identify the load-bearing claims in a WG21 paper through chunked extraction, gra
 ```mermaid
 flowchart TD
     S0[0 Read] --> S1[1 Extract Claims]
-    S0 --> S2[2 Extract Evidence]
-    S1 --> S3[3 Dedup Claims]
-    S2 --> S4[4 Dedup Evidence]
-    S3 --> S5[5 Verify + Deps + Map]
+    S1 --> S2[2 Dedup Claims]
+    S0 --> S3[3 Extract Evidence]
+    S3 --> S4[4 Dedup Evidence]
+    S2 --> S5[5 Verify + Deps + Map]
     S4 --> S5
     S5 --> S6[6 Load-Bearing]
     S6 --> S7[7 Web Search]
@@ -18,14 +18,14 @@ flowchart TD
 
 ## System Prompt
 
-You are a structural analyst of WG21 papers. You extract exact quotes from the paper text. You **NEVER** compute character offsets, line numbers, or `SourceLoc` values — a code harness does that. You do not render verdicts, challenge claims, impose kill gates, offer political interpretations, or make authority judgments. Perform each of the steps in order.
+You are a structural analyst of WG21 papers. You extract exact quotes from the paper text and report the line number where each quote begins. Each line in the chunk is prefixed with its line number. You do not render verdicts, challenge claims, impose kill gates, offer political interpretations, or make authority judgments. Perform each of the steps in order.
 
 ## Global Directives
 
 - **Visibility:** Steps 0–8 produce structured data internally. Only Step 9 is visible output.
 - **Context isolation:** Raw HTML and fetched content **NEVER** enter the main agent context. The web search subagent consumes raw content and returns only structured `external_evidence[]` items.
 - **Evidence immutability:** Internal evidence (`evidence[]`) is immutable after Step 5. Web search produces a separate `external_evidence[]` list. **NEVER** modify `evidence[]` after Step 5.
-- **SourceLoc protocol:** All cross-references use `SourceLoc(line, start_char, end_char)`. **NEVER** use array indices. The code harness computes `SourceLoc` from exact quotes extracted by the LLM. The LLM references other items by quoting their `text`. Ordering: `line` first, then `start_char`.
+- **SourceLoc protocol:** The LLM reports `start_line` for each extracted item (the line number visible in the numbered chunk). The code harness computes the full `SourceLoc(line, start_char, end_char)` from the reported line number. The LLM does **NOT** compute `start_char` or `end_char`. Cross-references between items use `SourceLoc`. Ordering: `line` first, then `start_char`.
 - **Tombstone protocol:** No items are removed from arrays during dedup. Tombstones remain in place. **ALWAYS** skip items where `merged_into is not None`. **WHEN** any `depends_on` or `evidence_locs` entry points to a tombstone, follow `merged_into` to the survivor.
 
 ---
@@ -36,7 +36,7 @@ You are a structural analyst of WG21 papers. You extract exact quotes from the p
 - **Execution:** main
 - **Tools:** file_system
 - **Reads:** paper_source
-- **Writes:** chunks
+- **Writes:** chunks, citations
 
 Read the entire paper. Measure character count.
 
@@ -53,17 +53,21 @@ Read the entire paper. Measure character count.
 - **Reads:** chunks
 - **Writes:** raw_claims
 
-One subagent per chunk, parallel. For each substantive statement, one binary test: does this assert that something should be a certain way?
+One subagent per chunk, parallel. Each line in the chunk is prefixed with its line number (`N| text`). For each substantive statement, one binary test: does this assert that something should be a certain way?
+
+**WHEN extracting `text`** copy the quote without the line number prefix. The `text` field must contain only the paper's words.
 
 **WHEN a statement asserts something should be a certain way** extract as claim.
 
-**WHEN a statement describes a verifiable property of the standard, the world, or an implementation** skip.
+**WHEN a statement describes a verifiable property of the C++ language or C++ standard library, the world, or an implementation** skip.
 
 **WHEN a statement is a scope disclaimer, concession, or explicit non-goal** skip.
 
 **WHEN a statement is a definition or term introduction** skip.
 
-**FOR EACH claim** phrase a single question whose answer would constitute sufficient evidence — the shape of the needed evidence, not evidence found in the paper.
+**WHEN a statement is the paper's thesis, abstract summary, or stated purpose** skip. Statements like "this paper proposes X" or "we ask the committee to advance Y" are framing — the paper itself is their evidence.
+
+**FOR EACH claim** phrase a single question whose answer would constitute sufficient evidence — the shape of the needed evidence, not evidence found in the paper. The question must reference the claim's subject explicitly — avoid bare demonstratives (these, this, those) without restating what they refer to. A reader who sees only the question must understand what is being asked.
 
 ### Boundary Examples
 
@@ -91,6 +95,7 @@ One subagent per chunk, parallel. For each substantive statement, one binary tes
 ### Output per claim
 
 - `text` — exact quote from the paper
+- `start_line` — the line number where this statement begins (from the numbered text)
 - `original_quotes` — `[text]` (single element at extraction time)
 - `section` — section header or number where it appears
 - `question` — single question whose answer would satisfy the claim
@@ -98,14 +103,16 @@ One subagent per chunk, parallel. For each substantive statement, one binary tes
 
 ---
 
-## Step 2 — Extract Evidence
+## Step 3 — Extract Evidence
 
 - **Model:** default
 - **Execution:** subagent
 - **Reads:** chunks
 - **Writes:** raw_evidence
 
-One subagent per chunk, parallel. The subagent sees only the paper chunk. Claims are **NOT** injected. For each substantive statement, one binary test: is this offered in support of another assertion?
+One subagent per chunk, parallel. Each line in the chunk is prefixed with its line number (`N| text`). The subagent sees only the paper chunk. Claims are **NOT** injected. For each substantive statement, one binary test: is this offered in support of another assertion?
+
+**WHEN extracting `text`** copy the quote without the line number prefix. The `text` field must contain only the paper's words.
 
 **WHEN a statement is offered in support of another assertion** extract as evidence.
 
@@ -138,6 +145,7 @@ Four boolean flags per evidence item. Multiple can be true simultaneously.
 ### Output per evidence item
 
 - `text` — exact quote from the paper
+- `start_line` — the line number where this statement begins (from the numbered text)
 - `original_quotes` — `[text]` (single element at extraction time)
 - `section` — section header or number where it appears
 - `supports` — `[phrase]` (single-element list. A complete assertion this evidence advances: subject, verb, stance. **NOT** a topic label.)
@@ -145,7 +153,7 @@ Four boolean flags per evidence item. Multiple can be true simultaneously.
 
 ---
 
-## Step 3 — Dedup Claims
+## Step 2 — Dedup Claims
 
 - **Model:** default
 - **Execution:** main
@@ -188,7 +196,7 @@ Tiers 0 and 1 are deterministic — no LLM. Tier 2 requires one LLM call for sem
 - **Model:** default
 - **Execution:** main
 - **Reads:** claims, evidence
-- **Writes:** claims, evidence, support_map, internal_contradictions
+- **Writes:** support_map, internal_contradictions
 
 Four jobs on the same data. Execute in order.
 
@@ -349,35 +357,34 @@ Produce a `WebResolution` entry listing the URL and the full chain of claims con
 
 ## Step 9 — Report
 
-- **Model:** fast
+- **Model:** none (pure Python)
 - **Execution:** main
-- **Reads:** load_bearing_claims, claims
+- **Reads:** claims, evidence, support_map, external_evidence
 - **Writes:** report
 
-No new analysis. Render results as two sections of bulleted questions.
+No new analysis. Render results as three sections of structured markdown.
 
-### Unsupported Load-Bearing Claims
+### Title
 
-One bullet per claim where `classification` is `critical_gap`. Each bullet is the claim's `question`.
+`# {pid}: {paper_title}`
 
-**WHEN zero `critical_gap` claims exist** emit: "No questions."
+### Unsupported Claims
 
-Order by `SourceLoc` (line, then start_char). Each bullet is a bare question. No claim text, no explanation, no attribution.
+One bullet per claim where `support_map` status is `unsupported` and `merged_into is None`. Each bullet is the claim's `text` in bold, with the `question` as a sub-bullet.
 
-### Unsupported Peripheral Claims
+### Supported Claims
 
-One bullet per claim where `classification` is `peripheral` AND `status` is `unsupported`. Each bullet is the claim's `question`.
+One bullet per claim where `support_map` status is `directly_supported` or `transitively_supported`. Each bullet is the claim's `text` in bold, with each mapped evidence item's `text` and `section` as sub-bullets.
 
-**WHEN zero unsupported peripheral claims exist** emit: "No questions."
+### External Resources
 
-Order by `SourceLoc` (line, then start_char). Each bullet is a bare question. No claim text, no explanation, no attribution.
+Deduplicated list of `external_evidence` items as clickable markdown links: `[source_title](source_url)`.
 
 ---
 
 ## Notes
 
-- `claims` is mutated in place by Step 5 (Verify + Cross-Chunk Deps). A runner may use distinct field names (`deduped_claims` → `verified_claims`) for pipeline clarity.
-- `load_bearing_claims` is mutated in place by Step 8 (Resolve External). Same pattern.
+- `load_bearing_claims` is mutated in place by Step 8 (Resolve External).
 - Step 5 combines four jobs that could theoretically parallelize (Jobs 1–2 independent, Jobs 3–4 independent after 1–2). Kept as one step because all four share the same claims/evidence context and splitting would duplicate large state.
 
 ---
@@ -404,6 +411,32 @@ class SourceLoc(BaseModel, frozen=True):
 class Chunk(BaseModel, frozen=True):
     text: str
     line_offset: int
+
+
+class CitationRef(BaseModel, frozen=True):
+    paper_id: str
+    count: int
+
+
+class RawClaim(BaseModel, frozen=True):
+    text: str
+    start_line: int
+    original_quotes: list[str] = []
+    section: str = ""
+    question: str = ""
+    depends_on: list[str] = []
+
+
+class RawEvidence(BaseModel, frozen=True):
+    text: str
+    start_line: int
+    original_quotes: list[str] = []
+    section: str = ""
+    supports: list[str] = []
+    quantitative: bool = False
+    cited: bool = False
+    verifiable: bool = False
+    normative: bool = False
 
 
 class Claim(BaseModel, frozen=True):
@@ -477,20 +510,21 @@ class PipelineState(BaseModel):
 
     # Step 0 writes
     chunks: Optional[list[Chunk]] = None
+    citations: Optional[list[CitationRef]] = None
 
     # Step 1 writes
-    raw_claims: Optional[list[Claim]] = None
+    raw_claims: Optional[list[RawClaim]] = None
 
     # Step 2 writes
-    raw_evidence: Optional[list[Evidence]] = None
+    claims: Optional[list[Claim]] = None
 
     # Step 3 writes
-    claims: Optional[list[Claim]] = None
+    raw_evidence: Optional[list[RawEvidence]] = None
 
     # Step 4 writes
     evidence: Optional[list[Evidence]] = None
 
-    # Step 5 writes (claims, evidence mutated in place)
+    # Step 5 writes
     support_map: Optional[list[SupportLink]] = None
     internal_contradictions: Optional[list[InternalContradiction]] = None
 

@@ -34,15 +34,16 @@ from review.harness import (
     dedup_tier0,
     dedup_tier1,
     extract_citations,
+    number_lines,
     promote_claims,
     promote_evidence,
 )
 from review.models import (
+    Chunk,
     DedupGroupingOutput,
     ExtractClaimsOutput,
     ExtractEvidenceOutput,
     LoadBearingOutput,
-    LoadBearingResult,
     PipelineState,
     ResolveOutput,
     VerifyOutput,
@@ -54,8 +55,18 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL_SLOTS = {
     "fast": "anthropic:claude-haiku-4-5-20251001",
-    "default": "anthropic:claude-sonnet-4-6",
+    "default": "anthropic:claude-opus-4-6",
 }
+
+_DEFAULT_MODEL_SETTINGS = {"max_tokens": 80000}
+
+_SECTION_SYSTEM_PROMPT = "System Prompt"
+_REQUEST_LIMIT = 500
+_REQUEST_LIMIT_DEDUP = 50
+_RETRIES_CHUNK = 5
+_RETRIES_SINGLE = 3
+_CLASSIFICATION_CRITICAL_GAP = "critical_gap"
+_RETRIES_EMPTY_OUTPUT = 3
 
 StepFn = Callable[["PipelineState", "StepContext"], Awaitable[None]]
 
@@ -169,27 +180,35 @@ async def _step1_claims(state: PipelineState, ctx: StepContext) -> None:
     """Parallel LLM: extract claims from each chunk, then promote."""
     assert state.chunks is not None
     prompt_body = ctx.sections.get("Step 1 — Extract Claims", "")
-    system = ctx.sections.get("System Prompt", "")
+    system = ctx.sections.get(_SECTION_SYSTEM_PROMPT, "")
     model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
 
-    async def _extract_chunk(chunk_text: str, line_offset: int):
+    async def _extract_chunk(chunk: Chunk):
         agent: Agent[None, ExtractClaimsOutput] = Agent(
             model=model,
             output_type=ExtractClaimsOutput,
             system_prompt=system,
-            retries=5,
+            retries=_RETRIES_CHUNK,
+            model_settings=_DEFAULT_MODEL_SETTINGS,
         )
         user_msg = (
-            f"## Chunk (line offset {line_offset})\n\n{chunk_text}\n\n"
+            f"## Chunk\n\n{number_lines(chunk)}\n\n"
             f"## Instructions\n\n{prompt_body}"
         )
-        result = await agent.run(
-            user_msg, usage_limits=UsageLimits(request_limit=500)
-        )
+        for attempt in range(_RETRIES_EMPTY_OUTPUT):
+            result = await agent.run(
+                user_msg, usage_limits=UsageLimits(request_limit=_REQUEST_LIMIT)
+            )
+            if result.output.claims:
+                return result
+            logger.warning(
+                "Step 1 chunk (offset %d): empty claims on attempt %d, retrying",
+                chunk.line_offset, attempt + 1,
+            )
         return result
 
     tasks = [
-        _extract_chunk(c.text, c.line_offset) for c in state.chunks
+        _extract_chunk(c) for c in state.chunks
     ]
     results = await asyncio.gather(*tasks)
 
@@ -208,28 +227,36 @@ async def _step1_claims(state: PipelineState, ctx: StepContext) -> None:
 async def _step2_evidence(state: PipelineState, ctx: StepContext) -> None:
     """Parallel LLM: extract evidence from each chunk, then promote."""
     assert state.chunks is not None
-    prompt_body = ctx.sections.get("Step 2 — Extract Evidence", "")
-    system = ctx.sections.get("System Prompt", "")
+    prompt_body = ctx.sections.get("Step 3 — Extract Evidence", "")
+    system = ctx.sections.get(_SECTION_SYSTEM_PROMPT, "")
     model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
 
-    async def _extract_chunk(chunk_text: str, line_offset: int):
+    async def _extract_chunk(chunk: Chunk):
         agent: Agent[None, ExtractEvidenceOutput] = Agent(
             model=model,
             output_type=ExtractEvidenceOutput,
             system_prompt=system,
-            retries=5,
+            retries=_RETRIES_CHUNK,
+            model_settings=_DEFAULT_MODEL_SETTINGS,
         )
         user_msg = (
-            f"## Chunk (line offset {line_offset})\n\n{chunk_text}\n\n"
+            f"## Chunk\n\n{number_lines(chunk)}\n\n"
             f"## Instructions\n\n{prompt_body}"
         )
-        result = await agent.run(
-            user_msg, usage_limits=UsageLimits(request_limit=500)
-        )
+        for attempt in range(_RETRIES_EMPTY_OUTPUT):
+            result = await agent.run(
+                user_msg, usage_limits=UsageLimits(request_limit=_REQUEST_LIMIT)
+            )
+            if result.output.evidence:
+                return result
+            logger.warning(
+                "Step 3 chunk (offset %d): empty evidence on attempt %d, retrying",
+                chunk.line_offset, attempt + 1,
+            )
         return result
 
     tasks = [
-        _extract_chunk(c.text, c.line_offset) for c in state.chunks
+        _extract_chunk(c) for c in state.chunks
     ]
     results = await asyncio.gather(*tasks)
 
@@ -257,9 +284,9 @@ async def _step3_dedup_claims(state: PipelineState, ctx: StepContext) -> None:
         state.claims = claims
         return
 
-    system = ctx.sections.get("System Prompt", "")
+    system = ctx.sections.get(_SECTION_SYSTEM_PROMPT, "")
     model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
-    prompt_body = ctx.sections.get("Step 3 — Dedup Claims", "")
+    prompt_body = ctx.sections.get("Step 2 — Dedup Claims", "")
 
     survivor_questions = json.dumps(
         [{"idx": i, "question": s.question} for i, s in enumerate(survivors)],
@@ -271,18 +298,26 @@ async def _step3_dedup_claims(state: PipelineState, ctx: StepContext) -> None:
     )
 
     agent: Agent[None, DedupGroupingOutput] = Agent(
-        model=model, output_type=DedupGroupingOutput, system_prompt=system, retries=3,
+        model=model, output_type=DedupGroupingOutput, system_prompt=system, retries=_RETRIES_SINGLE,
+        model_settings=_DEFAULT_MODEL_SETTINGS,
     )
-    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=50))
+    for attempt in range(_RETRIES_EMPTY_OUTPUT):
+        result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=_REQUEST_LIMIT_DEDUP))
+        if result.output.groups:
+            break
+        logger.warning("Step 2 — Dedup Claims: empty groups on attempt %d, retrying", attempt + 1)
     if ctx.debug and ctx.debug_log is not None:
-        ctx.debug_log.append(_render_debug_md(result, "Step 3 — Dedup Claims"))
+        ctx.debug_log.append(_render_debug_md(result, "Step 2 — Dedup Claims"))
     grouping = result.output
 
     for group in grouping.groups:
         if len(group) < 2:
             continue
-        longest_idx = max(group, key=lambda i: len(survivors[i].text))
-        for i in group:
+        valid = [i for i in group if 0 <= i < len(survivors)]
+        if len(valid) < 2:
+            continue
+        longest_idx = max(valid, key=lambda i: len(survivors[i].text))
+        for i in valid:
             if i != longest_idx:
                 s = survivors[i]
                 survivor_obj = survivors[longest_idx]
@@ -313,7 +348,7 @@ async def _step4_dedup_evidence(state: PipelineState, ctx: StepContext) -> None:
         state.evidence = evidence
         return
 
-    system = ctx.sections.get("System Prompt", "")
+    system = ctx.sections.get(_SECTION_SYSTEM_PROMPT, "")
     model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
     prompt_body = ctx.sections.get("Step 4 — Dedup Evidence", "")
 
@@ -327,9 +362,14 @@ async def _step4_dedup_evidence(state: PipelineState, ctx: StepContext) -> None:
     )
 
     agent: Agent[None, DedupGroupingOutput] = Agent(
-        model=model, output_type=DedupGroupingOutput, system_prompt=system, retries=3,
+        model=model, output_type=DedupGroupingOutput, system_prompt=system, retries=_RETRIES_SINGLE,
+        model_settings=_DEFAULT_MODEL_SETTINGS,
     )
-    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=50))
+    for attempt in range(_RETRIES_EMPTY_OUTPUT):
+        result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=_REQUEST_LIMIT_DEDUP))
+        if result.output.groups:
+            break
+        logger.warning("Step 4 — Dedup Evidence: empty groups on attempt %d, retrying", attempt + 1)
     if ctx.debug and ctx.debug_log is not None:
         ctx.debug_log.append(_render_debug_md(result, "Step 4 — Dedup Evidence"))
     grouping = result.output
@@ -337,8 +377,11 @@ async def _step4_dedup_evidence(state: PipelineState, ctx: StepContext) -> None:
     for group in grouping.groups:
         if len(group) < 2:
             continue
-        lowest_idx = min(group, key=lambda i: (survivors[i].loc.line, survivors[i].loc.start_char))
-        for i in group:
+        valid = [i for i in group if 0 <= i < len(survivors)]
+        if len(valid) < 2:
+            continue
+        lowest_idx = min(valid, key=lambda i: (survivors[i].loc.line, survivors[i].loc.start_char))
+        for i in valid:
             if i != lowest_idx:
                 s = survivors[i]
                 survivor_obj = survivors[lowest_idx]
@@ -372,7 +415,7 @@ async def _step5_verify(state: PipelineState, ctx: StepContext) -> None:
     """LLM: verify merges, resolve cross-chunk deps, map support, find contradictions."""
     assert state.claims is not None and state.evidence is not None
 
-    system = ctx.sections.get("System Prompt", "")
+    system = ctx.sections.get(_SECTION_SYSTEM_PROMPT, "")
     model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
     prompt_body = ctx.sections.get("Step 5 — Verify + Deps + Map + Contradict", "")
 
@@ -391,14 +434,18 @@ async def _step5_verify(state: PipelineState, ctx: StepContext) -> None:
     )
 
     agent: Agent[None, VerifyOutput] = Agent(
-        model=model, output_type=VerifyOutput, system_prompt=system, retries=3,
+        model=model, output_type=VerifyOutput, system_prompt=system, retries=_RETRIES_SINGLE,
+        model_settings=_DEFAULT_MODEL_SETTINGS,
     )
-    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=500))
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=_REQUEST_LIMIT))
     if ctx.debug and ctx.debug_log is not None:
         ctx.debug_log.append(_render_debug_md(result, "Step 5 — Verify + Deps + Map + Contradict"))
     output = result.output
 
-    state.support_map = output.support_map
+    state.support_map = [
+        s for s in output.support_map
+        if not any(eloc == s.claim_loc for eloc in s.evidence_locs)
+    ]
     state.internal_contradictions = output.internal_contradictions
 
 
@@ -406,7 +453,7 @@ async def _step6_load_bearing(state: PipelineState, ctx: StepContext) -> None:
     """LLM: graph analysis to identify load-bearing claims."""
     assert state.claims is not None and state.support_map is not None
 
-    system = ctx.sections.get("System Prompt", "")
+    system = ctx.sections.get(_SECTION_SYSTEM_PROMPT, "")
     model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
     prompt_body = ctx.sections.get("Step 6 — Load-Bearing", "")
 
@@ -430,37 +477,31 @@ async def _step6_load_bearing(state: PipelineState, ctx: StepContext) -> None:
     )
 
     agent: Agent[None, LoadBearingOutput] = Agent(
-        model=model, output_type=LoadBearingOutput, system_prompt=system, retries=3,
+        model=model, output_type=LoadBearingOutput, system_prompt=system, retries=_RETRIES_SINGLE,
+        model_settings=_DEFAULT_MODEL_SETTINGS,
     )
-    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=500))
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=_REQUEST_LIMIT))
     if ctx.debug and ctx.debug_log is not None:
         ctx.debug_log.append(_render_debug_md(result, "Step 6 — Load-Bearing"))
     state.load_bearing_claims = result.output.results
 
 
-def _has_triggered_claims(state: PipelineState) -> bool:
-    """Check if any load-bearing claims trigger web search."""
-    if not state.load_bearing_claims:
-        return False
-    return any(
-        lb.classification == "critical_gap" for lb in state.load_bearing_claims
-    )
-
-
 async def _step7_web_search(state: PipelineState, ctx: StepContext) -> None:
     """LLM + web tools: search for evidence on triggered claims."""
-    if not _has_triggered_claims(state):
+    if not state.load_bearing_claims or not any(
+        lb.classification == _CLASSIFICATION_CRITICAL_GAP for lb in state.load_bearing_claims
+    ):
         return
 
     assert state.claims is not None and state.load_bearing_claims is not None
 
-    system = ctx.sections.get("System Prompt", "")
+    system = ctx.sections.get(_SECTION_SYSTEM_PROMPT, "")
     model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
     prompt_body = ctx.sections.get("Step 7 — Web Search", "")
 
     triggered = [
         lb for lb in state.load_bearing_claims
-        if lb.classification == "critical_gap"
+        if lb.classification == _CLASSIFICATION_CRITICAL_GAP
     ]
     claims_for_search = []
     for lb in triggered:
@@ -478,7 +519,8 @@ async def _step7_web_search(state: PipelineState, ctx: StepContext) -> None:
     )
 
     agent: Agent[None, WebSearchOutput] = Agent(
-        model=model, output_type=WebSearchOutput, system_prompt=system, retries=3,
+        model=model, output_type=WebSearchOutput, system_prompt=system, retries=_RETRIES_SINGLE,
+        model_settings=_DEFAULT_MODEL_SETTINGS,
     )
 
     def _wrap_tool(fn, name):
@@ -509,7 +551,7 @@ async def _step7_web_search(state: PipelineState, ctx: StepContext) -> None:
         agent.tool_plain(_wrap_tool(ctx.researcher.web_search, "web_search"))
         agent.tool_plain(_wrap_tool(ctx.researcher.web_fetch, "web_fetch"))
 
-    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=500))
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=_REQUEST_LIMIT))
     if ctx.debug and ctx.debug_log is not None:
         ctx.debug_log.append(_render_debug_md(result, "Step 7 — Web Search"))
     state.external_evidence = result.output.external_evidence
@@ -522,7 +564,7 @@ async def _step8_resolve(state: PipelineState, ctx: StepContext) -> None:
 
     assert state.load_bearing_claims is not None and state.claims is not None
 
-    system = ctx.sections.get("System Prompt", "")
+    system = ctx.sections.get(_SECTION_SYSTEM_PROMPT, "")
     model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
     prompt_body = ctx.sections.get("Step 8 — Resolve External", "")
 
@@ -537,9 +579,10 @@ async def _step8_resolve(state: PipelineState, ctx: StepContext) -> None:
     )
 
     agent: Agent[None, ResolveOutput] = Agent(
-        model=model, output_type=ResolveOutput, system_prompt=system, retries=3,
+        model=model, output_type=ResolveOutput, system_prompt=system, retries=_RETRIES_SINGLE,
+        model_settings=_DEFAULT_MODEL_SETTINGS,
     )
-    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=500))
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=_REQUEST_LIMIT))
     if ctx.debug and ctx.debug_log is not None:
         ctx.debug_log.append(_render_debug_md(result, "Step 8 — Resolve External"))
     state.load_bearing_claims = result.output.load_bearing_claims
@@ -547,58 +590,257 @@ async def _step8_resolve(state: PipelineState, ctx: StepContext) -> None:
 
 
 async def _step9_report(state: PipelineState, ctx: StepContext) -> None:
-    """Pure Python: render the final report as two bulleted question lists."""
+    """Pure Python: render the final review as structured markdown."""
     assert state.claims is not None
 
-    lb_claims = state.load_bearing_claims or []
+    meta = ctx.backend.get_meta(ctx.pid) if ctx.backend else {}
+    title = meta.get("title", "Untitled")
+    lines: list[str] = [f"# {ctx.pid}: {title}\n"]
+
     claims = state.claims
+    support_map = state.support_map or []
+    external_evidence = state.external_evidence or []
+    evidence = state.evidence or []
 
-    critical_gaps: list[LoadBearingResult] = sorted(
-        [lb for lb in lb_claims if lb.classification == "critical_gap"],
-        key=lambda lb: (lb.claim_loc.line, lb.claim_loc.start_char),
-    )
+    supported_locs = {
+        s.claim_loc for s in support_map
+        if s.status in ("directly_supported", "transitively_supported")
+    }
+    unsupported_locs = {
+        s.claim_loc for s in support_map if s.status == "unsupported"
+    }
 
-    peripheral_unsupported: list[LoadBearingResult] = []
-    if state.support_map:
-        unsupported_locs = {
-            s.claim_loc for s in state.support_map if s.status == "unsupported"
-        }
-        peripheral_unsupported = sorted(
-            [
-                lb for lb in lb_claims
-                if lb.classification == "peripheral" and lb.claim_loc in unsupported_locs
-            ],
-            key=lambda lb: (lb.claim_loc.line, lb.claim_loc.start_char),
-        )
-
-    def _question_for_loc(loc: Any) -> str | None:
-        for c in claims:
-            if c.loc == loc and c.merged_into is None:
-                return c.question
-        return None
-
-    lines: list[str] = []
-    lines.append("### Unsupported Load-Bearing Claims\n")
-    if not critical_gaps:
-        lines.append("No questions.\n")
+    lines.append("## Unsupported Claims\n")
+    unsupported = [
+        c for c in claims
+        if c.merged_into is None and c.loc in unsupported_locs
+    ]
+    if not unsupported:
+        lines.append("None identified.\n")
     else:
-        for lb in critical_gaps:
-            q = _question_for_loc(lb.claim_loc)
-            if q:
-                lines.append(f"- {q}")
+        for c in sorted(unsupported, key=lambda x: (x.loc.line, x.loc.start_char)):
+            lines.append(f'- **"{c.text}"** ({c.section})')
+            lines.append(f"  - {c.question}")
         lines.append("")
 
-    lines.append("### Unsupported Peripheral Claims\n")
-    if not peripheral_unsupported:
-        lines.append("No questions.\n")
+    lines.append("## Supported Claims\n")
+    supported = [
+        c for c in claims
+        if c.merged_into is None and c.loc in supported_locs
+    ]
+    if not supported:
+        lines.append("None identified.\n")
     else:
-        for lb in peripheral_unsupported:
-            q = _question_for_loc(lb.claim_loc)
-            if q:
-                lines.append(f"- {q}")
+        loc_to_evidence_locs: dict[Any, list[Any]] = {}
+        for s in support_map:
+            if s.status in ("directly_supported", "transitively_supported"):
+                loc_to_evidence_locs[s.claim_loc] = s.evidence_locs
+
+        for c in sorted(supported, key=lambda x: (x.loc.line, x.loc.start_char)):
+            lines.append(f'- **"{c.text}"** ({c.section})')
+            ev_locs = loc_to_evidence_locs.get(c.loc, [])
+            for eloc in ev_locs:
+                ev = next(
+                    (e for e in evidence if e.loc == eloc and e.merged_into is None),
+                    None,
+                )
+                if ev:
+                    lines.append(f'  - "{ev.text}" ({ev.section})')
+        lines.append("")
+
+    lines.append("## External Resources\n")
+    seen_urls: set[str] = set()
+    resources: list[str] = []
+    for ex in external_evidence:
+        if ex.source_url and ex.source_url not in seen_urls:
+            seen_urls.add(ex.source_url)
+            resources.append(f"- [{ex.source_title}]({ex.source_url})")
+    if not resources:
+        lines.append("None found.\n")
+    else:
+        lines.extend(resources)
         lines.append("")
 
     state.report = "\n".join(lines)
+
+
+def _safe_quote(text: str) -> str:
+    """Format text for trace output, handling embedded code fences.
+
+    If text contains triple backticks, splits into preamble + standalone
+    fenced block so markdown renders correctly.
+    """
+    if "```" not in text:
+        return f'"{text}"'
+    parts = text.split("```")
+    result = f'"{parts[0].rstrip()}"'
+    for i in range(1, len(parts), 2):
+        code = parts[i].strip()
+        result += f"\n\n```\n{code}\n```"
+        if i + 1 < len(parts) and parts[i + 1].strip():
+            result += f"\n\n{parts[i + 1].strip()}"
+    return result
+
+
+def _render_trace(state: PipelineState, meta: dict, stop_step: int) -> str:
+    """Render a diagnostic trace of pipeline state up to stop_step."""
+    title = meta.get("title", "Untitled")
+    pid = meta.get("paper_id", "")
+    lines: list[str] = [f"# Trace: {pid} — {title}\n"]
+
+    # Step 0
+    if stop_step >= 0:
+        lines.append("## 0. Read\n")
+        chunks = state.chunks or []
+        citations = state.citations or []
+        lines.append(f"- {len(chunks)} chunk{'s' if len(chunks) != 1 else ''}")
+        if citations:
+            cit_list = ", ".join(c.paper_id for c in citations)
+            lines.append(f"- Paper citations: {cit_list}")
+        lines.append("")
+
+    # Step 1
+    if stop_step >= 1:
+        lines.append("## 1. Extract Claims\n")
+        raws = state.raw_claims or []
+        lines.append(f"{len(raws)} claims extracted:\n")
+        for i, rc in enumerate(raws[:50], 1):
+            lines.append(f"{i}. {_safe_quote(rc.text)} ({rc.section})")
+            if rc.question:
+                lines.append(f"  - Q: {rc.question}")
+        lines.append("")
+
+    # Step 2
+    if stop_step >= 2:
+        lines.append("## 2. Dedup Claims\n")
+        all_claims = state.claims or []
+        survivors = [c for c in all_claims if c.merged_into is None]
+        merged = [c for c in all_claims if c.merged_into is not None]
+        lines.append(f"{len(all_claims)} → {len(survivors)} survivors ({len(merged)} merged):\n")
+        for i, c in enumerate(all_claims, 1):
+            if c.merged_into is not None:
+                lines.append(f"{i}. [tombstone]")
+            else:
+                lines.append(f"{i}. {_safe_quote(c.text)} ({c.section})")
+                if c.question:
+                    lines.append(f"   - Q: {c.question}")
+        lines.append("")
+
+    # Step 3
+    if stop_step >= 3:
+        lines.append("## 3. Extract Evidence\n")
+        raws = state.raw_evidence or []
+        lines.append(f"{len(raws)} evidence items extracted:\n")
+        for i, re_ in enumerate(raws[:50], 1):
+            supports_str = re_.supports[0] if re_.supports else ""
+            flags = []
+            if re_.quantitative:
+                flags.append("quantitative")
+            if re_.cited:
+                flags.append("cited")
+            if re_.verifiable:
+                flags.append("verifiable")
+            if re_.normative:
+                flags.append("normative")
+            flag_str = f" ({', '.join(flags)})" if flags else ""
+            lines.append(f"{i}. {_safe_quote(re_.text)} ({re_.section})")
+            lines.append(f'   - Supports: "{supports_str}"{flag_str}')
+        lines.append("")
+
+    # Step 4
+    if stop_step >= 4:
+        lines.append("## 4. Dedup Evidence\n")
+        all_ev = state.evidence or []
+        survivors = [e for e in all_ev if e.merged_into is None]
+        merged = [e for e in all_ev if e.merged_into is not None]
+        lines.append(f"{len(all_ev)} → {len(survivors)} survivors ({len(merged)} merged):\n")
+        for i, e in enumerate(all_ev, 1):
+            if e.merged_into is not None:
+                lines.append(f"{i}. [tombstone]")
+            else:
+                supports_str = e.supports[0] if e.supports else ""
+                lines.append(f"{i}. {_safe_quote(e.text)} ({e.section})")
+                lines.append(f'   - Supports: "{supports_str}"')
+        lines.append("")
+
+    # Step 5
+    if stop_step >= 5:
+        lines.append("## 5. Verify + Deps + Map\n")
+        smap = state.support_map or []
+        claims = state.claims or []
+        evidence = state.evidence or []
+
+        def _claim_text(loc):
+            for c in claims:
+                if c.loc == loc and c.merged_into is None:
+                    return c.text
+            return f"(loc {loc.line}:{loc.start_char})"
+
+        def _ev_text(loc):
+            for e in evidence:
+                if e.loc == loc and e.merged_into is None:
+                    return e.text
+            return f"(loc {loc.line}:{loc.start_char})"
+
+        directly = [s for s in smap if s.status == "directly_supported"]
+        transitively = [s for s in smap if s.status == "transitively_supported"]
+        unsupported = [s for s in smap if s.status == "unsupported"]
+        contras = state.internal_contradictions or []
+
+        lines.append(f"### Internal Contradictions ({len(contras)})\n")
+        for ic in contras:
+            lines.append(f'- Claim: "{_claim_text(ic.claim_loc)}"')
+            lines.append(f'  - Contradicted by: "{_ev_text(ic.evidence_loc)}"')
+        lines.append("")
+
+        lines.append(f"### Unsupported ({len(unsupported)})\n")
+        for s in unsupported:
+            lines.append(f'- "{_claim_text(s.claim_loc)}"')
+        lines.append("")
+
+        lines.append(f"### Transitively Supported ({len(transitively)})\n")
+        for s in transitively:
+            lines.append(f'- "{_claim_text(s.claim_loc)}"')
+        lines.append("")
+
+        lines.append(f"### Directly Supported ({len(directly)})\n")
+        for s in directly:
+            lines.append(f'- "{_claim_text(s.claim_loc)}"')
+            for eloc in s.evidence_locs:
+                lines.append(f'  - ← "{_ev_text(eloc)}"')
+        lines.append("")
+
+    # Step 6
+    if stop_step >= 6:
+        lines.append("## 6. Load-Bearing\n")
+        lb = state.load_bearing_claims or []
+        if lb:
+            from collections import Counter
+            counts = Counter(item.classification for item in lb)
+            for cls, n in counts.most_common():
+                lines.append(f"- {cls}: {n}")
+        else:
+            lines.append("No classifications.")
+        lines.append("")
+
+    # Step 7
+    if stop_step >= 7:
+        lines.append("## 7. Web Search\n")
+        ext = state.external_evidence or []
+        lines.append(f"{len(ext)} external evidence items found:\n")
+        for ex in ext[:10]:
+            lines.append(f"- [{ex.source_title}]({ex.source_url}) — {ex.stance}")
+            lines.append(f"  - {ex.finding}")
+        lines.append("")
+
+    # Step 8
+    if stop_step >= 8:
+        lines.append("## 8. Resolve External\n")
+        resolutions = state.web_resolutions or []
+        lines.append(f"{len(resolutions)} resolutions applied.\n")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 # -- Step registry -----------------------------------------------------------
@@ -606,8 +848,8 @@ async def _step9_report(state: PipelineState, ctx: StepContext) -> None:
 _STEPS: list[tuple[str, StepFn]] = [  # noqa: RUF012
     ("Step 0 — Read", _step0_read),
     ("Step 1 — Extract Claims", _step1_claims),
-    ("Step 2 — Extract Evidence", _step2_evidence),
-    ("Step 3 — Dedup Claims", _step3_dedup_claims),
+    ("Step 2 — Dedup Claims", _step3_dedup_claims),
+    ("Step 3 — Extract Evidence", _step2_evidence),
     ("Step 4 — Dedup Evidence", _step4_dedup_evidence),
     ("Step 5 — Verify + Deps", _step5_verify),
     ("Step 6 — Load-Bearing", _step6_load_bearing),
@@ -646,20 +888,22 @@ async def review_paper(
     converted markdown.
     """
     from web_tools import WebResearcher
+    from reviewstore import ReviewStore
 
     slots = {**_DEFAULT_MODEL_SLOTS, **(model_slots or {})}
     secs = load_sections()
 
-    if "System Prompt" not in secs:
+    if _SECTION_SYSTEM_PROMPT not in secs:
         raise ReviewError(
             "'System Prompt' section not found in extractor.md. "
             f"Available sections: {sorted(secs)}"
         )
 
-    _meta, paper_md = _load_paper(pid, backend)
+    meta, paper_md = _load_paper(pid, backend)
     backend.clear_review(pid)
 
     state = PipelineState(paper_source=paper_md)
+    rstore = ReviewStore(backend.workspace_dir)
 
     async with WebResearcher() as researcher:
         ctx = StepContext(
@@ -672,7 +916,6 @@ async def review_paper(
             pid=pid,
         )
 
-        debug_log: list[str] = []
         debug_path = backend.get_paper_md_path(pid).with_suffix(".debug.md")
         if debug:
             debug_path.unlink(missing_ok=True)
@@ -700,10 +943,25 @@ async def review_paper(
                         debug_path.write_text(
                             "\n\n---\n\n".join(ctx.debug_log), encoding="utf-8"
                         )
+
+                # Write to reviewstore after relevant steps
+                if i == 0 and state.citations:
+                    rstore.store_paper_citations(pid, state.citations)
+                elif i == 2 and state.claims:
+                    rstore.store_claims(pid, state.claims)
+                elif i == 4 and state.evidence:
+                    rstore.store_evidence(pid, state.evidence)
+                elif i == 7 and state.external_evidence:
+                    rstore.store_external_citations(pid, state.external_evidence)
+
         finally:
             if debug and ctx.debug_log:
                 debug_path.write_text(
                     "\n\n---\n\n".join(ctx.debug_log), encoding="utf-8"
                 )
+            rstore.close()
+
+    if stop_after is not None:
+        return _render_trace(state, meta, stop_after)
 
     return state.report or ""

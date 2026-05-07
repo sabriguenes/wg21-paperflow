@@ -71,6 +71,9 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
             return 1
 
     if stop_after is not None:
+        trace_path = backend.get_paper_md_path(pid).with_suffix(".trace.md")
+        trace_path.write_text(report, encoding="utf-8")
+        print(f"Trace written to {trace_path}")
         return 0
 
     out_path = backend.write_review_md(pid, report)

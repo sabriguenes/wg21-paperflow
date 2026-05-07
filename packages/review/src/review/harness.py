@@ -7,14 +7,17 @@
 
 """Pure-Python code harness for the extractor pipeline.
 
-Handles SourceLoc computation, paper chunking, and deterministic dedup
-(tiers 0 and 1). No LLM calls, no paperstore imports, no network I/O.
+Handles line-numbered chunk formatting, SourceLoc computation from
+LLM-reported start_line, paper chunking, deterministic dedup (tiers 0
+and 1), and WG21 citation extraction. No LLM calls, no paperstore
+imports, no network I/O.
 """
 
 from __future__ import annotations
 
 import re
-from bisect import bisect_right
+from collections import Counter
+from itertools import chain
 from typing import TypeVar
 
 from review.models import (
@@ -30,34 +33,20 @@ from review.models import (
 T = TypeVar("T", Claim, Evidence)
 
 _HEADING_RE = re.compile(r"^#{1,6}\s", re.MULTILINE)
+_LINE_PREFIX_RE = re.compile(r"^\d+\|\s?")
 
 
-def build_newline_offsets(source: str) -> list[int]:
-    """Return sorted list of character offsets where newlines occur.
-
-    O(n) scan, used once per paper to enable O(log n) line lookups.
-    """
-    return [i for i, ch in enumerate(source) if ch == "\n"]
+def _strip_line_prefix(text: str) -> str:
+    """Remove leading line-number prefix (e.g. '47| ') if the LLM copied it."""
+    return _LINE_PREFIX_RE.sub("", text)
 
 
-def find_loc(
-    text: str, source: str, newline_offsets: list[int]
-) -> SourceLoc | None:
-    """Find exact quote in source and return its SourceLoc.
-
-    Uses str.find for the match, then bisect on precomputed newline
-    offsets for O(log n) line/column computation.
-    """
-    idx = source.find(text)
-    if idx == -1:
-        return None
-
-    line = bisect_right(newline_offsets, idx) + 1
-    line_start = (newline_offsets[line - 2] + 1) if line > 1 else 0
-    start_char = idx - line_start
-    end_char = start_char + len(text) - 1
-
-    return SourceLoc(line=line, start_char=start_char, end_char=end_char)
+def number_lines(chunk: Chunk) -> str:
+    """Prepend absolute line numbers to each line of a chunk."""
+    lines = chunk.text.splitlines()
+    return "\n".join(
+        f"{chunk.line_offset + i}| {line}" for i, line in enumerate(lines)
+    )
 
 
 def chunk_paper(source: str, max_chars: int = 70_000) -> list[Chunk]:
@@ -103,24 +92,29 @@ def chunk_paper(source: str, max_chars: int = 70_000) -> list[Chunk]:
 
 
 def promote_claims(raws: list[RawClaim], source: str) -> list[Claim]:
-    """Convert RawClaims to Claims by computing SourceLocs.
+    """Convert RawClaims to Claims using start_line for location.
 
-    Resolves depends_on text references to SourceLocs. Items whose
-    text cannot be found in the source are silently dropped.
+    Uses the LLM-reported start_line to compute SourceLoc. No items
+    are dropped — every raw claim becomes a Claim. Multiple claims on
+    the same line are disambiguated via start_char as an ordinal.
     """
-    offsets = build_newline_offsets(source)
+    lines = source.splitlines()
     claims: list[Claim] = []
     text_to_loc: dict[str, SourceLoc] = {}
+    line_counts: dict[int, int] = {}
 
     for raw in raws:
-        loc = find_loc(raw.text, source, offsets)
-        if loc is None:
-            continue
-        text_to_loc[raw.text] = loc
-        quotes = raw.original_quotes if raw.original_quotes else [raw.text]
+        line = raw.start_line if raw.start_line > 0 else 1
+        line_text = lines[line - 1] if line <= len(lines) else ""
+        ordinal = line_counts.get(line, 0)
+        line_counts[line] = ordinal + 1
+        loc = SourceLoc(line=line, start_char=ordinal, end_char=len(line_text))
+        text = _strip_line_prefix(raw.text)
+        text_to_loc[text] = loc
+        quotes = raw.original_quotes if raw.original_quotes else [text]
         claims.append(Claim(
             loc=loc,
-            text=raw.text,
+            text=text,
             original_quotes=quotes,
             section=raw.section,
             question=raw.question,
@@ -129,8 +123,6 @@ def promote_claims(raws: list[RawClaim], source: str) -> list[Claim]:
         ))
 
     for i, raw in enumerate(raws):
-        if i >= len(claims):
-            break
         resolved_deps: list[SourceLoc] = []
         for dep_text in raw.depends_on:
             dep_loc = text_to_loc.get(dep_text)
@@ -143,21 +135,27 @@ def promote_claims(raws: list[RawClaim], source: str) -> list[Claim]:
 
 
 def promote_evidence(raws: list[RawEvidence], source: str) -> list[Evidence]:
-    """Convert RawEvidence to Evidence by computing SourceLocs.
+    """Convert RawEvidence to Evidence using start_line for location.
 
-    Items whose text cannot be found in the source are silently dropped.
+    Uses the LLM-reported start_line to compute SourceLoc. No items
+    are dropped — every raw evidence becomes an Evidence. Multiple items
+    on the same line are disambiguated via start_char as an ordinal.
     """
-    offsets = build_newline_offsets(source)
+    lines = source.splitlines()
     evidence: list[Evidence] = []
+    line_counts: dict[int, int] = {}
 
     for raw in raws:
-        loc = find_loc(raw.text, source, offsets)
-        if loc is None:
-            continue
-        quotes = raw.original_quotes if raw.original_quotes else [raw.text]
+        line = raw.start_line if raw.start_line > 0 else 1
+        line_text = lines[line - 1] if line <= len(lines) else ""
+        ordinal = line_counts.get(line, 0)
+        line_counts[line] = ordinal + 1
+        loc = SourceLoc(line=line, start_char=ordinal, end_char=len(line_text))
+        text = _strip_line_prefix(raw.text)
+        quotes = raw.original_quotes if raw.original_quotes else [text]
         evidence.append(Evidence(
             loc=loc,
-            text=raw.text,
+            text=text,
             original_quotes=quotes,
             section=raw.section,
             supports=raw.supports,
@@ -236,13 +234,10 @@ def extract_citations(paper_source: str) -> list[CitationRef]:
     """
     stripped = _LINK_URL_RE.sub("]", paper_source)
 
-    counts: dict[str, int] = {}
-    for m in _CITATION_PD_RE.finditer(stripped):
-        pid = m.group(1).upper()
-        counts[pid] = counts.get(pid, 0) + 1
-    for m in _CITATION_N_RE.finditer(stripped):
-        pid = m.group(1).upper()
-        counts[pid] = counts.get(pid, 0) + 1
+    counts = Counter(
+        m.group(1).upper()
+        for m in chain(_CITATION_PD_RE.finditer(stripped), _CITATION_N_RE.finditer(stripped))
+    )
 
     refs = [CitationRef(paper_id=pid, count=c) for pid, c in counts.items()]
     refs.sort(key=lambda r: r.count, reverse=True)

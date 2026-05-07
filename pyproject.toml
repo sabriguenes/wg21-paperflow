@@ -11,6 +11,7 @@ dependencies = [
     "tomd",
     "web_tools",
     "review",
+    "reviewstore",
     "cli",
     "preview",
 ]
@@ -25,13 +26,14 @@ package = false
 members = ["packages/*"]
 
 [tool.uv.sources]
-paperstore = {workspace = true}
-mailing    = {workspace = true}
-tomd       = {workspace = true}
-web_tools  = {workspace = true}
-review     = {workspace = true}
-cli        = {workspace = true}
-preview    = {workspace = true}
+paperstore   = {workspace = true}
+mailing      = {workspace = true}
+tomd         = {workspace = true}
+web_tools    = {workspace = true}
+review       = {workspace = true}
+reviewstore  = {workspace = true}
+cli          = {workspace = true}
+preview      = {workspace = true}
 scrivener  = {git = "https://github.com/gregjkal/wg21-scrivener.git"}
 
 [tool.pytest.ini_options]

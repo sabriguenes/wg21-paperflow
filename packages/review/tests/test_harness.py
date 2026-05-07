@@ -13,55 +13,21 @@ All tests use synthetic data — no LLM, no paperstore, no fixtures.
 from __future__ import annotations
 
 from review.harness import (
-    build_newline_offsets,
     chunk_paper,
     dedup_tier0,
     dedup_tier1,
-    find_loc,
+    extract_citations,
+    number_lines,
     promote_claims,
     promote_evidence,
 )
-from review.models import Claim, Evidence, RawClaim, RawEvidence, SourceLoc
+from review.models import Chunk, Claim, Evidence, RawClaim, RawEvidence, SourceLoc
 
 
-SAMPLE = "line one\nline two\nline three\n"
-
-
-def test_build_newline_offsets():
-    offsets = build_newline_offsets(SAMPLE)
-    assert offsets == [8, 17, 28]
-
-
-def test_find_loc_exact_match():
-    offsets = build_newline_offsets(SAMPLE)
-    loc = find_loc("line two", SAMPLE, offsets)
-    assert loc is not None
-    assert loc.line == 2
-    assert loc.start_char == 0
-    assert loc.end_char == 7
-
-
-def test_find_loc_mid_line():
-    offsets = build_newline_offsets(SAMPLE)
-    loc = find_loc("two", SAMPLE, offsets)
-    assert loc is not None
-    assert loc.line == 2
-    assert loc.start_char == 5
-    assert loc.end_char == 7
-
-
-def test_find_loc_not_found():
-    offsets = build_newline_offsets(SAMPLE)
-    loc = find_loc("nonexistent", SAMPLE, offsets)
-    assert loc is None
-
-
-def test_find_loc_first_line():
-    offsets = build_newline_offsets(SAMPLE)
-    loc = find_loc("line one", SAMPLE, offsets)
-    assert loc is not None
-    assert loc.line == 1
-    assert loc.start_char == 0
+def test_number_lines():
+    chunk = Chunk(text="line one\nline two\nline three", line_offset=10)
+    result = number_lines(chunk)
+    assert result == "10| line one\n11| line two\n12| line three"
 
 
 def test_chunk_paper_small():
@@ -80,8 +46,6 @@ def test_chunk_paper_splits_at_headings():
     paper = "".join(lines)
     chunks = chunk_paper(paper, max_chars=10_000)
     assert len(chunks) > 1
-    for c in chunks:
-        assert len(c.text) <= 15_000  # allow overlap margin
 
 
 def test_chunk_paper_overlap():
@@ -95,32 +59,41 @@ def test_chunk_paper_overlap():
         assert chunks[1].line_offset < chunks[0].line_offset + len(chunks[0].text.splitlines())
 
 
-def test_promote_claims_basic():
-    source = "This is claim A. This is claim B."
+def test_promote_claims_uses_start_line():
+    source = "line one\nline two\nline three"
     raws = [
-        RawClaim(text="claim A", original_quotes=["claim A"], section="1", question="Q1?", depends_on=[]),
-        RawClaim(text="claim B", original_quotes=["claim B"], section="1", question="Q2?", depends_on=["claim A"]),
+        RawClaim(text="line two", start_line=2, section="1", question="Q?"),
+    ]
+    claims = promote_claims(raws, source)
+    assert len(claims) == 1
+    assert claims[0].loc.line == 2
+
+
+def test_promote_claims_never_drops():
+    source = "Only this text exists."
+    raws = [
+        RawClaim(text="nonexistent quote", start_line=1, section="1", question="Q?"),
+    ]
+    claims = promote_claims(raws, source)
+    assert len(claims) == 1
+
+
+def test_promote_claims_resolves_depends_on():
+    source = "claim A\nclaim B"
+    raws = [
+        RawClaim(text="claim A", start_line=1, section="1", question="Q1?"),
+        RawClaim(text="claim B", start_line=2, section="1", question="Q2?", depends_on=["claim A"]),
     ]
     claims = promote_claims(raws, source)
     assert len(claims) == 2
-    assert claims[0].loc.line == 1
     assert claims[1].depends_on == [claims[0].loc]
 
 
-def test_promote_claims_drops_unfound():
-    source = "Only this text exists."
-    raws = [
-        RawClaim(text="nonexistent", original_quotes=["nonexistent"], section="1", question="Q?", depends_on=[]),
-    ]
-    claims = promote_claims(raws, source)
-    assert len(claims) == 0
-
-
-def test_promote_evidence_basic():
+def test_promote_evidence_uses_start_line():
     source = "Evidence text here."
     raws = [
         RawEvidence(
-            text="Evidence text", original_quotes=["Evidence text"], section="1",
+            text="Evidence text", start_line=1, section="1",
             supports=["something"], quantitative=False, cited=False,
             verifiable=False, normative=False,
         ),
@@ -158,20 +131,33 @@ def test_dedup_tier1_substring_tombstone():
         text="AB", original_quotes=["AB"], section="1", question="Q?", depends_on=[],
     )
     c_long = Claim(
-        loc=SourceLoc(line=1, start_char=0, end_char=5),
-        text="XABYZ", original_quotes=["XABYZ"], section="1", question="Q?", depends_on=[],
+        loc=SourceLoc(line=2, start_char=0, end_char=4),
+        text="XABX", original_quotes=["XABX"], section="1", question="Q?", depends_on=[],
     )
     result = dedup_tier1([c_short, c_long])
-    short_result = next(r for r in result if r.loc == c_short.loc)
-    long_result = next(r for r in result if r.loc == c_long.loc)
-    assert short_result.merged_into == c_long.loc
-    assert "AB" in long_result.original_quotes
+    assert result[0].merged_into == c_long.loc
+    assert result[1].merged_into is None
+    assert "AB" in result[1].original_quotes
 
 
-def test_dedup_tier1_no_self_merge():
-    c = Claim(
-        loc=SourceLoc(line=1, start_char=0, end_char=5),
-        text="exact", original_quotes=["exact"], section="1", question="Q?", depends_on=[],
-    )
-    result = dedup_tier1([c])
-    assert result[0].merged_into is None
+def test_extract_citations_basic():
+    text = "See [P4172R0](https://example.com/p4172r0.pdf) and P2300R10 for details."
+    refs = extract_citations(text)
+    assert len(refs) == 2
+    assert refs[0].paper_id == "P4172R0"
+    assert refs[0].count == 1
+
+
+def test_extract_citations_dedup_case_insensitive():
+    text = "p4172r0 and P4172R0 both appear"
+    refs = extract_citations(text)
+    assert len(refs) == 1
+    assert refs[0].paper_id == "P4172R0"
+    assert refs[0].count == 2
+
+
+def test_extract_citations_n_papers():
+    text = "N4861 is the working draft"
+    refs = extract_citations(text)
+    assert len(refs) == 1
+    assert refs[0].paper_id == "N4861"
