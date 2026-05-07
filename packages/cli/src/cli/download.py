@@ -20,9 +20,9 @@ from cli.jobs import DEFAULT_DOWNLOAD_CONCURRENCY
 
 def command(args: argparse.Namespace, backend: StorageBackend) -> int:
     from cli.jobs import run_download
-    from cli.progress import progress_callbacks
+    from cli.progress import make_progress_handler
 
-    progress_ctx, on_total, on_progress = progress_callbacks("Downloading")
+    progress_ctx, on_progress = make_progress_handler("Downloading")
 
     with progress_ctx:
         result = asyncio.run(run_download(
@@ -31,7 +31,6 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
             force=args.force,
             verify=args.verify,
             concurrency=args.concurrency or DEFAULT_DOWNLOAD_CONCURRENCY,
-            on_total=on_total,
             on_progress=on_progress,
         ))
 

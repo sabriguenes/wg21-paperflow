@@ -5,40 +5,47 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Async review pipeline for WG21 papers.
+"""Async extractor pipeline for WG21 papers.
 
-All LLM-facing text comes from ``review.md`` at runtime. This module
-contains only structural orchestration - no prompt strings.
+All LLM-facing text comes from ``extractor.md`` at runtime. This module
+contains only structural orchestration — no prompt strings.
 """
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import importlib.resources
 import json
 import logging
-import re
-from typing import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
 
-from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
-
-from paperstore.backend import PaperRow, StorageBackend
+from paperstore.backend import StorageBackend
+from paperstore.progress import ProgressCallback, ProgressEvent
 from paperstore.errors import MissingMetaError, MissingPaperMdError
 
 from review.errors import ReviewError
+from review.harness import (
+    chunk_paper,
+    dedup_tier0,
+    dedup_tier1,
+    promote_claims,
+    promote_evidence,
+)
 from review.models import (
-    ChallengeFindingsOutput,
-    ClassifyOutput,
-    GatherEvidenceOutput,
-    InterpretResultsOutput,
+    DedupGroupingOutput,
+    ExtractClaimsOutput,
+    ExtractEvidenceOutput,
+    LoadBearingOutput,
+    LoadBearingResult,
     PipelineState,
-    ReadPaperOutput,
-    ResolveAssumptionsOutput,
-    TestAndDraftOutput,
-    VerifyCitationsOutput,
-    WriteOutputOutput,
+    ResolveOutput,
+    VerifyOutput,
+    WebSearchOutput,
 )
 from review.parse import sections
 
@@ -49,66 +56,27 @@ _DEFAULT_MODEL_SLOTS = {
     "default": "anthropic:claude-sonnet-4-6",
 }
 
-_MODEL_LINE_RE = re.compile(r"^\-\s*\*\*Model:\*\*\s*(\S+)", re.MULTILINE)
-_READS_LINE_RE = re.compile(r"^\-\s*\*\*Reads:\*\*\s*(.+)$", re.MULTILINE)
-_TOOLS_LINE_RE = re.compile(r"^\-\s*\*\*Tools:\*\*\s*(.+)$", re.MULTILINE)
+StepFn = Callable[["PipelineState", "StepContext"], Awaitable[None]]
 
-_STEP_KEYS: list[tuple[str, type[BaseModel]]] = [
-    ("Step 0 - Classify", ClassifyOutput),
-    ("Step 1 - Read Paper", ReadPaperOutput),
-    ("Step 2 - Gather Evidence", GatherEvidenceOutput),
-    ("Step 3 - Resolve Assumptions", ResolveAssumptionsOutput),
-    ("Step 4 - Test and Draft", TestAndDraftOutput),
-    ("Step 5 - Challenge Findings", ChallengeFindingsOutput),
-    ("Step 6 - Interpret Results", InterpretResultsOutput),
-    ("Step 7 - Verify Citations", VerifyCitationsOutput),
-    ("Step 8 - Write Output", WriteOutputOutput),
-]
 
-_VERIFY_CITATIONS_KEY = "Step 7 - Verify Citations"
-_WRITE_OUTPUT_KEY = "Step 8 - Write Output"
+@dataclass
+class StepContext:
+    """Shared resources available to every step function."""
+
+    sections: dict[str, str]
+    model_slots: dict[str, str]
+    researcher: Any = None
+    on_progress: ProgressCallback | None = None
 
 
 @functools.cache
 def load_sections() -> dict[str, str]:
-    """Load and parse review.md once per process."""
-    resource = importlib.resources.files("review").joinpath("review.md")
+    """Load and parse extractor.md once per process."""
+    resource = importlib.resources.files("review").joinpath("extractor.md")
     return sections(resource.read_text(encoding="utf-8"))
 
 
-def _extract_model_slot(section_body: str) -> str:
-    """Extract the Model: value from a step's metadata bullets."""
-    m = _MODEL_LINE_RE.search(section_body)
-    return m.group(1) if m else "default"
-
-
-def _extract_reads(section_body: str) -> list[str]:
-    """Extract the Reads: field names from a step's metadata bullets."""
-    m = _READS_LINE_RE.search(section_body)
-    if not m:
-        return []
-    return [f.strip() for f in m.group(1).split(",")]
-
-
-def _extract_tools(section_body: str) -> list[str]:
-    """Extract the Tools: values from a step's metadata bullets."""
-    m = _TOOLS_LINE_RE.search(section_body)
-    if not m:
-        return []
-    tools = [t.strip().lower() for t in m.group(1).split(",")]
-    return [t for t in tools if t != "none"]
-
-
-def _build_state_context(state: PipelineState, reads: list[str]) -> str:
-    """Serialize only the Reads fields from the pipeline state."""
-    full = state.model_dump(exclude_none=False)
-    filtered = {k: v for k, v in full.items() if k in reads}
-    if not filtered:
-        return "{}"
-    return json.dumps(filtered, indent=2, ensure_ascii=False)
-
-
-def _load_paper(pid: str, backend: StorageBackend) -> tuple[PaperRow, str]:
+def _load_paper(pid: str, backend: StorageBackend) -> tuple[dict, str]:
     """Load paper metadata and markdown, raising ReviewError on failure."""
     try:
         meta = backend.get_meta(pid)
@@ -130,11 +98,423 @@ def _load_paper(pid: str, backend: StorageBackend) -> tuple[PaperRow, str]:
     return meta, paper_md
 
 
-def _apply_output(state: PipelineState, output: BaseModel) -> None:
-    """Copy fields from a step output onto the pipeline state."""
-    for field_name in output.model_fields:
-        if field_name in state.model_fields:
-            setattr(state, field_name, getattr(output, field_name))
+# -- Step functions ----------------------------------------------------------
+
+
+async def _step0_read(state: PipelineState, ctx: StepContext) -> None:
+    """Pure Python: chunk the paper source."""
+    assert state.paper_source is not None
+    state.chunks = chunk_paper(state.paper_source)
+
+
+async def _step1_claims(state: PipelineState, ctx: StepContext) -> None:
+    """Parallel LLM: extract claims from each chunk, then promote."""
+    assert state.chunks is not None
+    prompt_body = ctx.sections.get("Step 1 — Extract Claims", "")
+    system = ctx.sections.get("System Prompt", "")
+    model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
+
+    async def _extract_chunk(chunk_text: str, line_offset: int) -> ExtractClaimsOutput:
+        agent: Agent[None, ExtractClaimsOutput] = Agent(
+            model=model,
+            output_type=ExtractClaimsOutput,
+            system_prompt=system,
+            retries=5,
+        )
+        user_msg = (
+            f"## Chunk (line offset {line_offset})\n\n{chunk_text}\n\n"
+            f"## Instructions\n\n{prompt_body}"
+        )
+        result = await agent.run(
+            user_msg, usage_limits=UsageLimits(request_limit=200)
+        )
+        return result.output
+
+    tasks = [
+        _extract_chunk(c.text, c.line_offset) for c in state.chunks
+    ]
+    outputs = await asyncio.gather(*tasks)
+
+    all_raws = []
+    for output in outputs:
+        all_raws.extend(output.claims)
+
+    state.raw_claims = all_raws
+    state.claims = promote_claims(all_raws, state.paper_source)
+
+
+async def _step2_evidence(state: PipelineState, ctx: StepContext) -> None:
+    """Parallel LLM: extract evidence from each chunk, then promote."""
+    assert state.chunks is not None
+    prompt_body = ctx.sections.get("Step 2 — Extract Evidence", "")
+    system = ctx.sections.get("System Prompt", "")
+    model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
+
+    async def _extract_chunk(chunk_text: str, line_offset: int) -> ExtractEvidenceOutput:
+        agent: Agent[None, ExtractEvidenceOutput] = Agent(
+            model=model,
+            output_type=ExtractEvidenceOutput,
+            system_prompt=system,
+            retries=5,
+        )
+        user_msg = (
+            f"## Chunk (line offset {line_offset})\n\n{chunk_text}\n\n"
+            f"## Instructions\n\n{prompt_body}"
+        )
+        result = await agent.run(
+            user_msg, usage_limits=UsageLimits(request_limit=200)
+        )
+        return result.output
+
+    tasks = [
+        _extract_chunk(c.text, c.line_offset) for c in state.chunks
+    ]
+    outputs = await asyncio.gather(*tasks)
+
+    all_raws = []
+    for output in outputs:
+        all_raws.extend(output.evidence)
+
+    state.raw_evidence = all_raws
+    state.evidence = promote_evidence(all_raws, state.paper_source)
+
+
+async def _step3_dedup_claims(state: PipelineState, ctx: StepContext) -> None:
+    """Deterministic tiers 0-1 + one LLM call for tier 2 semantic grouping."""
+    assert state.claims is not None
+
+    claims = dedup_tier0(state.claims)
+    claims = dedup_tier1(claims)
+
+    survivors = [c for c in claims if c.merged_into is None]
+    if len(survivors) <= 1:
+        state.claims = claims
+        return
+
+    system = ctx.sections.get("System Prompt", "")
+    model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
+    prompt_body = ctx.sections.get("Step 3 — Dedup Claims", "")
+
+    survivor_questions = json.dumps(
+        [{"idx": i, "question": s.question} for i, s in enumerate(survivors)],
+        ensure_ascii=False,
+    )
+    user_msg = (
+        f"## Survivors\n\n{survivor_questions}\n\n"
+        f"## Instructions\n\n{prompt_body}"
+    )
+
+    agent: Agent[None, DedupGroupingOutput] = Agent(
+        model=model, output_type=DedupGroupingOutput, system_prompt=system, retries=3,
+    )
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=50))
+    grouping = result.output
+
+    for group in grouping.groups:
+        if len(group) < 2:
+            continue
+        longest_idx = max(group, key=lambda i: len(survivors[i].text))
+        for i in group:
+            if i != longest_idx:
+                s = survivors[i]
+                survivor_obj = survivors[longest_idx]
+                idx_in_claims = next(
+                    j for j, c in enumerate(claims) if c.loc == s.loc
+                )
+                claims[idx_in_claims] = s.model_copy(update={"merged_into": survivor_obj.loc})
+                absorber_idx = next(
+                    j for j, c in enumerate(claims) if c.loc == survivor_obj.loc
+                )
+                merged_quotes = list(claims[absorber_idx].original_quotes) + list(s.original_quotes)
+                claims[absorber_idx] = claims[absorber_idx].model_copy(
+                    update={"original_quotes": merged_quotes}
+                )
+
+    state.claims = claims
+
+
+async def _step4_dedup_evidence(state: PipelineState, ctx: StepContext) -> None:
+    """Deterministic tiers 0-1 + one LLM call for tier 2 semantic grouping."""
+    assert state.evidence is not None
+
+    evidence = dedup_tier0(state.evidence)
+    evidence = dedup_tier1(evidence)
+
+    survivors = [e for e in evidence if e.merged_into is None]
+    if len(survivors) <= 1:
+        state.evidence = evidence
+        return
+
+    system = ctx.sections.get("System Prompt", "")
+    model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
+    prompt_body = ctx.sections.get("Step 4 — Dedup Evidence", "")
+
+    survivor_supports = json.dumps(
+        [{"idx": i, "supports": s.supports} for i, s in enumerate(survivors)],
+        ensure_ascii=False,
+    )
+    user_msg = (
+        f"## Survivors\n\n{survivor_supports}\n\n"
+        f"## Instructions\n\n{prompt_body}"
+    )
+
+    agent: Agent[None, DedupGroupingOutput] = Agent(
+        model=model, output_type=DedupGroupingOutput, system_prompt=system, retries=3,
+    )
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=50))
+    grouping = result.output
+
+    for group in grouping.groups:
+        if len(group) < 2:
+            continue
+        lowest_idx = min(group, key=lambda i: (survivors[i].loc.line, survivors[i].loc.start_char))
+        for i in group:
+            if i != lowest_idx:
+                s = survivors[i]
+                survivor_obj = survivors[lowest_idx]
+                idx_in_evidence = next(
+                    j for j, e in enumerate(evidence) if e.loc == s.loc
+                )
+                evidence[idx_in_evidence] = s.model_copy(update={"merged_into": survivor_obj.loc})
+                absorber_idx = next(
+                    j for j, e in enumerate(evidence) if e.loc == survivor_obj.loc
+                )
+                merged_quotes = list(evidence[absorber_idx].original_quotes) + list(s.original_quotes)
+                all_supports = list(evidence[absorber_idx].supports)
+                for sup in s.supports:
+                    if sup not in all_supports:
+                        all_supports.append(sup)
+                evidence[absorber_idx] = evidence[absorber_idx].model_copy(
+                    update={
+                        "original_quotes": merged_quotes,
+                        "supports": all_supports,
+                        "quantitative": evidence[absorber_idx].quantitative or s.quantitative,
+                        "cited": evidence[absorber_idx].cited or s.cited,
+                        "verifiable": evidence[absorber_idx].verifiable or s.verifiable,
+                        "normative": evidence[absorber_idx].normative or s.normative,
+                    }
+                )
+
+    state.evidence = evidence
+
+
+async def _step5_verify(state: PipelineState, ctx: StepContext) -> None:
+    """LLM: verify merges, resolve cross-chunk deps, map support, find contradictions."""
+    assert state.claims is not None and state.evidence is not None
+
+    system = ctx.sections.get("System Prompt", "")
+    model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
+    prompt_body = ctx.sections.get("Step 5 — Verify + Deps + Map + Contradict", "")
+
+    claims_json = json.dumps(
+        [c.model_dump() for c in state.claims if c.merged_into is None],
+        ensure_ascii=False, default=str,
+    )
+    evidence_json = json.dumps(
+        [e.model_dump() for e in state.evidence if e.merged_into is None],
+        ensure_ascii=False, default=str,
+    )
+    user_msg = (
+        f"## Claims\n\n{claims_json}\n\n"
+        f"## Evidence\n\n{evidence_json}\n\n"
+        f"## Instructions\n\n{prompt_body}"
+    )
+
+    agent: Agent[None, VerifyOutput] = Agent(
+        model=model, output_type=VerifyOutput, system_prompt=system, retries=3,
+    )
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=200))
+    output = result.output
+
+    state.support_map = output.support_map
+    state.internal_contradictions = output.internal_contradictions
+
+
+async def _step6_load_bearing(state: PipelineState, ctx: StepContext) -> None:
+    """LLM: graph analysis to identify load-bearing claims."""
+    assert state.claims is not None and state.support_map is not None
+
+    system = ctx.sections.get("System Prompt", "")
+    model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
+    prompt_body = ctx.sections.get("Step 6 — Load-Bearing", "")
+
+    claims_json = json.dumps(
+        [c.model_dump() for c in state.claims if c.merged_into is None],
+        ensure_ascii=False, default=str,
+    )
+    support_json = json.dumps(
+        [s.model_dump() for s in state.support_map],
+        ensure_ascii=False, default=str,
+    )
+    contradictions_json = json.dumps(
+        [ic.model_dump() for ic in (state.internal_contradictions or [])],
+        ensure_ascii=False, default=str,
+    )
+    user_msg = (
+        f"## Claims\n\n{claims_json}\n\n"
+        f"## Support Map\n\n{support_json}\n\n"
+        f"## Internal Contradictions\n\n{contradictions_json}\n\n"
+        f"## Instructions\n\n{prompt_body}"
+    )
+
+    agent: Agent[None, LoadBearingOutput] = Agent(
+        model=model, output_type=LoadBearingOutput, system_prompt=system, retries=3,
+    )
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=200))
+    state.load_bearing_claims = result.output.results
+
+
+def _has_triggered_claims(state: PipelineState) -> bool:
+    """Check if any load-bearing claims trigger web search."""
+    if not state.load_bearing_claims:
+        return False
+    return any(
+        lb.classification == "critical_gap" for lb in state.load_bearing_claims
+    )
+
+
+async def _step7_web_search(state: PipelineState, ctx: StepContext) -> None:
+    """LLM + web tools: search for evidence on triggered claims."""
+    if not _has_triggered_claims(state):
+        return
+
+    assert state.claims is not None and state.load_bearing_claims is not None
+
+    system = ctx.sections.get("System Prompt", "")
+    model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
+    prompt_body = ctx.sections.get("Step 7 — Web Search", "")
+
+    triggered = [
+        lb for lb in state.load_bearing_claims
+        if lb.classification == "critical_gap"
+    ]
+    claims_for_search = []
+    for lb in triggered:
+        claim = next(
+            (c for c in state.claims if c.loc == lb.claim_loc and c.merged_into is None),
+            None,
+        )
+        if claim:
+            claims_for_search.append(claim.model_dump())
+
+    user_msg = (
+        f"## Triggered Claims\n\n{json.dumps(claims_for_search, ensure_ascii=False, default=str)}\n\n"
+        f"## Instructions\n\n{prompt_body}"
+    )
+
+    agent: Agent[None, WebSearchOutput] = Agent(
+        model=model, output_type=WebSearchOutput, system_prompt=system, retries=3,
+    )
+
+    if ctx.researcher is not None:
+        agent.tool_plain(ctx.researcher.web_search)
+        agent.tool_plain(ctx.researcher.web_fetch)
+
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=200))
+    state.external_evidence = result.output.external_evidence
+
+
+async def _step8_resolve(state: PipelineState, ctx: StepContext) -> None:
+    """LLM: resolve external evidence into classifications."""
+    if not state.external_evidence:
+        return
+
+    assert state.load_bearing_claims is not None and state.claims is not None
+
+    system = ctx.sections.get("System Prompt", "")
+    model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
+    prompt_body = ctx.sections.get("Step 8 — Resolve External", "")
+
+    user_msg = (
+        f"## Load-Bearing Claims\n\n"
+        f"{json.dumps([lb.model_dump() for lb in state.load_bearing_claims], ensure_ascii=False, default=str)}\n\n"
+        f"## External Evidence\n\n"
+        f"{json.dumps([ee.model_dump() for ee in state.external_evidence], ensure_ascii=False, default=str)}\n\n"
+        f"## Claims\n\n"
+        f"{json.dumps([c.model_dump() for c in state.claims if c.merged_into is None], ensure_ascii=False, default=str)}\n\n"
+        f"## Instructions\n\n{prompt_body}"
+    )
+
+    agent: Agent[None, ResolveOutput] = Agent(
+        model=model, output_type=ResolveOutput, system_prompt=system, retries=3,
+    )
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=200))
+    state.load_bearing_claims = result.output.load_bearing_claims
+    state.web_resolutions = result.output.web_resolutions
+
+
+async def _step9_report(state: PipelineState, ctx: StepContext) -> None:
+    """Pure Python: render the final report as two bulleted question lists."""
+    assert state.claims is not None
+
+    lb_claims = state.load_bearing_claims or []
+    claims = state.claims
+
+    critical_gaps: list[LoadBearingResult] = sorted(
+        [lb for lb in lb_claims if lb.classification == "critical_gap"],
+        key=lambda lb: (lb.claim_loc.line, lb.claim_loc.start_char),
+    )
+
+    peripheral_unsupported: list[LoadBearingResult] = []
+    if state.support_map:
+        unsupported_locs = {
+            s.claim_loc for s in state.support_map if s.status == "unsupported"
+        }
+        peripheral_unsupported = sorted(
+            [
+                lb for lb in lb_claims
+                if lb.classification == "peripheral" and lb.claim_loc in unsupported_locs
+            ],
+            key=lambda lb: (lb.claim_loc.line, lb.claim_loc.start_char),
+        )
+
+    def _question_for_loc(loc: Any) -> str | None:
+        for c in claims:
+            if c.loc == loc and c.merged_into is None:
+                return c.question
+        return None
+
+    lines: list[str] = []
+    lines.append("### Unsupported Load-Bearing Claims\n")
+    if not critical_gaps:
+        lines.append("No questions.\n")
+    else:
+        for lb in critical_gaps:
+            q = _question_for_loc(lb.claim_loc)
+            if q:
+                lines.append(f"- {q}")
+        lines.append("")
+
+    lines.append("### Unsupported Peripheral Claims\n")
+    if not peripheral_unsupported:
+        lines.append("No questions.\n")
+    else:
+        for lb in peripheral_unsupported:
+            q = _question_for_loc(lb.claim_loc)
+            if q:
+                lines.append(f"- {q}")
+        lines.append("")
+
+    state.report = "\n".join(lines)
+
+
+# -- Step registry -----------------------------------------------------------
+
+_STEPS: list[tuple[str, StepFn]] = [  # noqa: RUF012
+    ("Step 0 — Read", _step0_read),
+    ("Step 1 — Extract Claims", _step1_claims),
+    ("Step 2 — Extract Evidence", _step2_evidence),
+    ("Step 3 — Dedup Claims", _step3_dedup_claims),
+    ("Step 4 — Dedup Evidence", _step4_dedup_evidence),
+    ("Step 5 — Verify + Deps", _step5_verify),
+    ("Step 6 — Load-Bearing", _step6_load_bearing),
+    ("Step 7 — Web Search", _step7_web_search),
+    ("Step 8 — Resolve External", _step8_resolve),
+    ("Step 9 — Report", _step9_report),
+]
+
+
+# -- Public API --------------------------------------------------------------
 
 
 async def review_paper(
@@ -142,20 +522,18 @@ async def review_paper(
     backend: StorageBackend,
     *,
     model_slots: dict[str, str] | None = None,
-    on_step: Callable[[int, str], None] | None = None,
-    on_step_complete: Callable[[int, str, BaseModel], None] | None = None,
-    on_step_skip: Callable[[int, str], None] | None = None,
+    on_progress: ProgressCallback | None = None,
     stop_after: int | None = None,
 ) -> str:
-    """Review a WG21 paper and return the rendered markdown report.
+    """Extract structural questions from a WG21 paper.
 
     Loads the paper from paperstore via ``pid``, runs the multi-step
-    review pipeline, and returns the final markdown report string.
+    extractor pipeline, and returns the final report string (two
+    bulleted question lists).
 
-    ``on_step_complete`` is called with (index, key, output) after each
-    step finishes. ``on_step_skip`` is called with (index, key) when a
-    step is skipped. ``stop_after`` halts after step N and returns an
-    empty string (for debugging).
+    Pass ``on_progress`` to receive :class:`~paperstore.progress.ProgressEvent`
+    notifications at each step transition. The CLI uses this to drive a
+    rich progress bar; other callers may pass ``None``.
 
     Raises :class:`ReviewError` if the paper is not found or has no
     converted markdown.
@@ -164,91 +542,37 @@ async def review_paper(
 
     slots = {**_DEFAULT_MODEL_SLOTS, **(model_slots or {})}
     secs = load_sections()
-    system_msg = secs.get("System Prompt")
-    if not system_msg:
+
+    if "System Prompt" not in secs:
         raise ReviewError(
-            "'System Prompt' section not found in review.md. "
+            "'System Prompt' section not found in extractor.md. "
             f"Available sections: {sorted(secs)}"
         )
 
     _meta, paper_md = _load_paper(pid, backend)
     backend.clear_review(pid)
-    state = PipelineState()
-    report = ""
+
+    state = PipelineState(paper_source=paper_md)
 
     async with WebResearcher() as researcher:
-        for step_index, (key, response_model) in enumerate(_STEP_KEYS):
-            step_body = secs.get(key)
-            if step_body is None:
-                raise ReviewError(
-                    f"Step '{key}' not found in review.md. "
-                    f"Available sections: {sorted(secs)}"
-                )
-            model_slot = _extract_model_slot(step_body)
-            model = slots.get(model_slot)
-            if model is None:
-                raise ReviewError(
-                    f"Step '{key}' requests model slot '{model_slot}' "
-                    f"but available slots are: {sorted(slots)}"
-                )
-            reads = _extract_reads(step_body)
-            tools = _extract_tools(step_body)
+        ctx = StepContext(
+            sections=secs,
+            model_slots=slots,
+            researcher=researcher,
+            on_progress=on_progress,
+        )
 
-            if on_step is not None:
-                on_step(step_index, key)
+        total = len(_STEPS)
+        for i, (name, step_fn) in enumerate(_STEPS):
+            if stop_after is not None and i > stop_after:
+                break
 
-            if stop_after is not None and step_index > stop_after:
-                return ""
+            if on_progress is not None:
+                on_progress(ProgressEvent(
+                    step=i, total=total, name=name, pct=i / total,
+                ))
 
-            if key == _VERIFY_CITATIONS_KEY:
-                if state.surviving_findings is not None and len(state.surviving_findings) == 0:
-                    if on_step_skip is not None:
-                        on_step_skip(step_index, key)
-                    continue
+            logger.info("Step %d: %s", i, name)
+            await step_fn(state, ctx)
 
-            logger.info(
-                "Step %d (%s) model_slot='%s' -> %s, tools=%s",
-                step_index, key, model_slot, model, tools,
-            )
-
-            state_context = _build_state_context(state, reads)
-            include_paper = "paper" in reads
-
-            user_content = ""
-            if include_paper:
-                user_content += f"## Paper Content\n\n{paper_md}\n\n"
-            if state_context != "{}":
-                user_content += f"## Pipeline State\n\n```json\n{state_context}\n```\n\n"
-            user_content += f"## Step Instructions\n\n{step_body}"
-
-            agent: Agent = Agent(
-                model=model,
-                output_type=response_model,
-                system_prompt=system_msg,
-                retries=3,
-            )
-
-            if "web_search" in tools:
-                agent.tool_plain(researcher.web_search)
-                agent.tool_plain(researcher.web_fetch)
-
-            try:
-                result = await agent.run(
-                    user_content,
-                    usage_limits=UsageLimits(request_limit=200),
-                )
-            except Exception as exc:
-                raise ReviewError(
-                    f"Step '{key}' failed: {exc}"
-                ) from exc
-            output = result.output
-            _apply_output(state, output)
-
-            if on_step_complete is not None:
-                on_step_complete(step_index, key, output)
-
-            if key == _WRITE_OUTPUT_KEY:
-                assert isinstance(output, WriteOutputOutput)
-                report = output.report
-
-    return report
+    return state.report or ""

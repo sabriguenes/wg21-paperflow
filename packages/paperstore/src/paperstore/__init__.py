@@ -20,6 +20,8 @@ from paperstore.errors import (
     PaperstoreError,
 )
 from paperstore.factory import WORKSPACE_ENV_VAR, default_workspace_dir, from_uri
+from paperstore.progress import ProgressCallback as ProgressCallback
+from paperstore.progress import ProgressEvent as ProgressEvent
 from paperstore.sqlite_backend import SqliteBackend
 
 __all__ = [
@@ -37,4 +39,6 @@ __all__ = [
     "from_uri",
     "default_workspace_dir",
     "WORKSPACE_ENV_VAR",
+    "ProgressCallback",
+    "ProgressEvent",
 ]

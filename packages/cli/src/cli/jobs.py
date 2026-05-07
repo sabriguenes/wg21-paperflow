@@ -26,8 +26,6 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
-
 from paperstore import parse_authors_raw
 from paperstore.backend import PaperRow, StorageBackend
 from paperstore.errors import (
@@ -35,6 +33,7 @@ from paperstore.errors import (
     MissingPaperMdError,
     MissingSourceError,
 )
+from paperstore.progress import ProgressCallback, ProgressEvent
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +110,7 @@ async def run_mailing(
     *,
     current_year: str | None = None,
     force: bool = False,
+    on_progress: ProgressCallback | None = None,
 ) -> dict:
     """Scrape mailing indexes from open-std.org and store in the backend.
 
@@ -138,9 +138,19 @@ async def run_mailing(
     succeeded = []
     skipped = []
     failed = []
+    total_years = len(years)
 
-    for year in years:
-        # Skip past years already in DB; always re-fetch current year.
+    for i, year in enumerate(years):
+        if on_progress is not None:
+            try:
+                on_progress(ProgressEvent(
+                    step=i, total=total_years,
+                    name=f"Mailing {year}", pct=i / total_years if total_years else 1.0,
+                ))
+            except Exception:
+                logger.warning("on_progress hook raised; disabling", exc_info=True)
+                on_progress = None
+
         if not force and year < current_year and backend.has_year(year):
             skipped.append(year)
             continue
@@ -150,7 +160,6 @@ async def run_mailing(
                 backend.upsert_year(year, papers)
             total = len(backend.list_papers_for_year(year))
             succeeded.append({"year": year, "papers": total})
-        # Batch robustness: one bad paper must not crash the run
         except Exception as exc:
             logger.exception("Failed to fetch year %s", year)
             failed.append({"year": year, "error": str(exc)})
@@ -169,14 +178,12 @@ async def run_download(
     force: bool = False,
     verify: bool = False,
     concurrency: int = DEFAULT_DOWNLOAD_CONCURRENCY,
-    on_total: Callable[[int], None] | None = None,
-    on_progress: Callable[[dict], None] | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> dict:
     """Download source files for papers. Workers are async httpx calls.
 
-    ``on_total`` is invoked once with the count of papers that will be
-    attempted (after idempotency filtering). ``on_progress`` is invoked
-    once per task completion with the worker's result dict.
+    ``on_progress`` is invoked after each task completion with a
+    :class:`~paperstore.progress.ProgressEvent`.
     """
     from mailing.download import content_length, default_client, download_paper
 
@@ -190,13 +197,7 @@ async def run_download(
     else:
         to_process = [p for p in all_papers if p.get("url")]
 
-    if on_total is not None:
-        try:
-            on_total(len(to_process))
-        # Callback firewall: caller hooks must not crash the batch
-        except Exception:
-            logger.warning("on_total progress hook raised; continuing", exc_info=True)
-
+    total = len(to_process)
     semaphore = asyncio.Semaphore(concurrency)
 
     async with default_client() as http:
@@ -243,6 +244,7 @@ async def run_download(
             for p in all_papers if p["paper_id"] not in to_process_ids
         ]
 
+        completed = 0
         for coro in asyncio.as_completed(tasks):
             result = await coro
             if result["status"] == "ok":
@@ -254,12 +256,15 @@ async def run_download(
                 skipped_papers.append(result)
             else:
                 failed.append(result)
+            completed += 1
             if on_progress is not None:
                 try:
-                    on_progress(result)
-                # Callback firewall: caller hooks must not crash the batch
+                    on_progress(ProgressEvent(
+                        step=completed, total=total,
+                        name=result["paper_id"], pct=completed / total if total else 1.0,
+                    ))
                 except Exception:
-                    logger.warning("on_progress progress hook raised; disabling for remainder of run", exc_info=True)
+                    logger.warning("on_progress hook raised; disabling", exc_info=True)
                     on_progress = None
 
     return {"succeeded": succeeded, "skipped": skipped_papers, "failed": failed}
@@ -276,8 +281,7 @@ async def run_convert(
     force: bool = False,
     concurrency: int = 4,
     write_prompts: bool = True,
-    on_total: Callable[[int], None] | None = None,
-    on_progress: Callable[[dict], None] | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> dict:
     """Convert staged source files to markdown. Workers run in threads.
 
@@ -285,9 +289,8 @@ async def run_convert(
     intermediate is persisted (default True). Set False from CLI flows
     that explicitly opt out via ``--no-prompts``.
 
-    ``on_total`` is invoked once with the count of papers that will be
-    attempted (after idempotency filtering). ``on_progress`` is invoked
-    once per task completion with the worker's result dict.
+    ``on_progress`` is invoked after each task completion with a
+    :class:`~paperstore.progress.ProgressEvent`.
     """
     from cli.orchestrator import convert_one_paper
     from cli.models import Paper
@@ -302,13 +305,7 @@ async def run_convert(
     else:
         to_process = [p for p in all_papers if p.get("source_file")]
 
-    if on_total is not None:
-        try:
-            on_total(len(to_process))
-        # Callback firewall: caller hooks must not crash the batch
-        except Exception:
-            logger.warning("on_total progress hook raised; continuing", exc_info=True)
-
+    total = len(to_process)
     semaphore = asyncio.Semaphore(concurrency)
 
     def _make_paper(row: PaperRow) -> Paper:
@@ -362,6 +359,7 @@ async def run_convert(
     skipped = [{"paper_id": p["paper_id"], "reason": "already_converted"}
                for p in all_papers if p["paper_id"] not in to_process_ids]
 
+    completed = 0
     for coro in asyncio.as_completed(tasks):
         result = await coro
         if result["status"] == "ok":
@@ -375,12 +373,15 @@ async def run_convert(
             skipped.append(result)
         else:
             failed.append(result)
+        completed += 1
         if on_progress is not None:
             try:
-                on_progress(result)
-            # Callback firewall: caller hooks must not crash the batch
+                on_progress(ProgressEvent(
+                    step=completed, total=total,
+                    name=result["paper_id"], pct=completed / total if total else 1.0,
+                ))
             except Exception:
-                logger.warning("on_progress progress hook raised; disabling for remainder of run", exc_info=True)
+                logger.warning("on_progress hook raised; disabling", exc_info=True)
                 on_progress = None
 
     return {"succeeded": succeeded, "skipped": skipped, "failed": failed}

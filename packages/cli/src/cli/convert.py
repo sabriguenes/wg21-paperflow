@@ -30,9 +30,9 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
 
 def _convert_command(args: argparse.Namespace, backend: StorageBackend) -> int:
     from cli.jobs import run_convert
-    from cli.progress import progress_callbacks
+    from cli.progress import make_progress_handler
 
-    progress_ctx, on_total, on_progress = progress_callbacks("Converting")
+    progress_ctx, on_progress = make_progress_handler("Converting")
 
     with progress_ctx:
         result = asyncio.run(run_convert(
@@ -41,7 +41,6 @@ def _convert_command(args: argparse.Namespace, backend: StorageBackend) -> int:
             force=args.force,
             concurrency=args.concurrency or _DEFAULT_CONVERT_CONCURRENCY,
             write_prompts=not args.no_prompts,
-            on_total=on_total,
             on_progress=on_progress,
         ))
 

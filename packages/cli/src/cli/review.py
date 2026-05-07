@@ -37,46 +37,20 @@ def _resolve_pid(target: str, backend: StorageBackend) -> str:
 
 
 def command(args: argparse.Namespace, backend: StorageBackend) -> int:
-    import json
-    from pydantic import BaseModel
     from review import ReviewError, review_paper
-    from review.pipeline import _STEP_KEYS
-    from cli.progress import progress_callbacks
+    from cli.progress import make_progress_handler
 
     pid = _resolve_pid(args.targets[0], backend)
     stop_after = args.stop_after
-    dump_steps = args.dump_steps
-    total_steps = (stop_after + 1) if stop_after is not None else len(_STEP_KEYS)
 
-    progress_ctx, on_total, _on_progress = progress_callbacks("Reviewing")
-
-    def on_step(_index: int, _name: str) -> None:
-        pass
-
-    def on_step_skip(_index: int, name: str) -> None:
-        if _on_progress is not None:
-            _on_progress({"step": _index, "name": f"{name} (skipped)"})
-
-    def on_step_complete(index: int, name: str, output: BaseModel) -> None:
-        if _on_progress is not None:
-            _on_progress({"step": index, "name": name})
-        if dump_steps or (stop_after is not None and index >= stop_after):
-            print(f"\n--- Step {index}: {name} ---")
-            print(json.dumps(
-                output.model_dump(), indent=2, ensure_ascii=False, default=str,
-            ))
+    progress_ctx, on_progress = make_progress_handler("Extracting")
 
     with progress_ctx:
-        if on_total is not None:
-            on_total(total_steps)
-
         try:
             report = asyncio.run(
                 review_paper(
                     pid, backend,
-                    on_step=on_step,
-                    on_step_complete=on_step_complete,
-                    on_step_skip=on_step_skip,
+                    on_progress=on_progress,
                     stop_after=stop_after,
                 )
             )
@@ -86,7 +60,7 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
         except pydantic_ai.exceptions.UsageLimitExceeded as exc:
             print(f"Review aborted: LLM usage limit reached ({exc})", file=sys.stderr)
             return 1
-        except Exception as exc:  # LLM/network/validation errors
+        except Exception as exc:
             print(f"Review failed unexpectedly: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 1
 

@@ -22,7 +22,14 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
         return 0
 
     from cli.jobs import run_mailing
-    result = asyncio.run(run_mailing(args.targets, backend, force=args.force))
+    from cli.progress import make_progress_handler
+
+    progress_ctx, on_progress = make_progress_handler("Mailing")
+
+    with progress_ctx:
+        result = asyncio.run(run_mailing(
+            args.targets, backend, force=args.force, on_progress=on_progress,
+        ))
 
     succeeded = result.get("succeeded", [])
     skipped = result.get("skipped", [])

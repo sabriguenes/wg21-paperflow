@@ -12,107 +12,114 @@ from __future__ import annotations
 import pytest
 
 from review.models import (
-    Assumption,
-    CandidateFinding,
-    CertifiedSection,
-    CitationEntry,
     Claim,
+    Chunk,
     Evidence,
-    EvidenceFinding,
-    InterpretedFinding,
-    KilledFinding,
+    ExternalEvidence,
+    InternalContradiction,
+    LoadBearingResult,
     PipelineState,
-    Premise,
-    ThinSection,
-    ArgumentStructure,
-    ConfirmedCounterexample,
-    ClassifyOutput,
-    ReadPaperOutput,
-    WriteOutputOutput,
+    RawClaim,
+    RawEvidence,
+    SourceLoc,
+    SupportLink,
+    WebResolution,
+    ExtractClaimsOutput,
+    ExtractEvidenceOutput,
 )
 
 
+def _loc(line=1, start=0, end=10):
+    return SourceLoc(line=line, start_char=start, end_char=end)
+
+
+def test_source_loc_round_trip():
+    loc = _loc(5, 10, 20)
+    assert SourceLoc.model_validate(loc.model_dump()) == loc
+
+
+def test_chunk_round_trip():
+    c = Chunk(text="hello", line_offset=42)
+    assert Chunk.model_validate(c.model_dump()) == c
+
+
 def test_claim_round_trip():
-    c = Claim(text="X is fast", section="3.1", tag="factual")
+    c = Claim(
+        loc=_loc(), text="X is fast", original_quotes=["X is fast"],
+        section="3.1", question="Is X fast?", depends_on=[], merged_into=None,
+    )
     assert Claim.model_validate(c.model_dump()) == c
 
 
-def test_premise_round_trip():
-    p = Premise(text="Assume Y", section="2")
-    assert Premise.model_validate(p.model_dump()) == p
-
-
-def test_thin_section_round_trip():
-    t = ThinSection(section="4", scope_stated="Performance", audience_affected="SG1")
-    assert ThinSection.model_validate(t.model_dump()) == t
-
-
-def test_argument_structure_round_trip():
-    a = ArgumentStructure(type="elimination", section="5", elements=["A", "B"])
-    assert ArgumentStructure.model_validate(a.model_dump()) == a
-
-
-def test_evidence_finding_round_trip():
-    ef = EvidenceFinding(source="P1234R0", date="2026-01-01", substance="Found X")
-    assert EvidenceFinding.model_validate(ef.model_dump()) == ef
+def test_claim_model_copy_merged_into():
+    c = Claim(
+        loc=_loc(1), text="A", original_quotes=["A"],
+        section="1", question="Q?", depends_on=[], merged_into=None,
+    )
+    target = _loc(2)
+    updated = c.model_copy(update={"merged_into": target})
+    assert updated.merged_into == target
+    assert c.merged_into is None
 
 
 def test_evidence_round_trip():
-    ef = EvidenceFinding(source="src", date="2026", substance="sub")
     e = Evidence(
-        paper_reception=[ef],
-        committee_history=[],
-        referenced_papers=[],
-        domain_landscape=[],
-        rehabilitated_alternatives=[],
+        loc=_loc(), text="measured 5ns", original_quotes=["measured 5ns"],
+        section="2", supports=["X is fast"], quantitative=True,
+        cited=False, verifiable=True, normative=False, merged_into=None,
     )
     assert Evidence.model_validate(e.model_dump()) == e
 
 
-def test_assumption_with_source():
-    a = Assumption(assumption="Author intends X", status="verified", source="email")
-    assert a.source == "email"
+def test_support_link_round_trip():
+    sl = SupportLink(claim_loc=_loc(1), evidence_locs=[_loc(2)], status="directly_supported")
+    assert SupportLink.model_validate(sl.model_dump()) == sl
 
 
-def test_assumption_without_source():
-    a = Assumption(assumption="Author intends X", status="plausible")
-    assert a.source is None
+def test_internal_contradiction_round_trip():
+    ic = InternalContradiction(evidence_loc=_loc(1), claim_loc=_loc(2))
+    assert InternalContradiction.model_validate(ic.model_dump()) == ic
 
 
-def test_candidate_finding_round_trip():
-    cf = CandidateFinding(
-        quoted_text="claim X",
-        section="3",
-        failed_test="accuracy",
-        contradicting_evidence="source Y says Z",
-        core_complaint="X is wrong",
-        finding_type="inconsistency",
+def test_load_bearing_result_round_trip():
+    lb = LoadBearingResult(
+        claim_loc=_loc(), dependents=[_loc(2)], classification="critical_gap",
     )
-    assert CandidateFinding.model_validate(cf.model_dump()) == cf
+    assert LoadBearingResult.model_validate(lb.model_dump()) == lb
 
 
-def test_killed_finding_round_trip():
-    cf = CandidateFinding(
-        quoted_text="q", section="1", failed_test="logic",
-        contradicting_evidence="e", core_complaint="c", finding_type="miss",
+def test_external_evidence_round_trip():
+    ee = ExternalEvidence(
+        claim_loc=_loc(), source_url="https://example.com", source_title="Example",
+        text="passage", finding="it works", stance="supports",
+        quantitative=False, cited=True, verifiable=True, normative=False,
     )
-    kf = KilledFinding(finding=cf, killed_by="paper_handles_it", reason="Concession in s3")
-    assert KilledFinding.model_validate(kf.model_dump()) == kf
+    assert ExternalEvidence.model_validate(ee.model_dump()) == ee
 
 
-def test_interpreted_finding_round_trip():
-    cf = CandidateFinding(
-        quoted_text="q", section="1", failed_test="accuracy",
-        contradicting_evidence="e", core_complaint="c", finding_type="miss",
+def test_web_resolution_round_trip():
+    wr = WebResolution(
+        external_loc=_loc(), source_url="https://x.com", stance="supports",
+        finding="confirmed", resolved_claims=[_loc(2)],
     )
-    inf = InterpretedFinding(finding=cf, who="LEWG", where="reflector", what_damage="blocks")
-    assert InterpretedFinding.model_validate(inf.model_dump()) == inf
+    assert WebResolution.model_validate(wr.model_dump()) == wr
 
 
-def test_citation_entry_minimal():
-    ce = CitationEntry(link="P1234R0", status="resolved")
-    assert ce.target_url is None
-    assert ce.quote_match is None
+def test_raw_claim_round_trip():
+    rc = RawClaim(
+        text="X", original_quotes=["X"], section="1",
+        question="Q?", depends_on=["Y"],
+    )
+    assert RawClaim.model_validate(rc.model_dump()) == rc
+
+
+def test_raw_evidence_round_trip():
+    re_ = RawEvidence(
+        text="E", original_quotes=["E"], section="2",
+        supports=["S"], quantitative=False, cited=False,
+        verifiable=False, normative=False,
+    )
+    assert RawEvidence.model_validate(re_.model_dump()) == re_
 
 
 def test_pipeline_state_defaults_none():
@@ -123,45 +130,32 @@ def test_pipeline_state_defaults_none():
 
 def test_pipeline_state_assignable():
     s = PipelineState()
-    s.title = "Test Paper"
-    s.paper_type = "ask"
-    s.verdict = "no_objections"
-    assert s.title == "Test Paper"
-    assert s.paper_type == "ask"
-    assert s.verdict == "no_objections"
-
-
-def test_pipeline_state_no_prior_review_field():
-    assert "prior_review" not in PipelineState.model_fields
-    assert "cache_status" not in PipelineState.model_fields
-
-
-def test_classify_output():
-    o = ClassifyOutput(
-        title="T", document_number="P1234R0", author="A",
-        audience="LEWG", paper_type="ask",
-    )
-    assert o.paper_type == "ask"
-
-
-def test_read_paper_output():
-    o = ReadPaperOutput(
-        thesis="T",
-        claims=[Claim(text="c", section="1", tag="factual")],
-        boundaries=["b"],
-        premises=[Premise(text="p", section="2")],
-        thin_sections=[],
-        argument_structures=[],
-    )
-    assert len(o.claims) == 1
-
-
-def test_write_output_has_report_field():
-    o = WriteOutputOutput(report="# Report\n\nContent.")
-    assert o.report.startswith("# Report")
+    s.paper_source = "# Test"
+    s.report = "result"
+    assert s.paper_source == "# Test"
+    assert s.report == "result"
 
 
 def test_frozen_models_are_immutable():
-    c = Claim(text="X", section="1", tag="factual")
+    c = Claim(
+        loc=_loc(), text="X", original_quotes=["X"],
+        section="1", question="Q?", depends_on=[],
+    )
     with pytest.raises(Exception):
         c.text = "Y"  # type: ignore[misc]
+
+
+def test_extract_claims_output():
+    rc = RawClaim(text="X", original_quotes=["X"], section="1", question="Q?", depends_on=[])
+    out = ExtractClaimsOutput(claims=[rc])
+    assert len(out.claims) == 1
+
+
+def test_extract_evidence_output():
+    re_ = RawEvidence(
+        text="E", original_quotes=["E"], section="2",
+        supports=["S"], quantitative=False, cited=False,
+        verifiable=False, normative=False,
+    )
+    out = ExtractEvidenceOutput(evidence=[re_])
+    assert len(out.evidence) == 1

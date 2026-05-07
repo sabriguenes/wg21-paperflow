@@ -5,224 +5,209 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Pydantic models for the review pipeline.
+"""Pydantic models for the extractor pipeline.
 
-Domain models match the Classes section of review.md. Per-step output
+Domain models match the Classes section of extractor.md. Per-step output
 models group the Writes fields for each step so Pydantic AI can return
-structured data.
+structured data. Frozen domain models are updated via model_copy(update=...).
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
 
 # -- Domain models -----------------------------------------------------------
 
+
+class SourceLoc(BaseModel, frozen=True):
+    line: int
+    start_char: int
+    end_char: int
+
+
+class Chunk(BaseModel, frozen=True):
+    text: str
+    line_offset: int
+
+
 class Claim(BaseModel, frozen=True):
+    loc: SourceLoc
     text: str
+    original_quotes: list[str]
     section: str
-    tag: Literal["factual", "normative"]
-
-
-class Premise(BaseModel, frozen=True):
-    text: str
-    section: str
-
-
-class ThinSection(BaseModel, frozen=True):
-    section: str
-    scope_stated: str
-    audience_affected: str
-
-
-class ArgumentStructure(BaseModel, frozen=True):
-    type: Literal["elimination", "analogy", "induction"]
-    section: str
-    elements: list[str]
-
-
-class EvidenceFinding(BaseModel, frozen=True):
-    source: str
-    date: str
-    substance: str
+    question: str
+    depends_on: list[SourceLoc]
+    merged_into: SourceLoc | None = None
 
 
 class Evidence(BaseModel, frozen=True):
-    paper_reception: list[EvidenceFinding]
-    committee_history: list[EvidenceFinding]
-    referenced_papers: list[EvidenceFinding]
-    domain_landscape: list[EvidenceFinding]
-    rehabilitated_alternatives: list[EvidenceFinding]
-
-
-class Assumption(BaseModel, frozen=True):
-    assumption: str
-    status: Literal["verified", "plausible", "unsupported"]
-    source: str | None = None
-
-
-class ConfirmedCounterexample(BaseModel, frozen=True):
-    eliminated_option: str
-    evidence: EvidenceFinding
-
-
-class CandidateFinding(BaseModel, frozen=True):
-    quoted_text: str
+    loc: SourceLoc
+    text: str
+    original_quotes: list[str]
     section: str
-    failed_test: Literal["accuracy", "logic", "citation_support", "internal_consistency"]
-    contradicting_evidence: str
-    core_complaint: str
-    finding_type: Literal["miss", "inconsistency"]
+    supports: list[str]
+    quantitative: bool
+    cited: bool
+    verifiable: bool
+    normative: bool
+    merged_into: SourceLoc | None = None
 
 
-class KilledFinding(BaseModel, frozen=True):
-    finding: CandidateFinding
-    killed_by: Literal[
-        "paper_handles_it",
-        "not_actually_claimed",
-        "minimal_clarification",
-        "not_credible",
-        "self_defeating",
-        "too_trivial",
+class SupportLink(BaseModel, frozen=True):
+    claim_loc: SourceLoc
+    evidence_locs: list[SourceLoc]
+    status: Literal["directly_supported", "transitively_supported", "unsupported"]
+
+
+class InternalContradiction(BaseModel, frozen=True):
+    evidence_loc: SourceLoc
+    claim_loc: SourceLoc
+
+
+class LoadBearingResult(BaseModel, frozen=True):
+    claim_loc: SourceLoc
+    dependents: list[SourceLoc]
+    classification: Literal[
+        "internally_contested",
+        "externally_contested",
+        "externally_anchored",
+        "critical_gap",
+        "anchored",
+        "depends_on_contested",
+        "peripheral",
     ]
-    reason: str
 
 
-class InterpretedFinding(BaseModel, frozen=True):
-    finding: CandidateFinding
-    who: str
-    where: str
-    what_damage: str
+class ExternalEvidence(BaseModel, frozen=True):
+    claim_loc: SourceLoc
+    source_url: str
+    source_title: str
+    text: str
+    finding: str
+    stance: Literal["supports", "contradicts"]
+    quantitative: bool
+    cited: bool
+    verifiable: bool
+    normative: bool
 
 
-class CertifiedSection(BaseModel, frozen=True):
-    section: str
-    killed_finding: str | None = None
-    reason: str
+class WebResolution(BaseModel, frozen=True):
+    external_loc: SourceLoc
+    source_url: str
+    stance: Literal["supports", "contradicts"]
+    finding: str
+    resolved_claims: list[SourceLoc]
 
 
-class CitationEntry(BaseModel, frozen=True):
-    link: str
-    status: Literal["resolved", "unresolved_self", "unresolved_third_party"]
-    target_url: str | None = None
-    quote_match: bool | None = None
-    notes: str | None = None
+# -- Pre-loc models (LLM output before harness adds SourceLocs) --------------
 
 
-# -- Pipeline state ----------------------------------------------------------
+class RawClaim(BaseModel, frozen=True):
+    text: str
+    original_quotes: list[str] = []
+    section: str = ""
+    question: str = ""
+    depends_on: list[str] = []
 
-class PipelineState(BaseModel):
-    """Mutable accumulator threaded through every step."""
 
-    # Step 0
-    title: str | None = None
-    document_number: str | None = None
-    author: str | None = None
-    audience: str | None = None
-    paper_type: Literal["ask", "inform"] | None = None
-
-    # Step 1
-    thesis: str | None = None
-    claims: list[Claim] | None = None
-    boundaries: list[str] | None = None
-    premises: list[Premise] | None = None
-    thin_sections: list[ThinSection] | None = None
-    argument_structures: list[ArgumentStructure] | None = None
-
-    # Step 2
-    evidence: Evidence | None = None
-
-    # Step 3
-    verified_assumptions: list[Assumption] | None = None
-    confirmed_counterexamples: list[ConfirmedCounterexample] | None = None
-
-    # Step 4
-    candidate_findings: list[CandidateFinding] | None = None
-
-    # Step 5
-    surviving_findings: list[CandidateFinding] | None = None
-    killed_findings: list[KilledFinding] | None = None
-    minor_notes: list[str] | None = None
-
-    # Step 6
-    interpreted_findings: list[InterpretedFinding] | None = None
-    certified_sections: list[CertifiedSection] | None = None
-    whole_paper_assessment: str | None = None
-    verdict: Literal["no_objections", "with_objections"] | None = None
-
-    # Step 7
-    citation_table: list[CitationEntry] | None = None
+class RawEvidence(BaseModel, frozen=True):
+    text: str
+    original_quotes: list[str] = []
+    section: str = ""
+    supports: list[str] = []
+    quantitative: bool = False
+    cited: bool = False
+    verifiable: bool = False
+    normative: bool = False
 
 
 # -- Per-step output models --------------------------------------------------
 
-class ClassifyOutput(BaseModel, frozen=True):
-    """Step 0: extract metadata and classify."""
 
-    title: str
-    document_number: str
-    author: str
-    audience: str
-    paper_type: Literal["ask", "inform"]
+class ExtractClaimsOutput(BaseModel, frozen=True):
+    """Steps 1: per-chunk claim extraction."""
+
+    claims: list[RawClaim]
 
 
-class ReadPaperOutput(BaseModel, frozen=True):
-    """Step 1: four-reading analysis."""
+class ExtractEvidenceOutput(BaseModel, frozen=True):
+    """Step 2: per-chunk evidence extraction."""
 
-    thesis: str
-    claims: list[Claim]
-    boundaries: list[str]
-    premises: list[Premise]
-    thin_sections: list[ThinSection]
-    argument_structures: list[ArgumentStructure]
+    evidence: list[RawEvidence]
 
 
-class GatherEvidenceOutput(BaseModel, frozen=True):
-    """Step 2: evidence collection."""
+class DedupGroupingOutput(BaseModel, frozen=True):
+    """Steps 3-4 tier 2: semantic grouping indices."""
 
-    evidence: Evidence
-
-
-class ResolveAssumptionsOutput(BaseModel, frozen=True):
-    """Step 3: assumption resolution."""
-
-    verified_assumptions: list[Assumption]
-    confirmed_counterexamples: list[ConfirmedCounterexample] = []
+    groups: list[list[int]]
 
 
-class TestAndDraftOutput(BaseModel, frozen=True):
-    """Step 4: test claims and draft findings."""
+class VerifyOutput(BaseModel, frozen=True):
+    """Step 5: verify + deps + map + contradict."""
 
-    candidate_findings: list[CandidateFinding] = []
-
-
-class ChallengeFindingsOutput(BaseModel, frozen=True):
-    """Step 5: challenge each finding."""
-
-    surviving_findings: list[CandidateFinding] = []
-    killed_findings: list[KilledFinding] = []
-    minor_notes: list[str] = []
+    splits: list[int]
+    cross_deps: list[tuple[SourceLoc, SourceLoc]]
+    support_map: list[SupportLink]
+    internal_contradictions: list[InternalContradiction]
 
 
-class InterpretResultsOutput(BaseModel, frozen=True):
-    """Step 6: interpret and assess."""
+class LoadBearingOutput(BaseModel, frozen=True):
+    """Step 6: load-bearing classification."""
 
-    interpreted_findings: list[InterpretedFinding] = []
-    certified_sections: list[CertifiedSection] = []
-    whole_paper_assessment: str
-    verdict: Literal["no_objections", "with_objections"]
+    results: list[LoadBearingResult]
 
 
-class VerifyCitationsOutput(BaseModel, frozen=True):
-    """Step 7: citation verification."""
+class WebSearchOutput(BaseModel, frozen=True):
+    """Step 7: web search results."""
 
-    citation_table: list[CitationEntry] = []
+    external_evidence: list[ExternalEvidence]
 
 
-class WriteOutputOutput(BaseModel, frozen=True):
-    """Step 8: rendered markdown report."""
+class ResolveOutput(BaseModel, frozen=True):
+    """Step 8: resolve external evidence."""
 
-    report: str
+    load_bearing_claims: list[LoadBearingResult]
+    web_resolutions: list[WebResolution]
+
+
+# -- Pipeline state ----------------------------------------------------------
+
+
+class PipelineState(BaseModel):
+    """Mutable accumulator threaded through every step."""
+
+    paper_source: Optional[str] = None
+
+    # Step 0
+    chunks: Optional[list[Chunk]] = None
+
+    # Step 1
+    raw_claims: Optional[list[RawClaim]] = None
+
+    # Step 2
+    raw_evidence: Optional[list[RawEvidence]] = None
+
+    # Step 3
+    claims: Optional[list[Claim]] = None
+
+    # Step 4
+    evidence: Optional[list[Evidence]] = None
+
+    # Step 5 (claims/evidence replaced in place)
+    support_map: Optional[list[SupportLink]] = None
+    internal_contradictions: Optional[list[InternalContradiction]] = None
+
+    # Step 6
+    load_bearing_claims: Optional[list[LoadBearingResult]] = None
+
+    # Step 7
+    external_evidence: Optional[list[ExternalEvidence]] = None
+
+    # Step 8 (load_bearing_claims replaced in place)
+    web_resolutions: Optional[list[WebResolution]] = None
+
+    # Step 9
+    report: Optional[str] = None

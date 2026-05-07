@@ -5,7 +5,7 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""WG21 paper review pipeline."""
+"""WG21 paper extractor pipeline."""
 
 from __future__ import annotations
 

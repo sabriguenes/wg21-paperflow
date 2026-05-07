@@ -7,11 +7,11 @@
 
 """Shared rich progress-bar helper for paperflow CLI commands.
 
-Returns a context manager and two callbacks suitable for passing to
-``jobs.run_*`` job functions as ``on_total`` and ``on_progress``. When
-stdout is not a terminal (CI, captured subprocess, file redirect), the
-context manager is a no-op and the callbacks are ``None`` so callers do
-not need to special-case non-TTY environments.
+Provides ``make_progress_handler`` which returns a context manager and a
+``ProgressCallback`` backed by a rich progress bar. When stderr is not a
+terminal (CI, captured subprocess, file redirect), the context manager is
+a no-op and the callback is ``None`` so callers do not need to
+special-case non-TTY environments.
 """
 
 from __future__ import annotations
@@ -19,11 +19,61 @@ from __future__ import annotations
 from contextlib import nullcontext
 from typing import Any, Callable, ContextManager
 
+from paperstore.progress import ProgressCallback, ProgressEvent
+
+
+def make_progress_handler(
+    label: str = "Working...",
+) -> tuple[ContextManager[Any], ProgressCallback | None]:
+    """Build ``(ctx, on_progress)`` for a paperflow command.
+
+    Use as::
+
+        ctx, on_progress = make_progress_handler("Extracting")
+        with ctx:
+            asyncio.run(review_paper(pid, backend, on_progress=on_progress))
+
+    The rich spinner animates continuously between step events. The
+    context manager must stay open for the entire operation.
+    """
+    from rich.console import Console
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        TimeElapsedColumn,
+    )
+
+    console = Console(stderr=True)
+    if not console.is_terminal:
+        return nullcontext(), None
+
+    progress = Progress(
+        SpinnerColumn(style="green"),
+        TextColumn("[bold]{task.description}"),
+        BarColumn(complete_style="green", finished_style="bold green"),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    )
+    task_id: int | None = None
+
+    def handler(ev: ProgressEvent) -> None:
+        nonlocal task_id
+        if task_id is None:
+            task_id = progress.add_task(ev.name, total=ev.total)
+        progress.update(task_id, completed=ev.step, description=ev.name)
+
+    return progress, handler
+
 
 def progress_callbacks(
     label: str,
 ) -> tuple[ContextManager[Any], Callable[[int], None] | None, Callable[[dict], None] | None]:
-    """Build ``(ctx, on_total, on_progress)`` for a paperflow command.
+    """Legacy helper — returns ``(ctx, on_total, on_progress)`` for batch jobs.
 
     Use as::
 

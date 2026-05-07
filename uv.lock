@@ -3224,7 +3224,6 @@ dependencies = [
     { name = "mistune" },
     { name = "paperstore" },
     { name = "pymupdf" },
-    { name = "rich" },
 ]
 
 [package.metadata]
@@ -3234,7 +3233,6 @@ requires-dist = [
     { name = "mistune", specifier = "~=3.2.0" },
     { name = "paperstore", editable = "packages/paperstore" },
     { name = "pymupdf", specifier = "~=1.27.0" },
-    { name = "rich" },
 ]
 
 [[package]]
