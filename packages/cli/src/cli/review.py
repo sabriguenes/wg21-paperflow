@@ -52,6 +52,7 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
                     pid, backend,
                     on_progress=on_progress,
                     stop_after=stop_after,
+                    debug=args.debug,
                 )
             )
         except ReviewError as exc:
@@ -61,7 +62,12 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
             print(f"Review aborted: LLM usage limit reached ({exc})", file=sys.stderr)
             return 1
         except Exception as exc:
-            print(f"Review failed unexpectedly: {type(exc).__name__}: {exc}", file=sys.stderr)
+            msg = f"Review failed unexpectedly: {type(exc).__name__}: {exc}"
+            cause = exc.__cause__
+            while cause:
+                msg += f"\n  Caused by: {type(cause).__name__}: {cause}"
+                cause = cause.__cause__
+            print(msg, file=sys.stderr)
             return 1
 
     if stop_after is not None:

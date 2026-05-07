@@ -220,7 +220,7 @@ def test_write_paper_md_rolls_back_on_sql_failure(
 
 def test_reconcile_empty_workspace(store: SqliteBackend):
     """Empty workspace is a clean no-op."""
-    assert store.reconcile() == {"sources": 0, "markdowns": 0, "reviews": 0}
+    assert store.reconcile() == {"sources": 0, "markdowns": 0, "reviews": 0, "line_counts": 0}
 
 
 def test_reconcile_backfills_orphan_artifacts(
@@ -233,7 +233,7 @@ def test_reconcile_backfills_orphan_artifacts(
     (papers_dir / "p3.md").write_text("# body\n")
 
     counts = store.reconcile()
-    assert counts == {"sources": 2, "markdowns": 1, "reviews": 0}
+    assert counts == {"sources": 2, "markdowns": 1, "reviews": 0, "line_counts": 1}
     assert store.get_source_path("P1") == papers_dir / "p1.pdf"
     assert store.get_source_path("P2") == papers_dir / "p2.html"
     assert store.get_paper_md("P3") == "# body\n"
@@ -258,7 +258,7 @@ def test_reconcile_skips_intermediates_partials_and_db(
     (papers_dir / "p1.prompts.json").write_text("[]")
     (papers_dir / "p1.pdf.partial").write_bytes(b"in-flight")
     counts = store.reconcile()
-    assert counts == {"sources": 0, "markdowns": 0, "reviews": 0}
+    assert counts == {"sources": 0, "markdowns": 0, "reviews": 0, "line_counts": 0}
     assert store.list_all_paper_ids() == []
 
 
@@ -266,8 +266,8 @@ def test_reconcile_is_idempotent(store: SqliteBackend, tmp_path: Path):
     (tmp_path / "paperstore" / "p1.pdf").write_bytes(b"x")
     first = store.reconcile()
     second = store.reconcile()
-    assert first == {"sources": 1, "markdowns": 0, "reviews": 0}
-    assert second == {"sources": 0, "markdowns": 0, "reviews": 0}
+    assert first == {"sources": 1, "markdowns": 0, "reviews": 0, "line_counts": 0}
+    assert second == {"sources": 0, "markdowns": 0, "reviews": 0, "line_counts": 0}
 
 
 def test_list_papers_for_year_missing_raises(store: SqliteBackend):

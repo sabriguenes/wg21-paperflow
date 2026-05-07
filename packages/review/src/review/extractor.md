@@ -95,7 +95,6 @@ One subagent per chunk, parallel. For each substantive statement, one binary tes
 - `section` — section header or number where it appears
 - `question` — single question whose answer would satisfy the claim
 - `depends_on` — list of quoted `text` of claims this one requires. Empty if self-standing.
-- `merged_into` — `None`
 
 ---
 
@@ -143,7 +142,6 @@ Four boolean flags per evidence item. Multiple can be true simultaneously.
 - `section` — section header or number where it appears
 - `supports` — `[phrase]` (single-element list. A complete assertion this evidence advances: subject, verb, stance. **NOT** a topic label.)
 - `quantitative`, `cited`, `verifiable`, `normative` — boolean flags
-- `merged_into` — `None`
 
 ---
 
@@ -263,12 +261,28 @@ Graph analysis. No new reading.
 
 - **Model:** default
 - **Execution:** subagent
-- **Tools:** web_search
+- **Tools:** paper_meta, paper_meta_latest, read_file, web_search, web_fetch
 - **Reads:** claims, evidence, support_map, load_bearing_claims
 - **Writes:** external_evidence
 - **Condition:** load_bearing_claims contains at least one triggered claim
 
 Single subagent. Raw HTML stays inside the subagent.
+
+### Priority
+
+**ALWAYS check the local paperstore first.** When a claim references another WG21 paper, use `paper_meta` or `paper_meta_latest` to look it up. When `markdown_path` is non-empty, use `read_file` to retrieve the content — this is authoritative and preferred over web results.
+
+**ONLY fall back to web_search/web_fetch when:**
+- The paper is not in the paperstore (`paper_meta` returns an error), OR
+- The claim references something that is not a WG21 paper (external standard, blog post, benchmark data, etc.)
+
+### Paper Citations
+
+The pipeline provides a deduplicated list of WG21 paper numbers cited in this document, sorted by frequency. High citation count indicates the paper is likely a companion or heavily relied-upon reference.
+
+**WHEN a triggered claim's topic aligns with a frequently-cited paper**, use `paper_meta` or `paper_meta_latest` to look it up. If the paper's markdown is available, use `read_file` to find the relevant passage.
+
+**DO NOT** look up every cited paper. Only look up papers whose subject is likely to contain evidence for the specific triggered claim you are investigating.
 
 ### Trigger
 
@@ -291,6 +305,8 @@ Single subagent. Raw HTML stays inside the subagent.
 ### Constraints
 
 No authority judgments. Record what was found and where. The reader decides.
+
+**Budget:** At most 3 search queries per triggered claim. Stop investigating a claim once you find one relevant source (supporting or contradicting). Move to the next claim. Do not exhaust all query variations for a single claim.
 
 ### Output per external evidence item
 

@@ -82,7 +82,7 @@ _VERB_FLAGS: dict[str, set[str]] = {
     "convert":  {"force", "concurrency", "no_prompts", "qa", "qa_json",
                  "workers", "timeout"},
     "full":     {"force", "verify", "concurrency"},
-    "review":   {"stop_after", "dump_steps"},
+    "review":   {"stop_after", "dump_steps", "debug"},
 }
 
 _FLAG_DEFS: list[dict] = [
@@ -110,6 +110,9 @@ _FLAG_DEFS: list[dict] = [
     dict(name="dump_steps", flags=["--dump-steps"], action="store_true",
          default=False,
          help="Print each step's structured output as JSON after completion."),
+    dict(name="debug", flags=["--debug"], action="store_true",
+         default=False,
+         help="Write full LLM transcripts per step to paperstore as a single .debug.md file."),
 ]
 
 _PAPER_ID_RE = re.compile(r"^[PND]\d{3,5}(R\d+)?$", re.IGNORECASE)

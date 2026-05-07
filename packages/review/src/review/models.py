@@ -33,6 +33,11 @@ class Chunk(BaseModel, frozen=True):
     line_offset: int
 
 
+class CitationRef(BaseModel, frozen=True):
+    paper_id: str
+    count: int
+
+
 class Claim(BaseModel, frozen=True):
     loc: SourceLoc
     text: str
@@ -130,47 +135,47 @@ class RawEvidence(BaseModel, frozen=True):
 class ExtractClaimsOutput(BaseModel, frozen=True):
     """Steps 1: per-chunk claim extraction."""
 
-    claims: list[RawClaim]
+    claims: list[RawClaim] = []
 
 
 class ExtractEvidenceOutput(BaseModel, frozen=True):
     """Step 2: per-chunk evidence extraction."""
 
-    evidence: list[RawEvidence]
+    evidence: list[RawEvidence] = []
 
 
 class DedupGroupingOutput(BaseModel, frozen=True):
     """Steps 3-4 tier 2: semantic grouping indices."""
 
-    groups: list[list[int]]
+    groups: list[list[int]] = []
 
 
 class VerifyOutput(BaseModel, frozen=True):
     """Step 5: verify + deps + map + contradict."""
 
-    splits: list[int]
-    cross_deps: list[tuple[SourceLoc, SourceLoc]]
-    support_map: list[SupportLink]
-    internal_contradictions: list[InternalContradiction]
+    splits: list[int] = []
+    cross_deps: list[tuple[SourceLoc, SourceLoc]] = []
+    support_map: list[SupportLink] = []
+    internal_contradictions: list[InternalContradiction] = []
 
 
 class LoadBearingOutput(BaseModel, frozen=True):
     """Step 6: load-bearing classification."""
 
-    results: list[LoadBearingResult]
+    results: list[LoadBearingResult] = []
 
 
 class WebSearchOutput(BaseModel, frozen=True):
     """Step 7: web search results."""
 
-    external_evidence: list[ExternalEvidence]
+    external_evidence: list[ExternalEvidence] = []
 
 
 class ResolveOutput(BaseModel, frozen=True):
     """Step 8: resolve external evidence."""
 
-    load_bearing_claims: list[LoadBearingResult]
-    web_resolutions: list[WebResolution]
+    load_bearing_claims: list[LoadBearingResult] = []
+    web_resolutions: list[WebResolution] = []
 
 
 # -- Pipeline state ----------------------------------------------------------
@@ -183,6 +188,7 @@ class PipelineState(BaseModel):
 
     # Step 0
     chunks: Optional[list[Chunk]] = None
+    citations: Optional[list[CitationRef]] = None
 
     # Step 1
     raw_claims: Optional[list[RawClaim]] = None

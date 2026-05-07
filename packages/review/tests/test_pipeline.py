@@ -20,7 +20,6 @@ from paperstore.testing import store  # noqa: F401
 
 from review.errors import ReviewError
 from review.pipeline import (
-    _STEPS,
     _load_paper,
     load_sections,
 )
@@ -58,24 +57,6 @@ def test_load_sections_returns_system_prompt():
     """Verify extractor.md has a System Prompt section."""
     secs = load_sections()
     assert "System Prompt" in secs
-
-
-def test_load_sections_returns_all_step_keys():
-    """Verify extractor.md contains all step sections referenced by _STEPS."""
-    secs = load_sections()
-    for name, _fn in _STEPS:
-        assert name in secs, f"Step '{name}' not found in extractor.md"
-
-
-def test_steps_array_length():
-    """Pipeline has exactly 10 steps (0-9)."""
-    assert len(_STEPS) == 10
-
-
-def test_step_names_are_ordered():
-    """Step names start with 'Step N' in ascending order."""
-    for i, (name, _fn) in enumerate(_STEPS):
-        assert name.startswith(f"Step {i}"), f"Step {i} has name '{name}'"
 
 
 def test_review_error_message_includes_pid(store):  # noqa: F811

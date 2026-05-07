@@ -23,12 +23,14 @@ from paperstore.factory import WORKSPACE_ENV_VAR, default_workspace_dir, from_ur
 from paperstore.progress import ProgressCallback as ProgressCallback
 from paperstore.progress import ProgressEvent as ProgressEvent
 from paperstore.sqlite_backend import SqliteBackend
+from paperstore.tools import PaperstoreTools
 
 __all__ = [
     "PaperRow",
     "StorageBackend",
     "parse_authors_raw",
     "SqliteBackend",
+    "PaperstoreTools",
     "PaperstoreError",
     "MissingPaperError",
     "MissingMetaError",

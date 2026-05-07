@@ -75,6 +75,7 @@ class PaperRow(TypedDict):
     source_file: str
     markdown_path: str
     review_path: str
+    line_count: int
 
 
 class StorageBackend(ABC):
@@ -165,13 +166,14 @@ class StorageBackend(ABC):
 
     @abstractmethod
     def record_markdown(
-        self, paper_id: str, path: Path | str, *, intent: str | None = None
+        self, paper_id: str, path: Path | str, *, intent: str | None = None,
+        line_count: int | None = None,
     ) -> None:
         """Stamp ``path`` as the converted markdown for ``paper_id`` in the index.
 
         Optionally also records ``intent`` (the YAML-front-matter signal
-        from tomd). See :meth:`record_source` for the file-already-written
-        use case.
+        from tomd) and ``line_count``. See :meth:`record_source` for the
+        file-already-written use case.
         """
 
     @abstractmethod

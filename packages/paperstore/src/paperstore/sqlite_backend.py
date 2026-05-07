@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS papers (
     mailing_date  TEXT DEFAULT '',
     source_file   TEXT DEFAULT '',
     markdown_path TEXT DEFAULT '',
-    review_path   TEXT DEFAULT ''
+    review_path   TEXT DEFAULT '',
+    line_count    INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS years (
@@ -65,6 +66,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(papers)").fetchall()}
     if "review_path" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN review_path TEXT DEFAULT ''")
+    if "line_count" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN line_count INTEGER DEFAULT 0")
 
 
 def _atomic_replace(src: Path, dst: Path) -> None:
@@ -283,7 +286,8 @@ class SqliteBackend(StorageBackend):
         final_path = self._atomic_write_text(
             self._papers_dir / f"{pid.lower()}.md", markdown
         )
-        self.record_markdown(pid, final_path)
+        line_count = markdown.count("\n") + 1
+        self.record_markdown(pid, final_path, line_count=line_count)
         return final_path
 
     def write_review_md(self, paper_id: str, markdown: str) -> Path:
@@ -339,25 +343,32 @@ class SqliteBackend(StorageBackend):
             )
 
     def record_markdown(
-        self, paper_id: str, path: Path | str, *, intent: str | None = None
+        self,
+        paper_id: str,
+        path: Path | str,
+        *,
+        intent: str | None = None,
+        line_count: int | None = None,
     ) -> None:
-        """Stamp ``path`` as ``markdown_path`` (and optionally ``intent``)."""
+        """Stamp ``path`` as ``markdown_path`` (and optionally ``intent`` / ``line_count``)."""
         pid = paper_id.strip().upper()
         with self._conn:
             self._conn.execute(
                 "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
             )
+            sets = ["markdown_path = ?"]
+            params: list[str | int] = [str(path)]
             if intent:
-                self._conn.execute(
-                    "UPDATE papers SET markdown_path = ?, intent = ? "
-                    "WHERE paper_id = ?",
-                    (str(path), intent, pid),
-                )
-            else:
-                self._conn.execute(
-                    "UPDATE papers SET markdown_path = ? WHERE paper_id = ?",
-                    (str(path), pid),
-                )
+                sets.append("intent = ?")
+                params.append(intent)
+            if line_count is not None:
+                sets.append("line_count = ?")
+                params.append(line_count)
+            params.append(pid)
+            self._conn.execute(
+                f"UPDATE papers SET {', '.join(sets)} WHERE paper_id = ?",
+                params,
+            )
 
     _SOURCE_SUFFIXES = (".pdf", ".html", ".htm")
 
@@ -386,7 +397,7 @@ class SqliteBackend(StorageBackend):
                     sources.append((name[: -len(suffix)].upper(), path))
                     break
 
-        counts = {"sources": 0, "markdowns": 0, "reviews": 0}
+        counts = {"sources": 0, "markdowns": 0, "reviews": 0, "line_counts": 0}
         with self._conn:
             for pid, path in sources:
                 self._conn.execute(
@@ -421,6 +432,21 @@ class SqliteBackend(StorageBackend):
                 )
                 if cursor.rowcount > 0:
                     counts["reviews"] += 1
+
+            # Backfill line_count for rows with markdown but no count
+            rows_needing_count = self._conn.execute(
+                "SELECT paper_id, markdown_path FROM papers "
+                "WHERE markdown_path != '' AND line_count = 0"
+            ).fetchall()
+            for row in rows_needing_count:
+                md_path = Path(row["markdown_path"])
+                if md_path.exists():
+                    lc = md_path.read_text(encoding="utf-8").count("\n") + 1
+                    self._conn.execute(
+                        "UPDATE papers SET line_count = ? WHERE paper_id = ?",
+                        (lc, row["paper_id"]),
+                    )
+                    counts["line_counts"] += 1
         return counts
 
     # ---- reads ------------------------------------------------------------

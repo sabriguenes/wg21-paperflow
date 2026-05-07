@@ -19,6 +19,7 @@ from typing import TypeVar
 
 from review.models import (
     Chunk,
+    CitationRef,
     Claim,
     Evidence,
     RawClaim,
@@ -220,3 +221,29 @@ def dedup_tier1(items: list[T]) -> list[T]:
                 result[idx_b] = b.model_copy(update={"merged_into": a.loc})
 
     return result
+
+
+_CITATION_PD_RE = re.compile(r"\b([PD]\d{4,5}R\d{1,2})\b", re.IGNORECASE)
+_CITATION_N_RE = re.compile(r"\b(N\d{4,5})\b", re.IGNORECASE)
+_LINK_URL_RE = re.compile(r"\]\([^)]*\)")
+
+
+def extract_citations(paper_source: str) -> list[CitationRef]:
+    """Extract and deduplicate WG21 paper number citations from markdown.
+
+    Returns a list sorted by citation count descending. Pure Python,
+    deterministic, no network I/O.
+    """
+    stripped = _LINK_URL_RE.sub("]", paper_source)
+
+    counts: dict[str, int] = {}
+    for m in _CITATION_PD_RE.finditer(stripped):
+        pid = m.group(1).upper()
+        counts[pid] = counts.get(pid, 0) + 1
+    for m in _CITATION_N_RE.finditer(stripped):
+        pid = m.group(1).upper()
+        counts[pid] = counts.get(pid, 0) + 1
+
+    refs = [CitationRef(paper_id=pid, count=c) for pid, c in counts.items()]
+    refs.sort(key=lambda r: r.count, reverse=True)
+    return refs

@@ -33,6 +33,7 @@ from review.harness import (
     chunk_paper,
     dedup_tier0,
     dedup_tier1,
+    extract_citations,
     promote_claims,
     promote_evidence,
 )
@@ -66,7 +67,15 @@ class StepContext:
     sections: dict[str, str]
     model_slots: dict[str, str]
     researcher: Any = None
+    backend: Any = None
     on_progress: ProgressCallback | None = None
+    debug: bool = False
+    pid: str = ""
+    debug_log: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.debug and self.debug_log is None:
+            self.debug_log = []
 
 
 @functools.cache
@@ -74,6 +83,54 @@ def load_sections() -> dict[str, str]:
     """Load and parse extractor.md once per process."""
     resource = importlib.resources.files("review").joinpath("extractor.md")
     return sections(resource.read_text(encoding="utf-8"))
+
+
+_TOOL_OMIT_NAMES = frozenset({
+    "web_search", "web_fetch", "read_file", "paper_meta", "paper_meta_latest",
+})
+
+
+def _render_debug_md(result: Any, step_name: str) -> str:
+    """Render an agent run result as a markdown debug section."""
+    parts: list[str] = [f"# {step_name}\n"]
+    for msg in result.all_messages():
+        kind = msg.kind
+        if kind == "request":
+            for part in msg.parts:
+                if hasattr(part, "content") and part.part_kind == "system-prompt":
+                    parts.append(f"## System Prompt\n\n{part.content}\n")
+                elif hasattr(part, "content") and part.part_kind == "user-prompt":
+                    parts.append(f"## User Message\n\n{part.content}\n")
+                elif part.part_kind == "tool-return":
+                    tool_name = getattr(part, "tool_name", "")
+                    if tool_name in _TOOL_OMIT_NAMES:
+                        parts.append(
+                            f"### Tool Return: {tool_name}\n\n*(response omitted)*\n"
+                        )
+                    else:
+                        content = getattr(part, "content", "")
+                        parts.append(
+                            f"### Tool Return: {tool_name}\n\n{content}\n"
+                        )
+        elif kind == "response":
+            for part in msg.parts:
+                if part.part_kind == "text":
+                    parts.append(f"## Model Response\n\n{part.content}\n")
+                elif part.part_kind == "tool-call":
+                    tool_name = getattr(part, "tool_name", "")
+                    args = getattr(part, "args", "")
+                    args_str = json.dumps(args) if not isinstance(args, str) else args
+                    parts.append(
+                        f"### Tool Call: {tool_name}\n\n```json\n{args_str}\n```\n"
+                    )
+    if hasattr(result, "output"):
+        output = result.output
+        if hasattr(output, "model_dump"):
+            output_str = json.dumps(output.model_dump(), indent=2, ensure_ascii=False, default=str)
+        else:
+            output_str = str(output)
+        parts.append(f"## Final Output\n\n```json\n{output_str}\n```\n")
+    return "\n".join(parts)
 
 
 def _load_paper(pid: str, backend: StorageBackend) -> tuple[dict, str]:
@@ -102,9 +159,10 @@ def _load_paper(pid: str, backend: StorageBackend) -> tuple[dict, str]:
 
 
 async def _step0_read(state: PipelineState, ctx: StepContext) -> None:
-    """Pure Python: chunk the paper source."""
+    """Pure Python: chunk the paper source and extract citations."""
     assert state.paper_source is not None
     state.chunks = chunk_paper(state.paper_source)
+    state.citations = extract_citations(state.paper_source)
 
 
 async def _step1_claims(state: PipelineState, ctx: StepContext) -> None:
@@ -114,7 +172,7 @@ async def _step1_claims(state: PipelineState, ctx: StepContext) -> None:
     system = ctx.sections.get("System Prompt", "")
     model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
 
-    async def _extract_chunk(chunk_text: str, line_offset: int) -> ExtractClaimsOutput:
+    async def _extract_chunk(chunk_text: str, line_offset: int):
         agent: Agent[None, ExtractClaimsOutput] = Agent(
             model=model,
             output_type=ExtractClaimsOutput,
@@ -126,18 +184,22 @@ async def _step1_claims(state: PipelineState, ctx: StepContext) -> None:
             f"## Instructions\n\n{prompt_body}"
         )
         result = await agent.run(
-            user_msg, usage_limits=UsageLimits(request_limit=200)
+            user_msg, usage_limits=UsageLimits(request_limit=500)
         )
-        return result.output
+        return result
 
     tasks = [
         _extract_chunk(c.text, c.line_offset) for c in state.chunks
     ]
-    outputs = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks)
+
+    if ctx.debug and ctx.debug_log is not None:
+        for i, r in enumerate(results):
+            ctx.debug_log.append(_render_debug_md(r, f"Step 1 — Extract Claims (chunk {i})"))
 
     all_raws = []
-    for output in outputs:
-        all_raws.extend(output.claims)
+    for r in results:
+        all_raws.extend(r.output.claims)
 
     state.raw_claims = all_raws
     state.claims = promote_claims(all_raws, state.paper_source)
@@ -150,7 +212,7 @@ async def _step2_evidence(state: PipelineState, ctx: StepContext) -> None:
     system = ctx.sections.get("System Prompt", "")
     model = ctx.model_slots.get("default", _DEFAULT_MODEL_SLOTS["default"])
 
-    async def _extract_chunk(chunk_text: str, line_offset: int) -> ExtractEvidenceOutput:
+    async def _extract_chunk(chunk_text: str, line_offset: int):
         agent: Agent[None, ExtractEvidenceOutput] = Agent(
             model=model,
             output_type=ExtractEvidenceOutput,
@@ -162,18 +224,22 @@ async def _step2_evidence(state: PipelineState, ctx: StepContext) -> None:
             f"## Instructions\n\n{prompt_body}"
         )
         result = await agent.run(
-            user_msg, usage_limits=UsageLimits(request_limit=200)
+            user_msg, usage_limits=UsageLimits(request_limit=500)
         )
-        return result.output
+        return result
 
     tasks = [
         _extract_chunk(c.text, c.line_offset) for c in state.chunks
     ]
-    outputs = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks)
+
+    if ctx.debug and ctx.debug_log is not None:
+        for i, r in enumerate(results):
+            ctx.debug_log.append(_render_debug_md(r, f"Step 2 — Extract Evidence (chunk {i})"))
 
     all_raws = []
-    for output in outputs:
-        all_raws.extend(output.evidence)
+    for r in results:
+        all_raws.extend(r.output.evidence)
 
     state.raw_evidence = all_raws
     state.evidence = promote_evidence(all_raws, state.paper_source)
@@ -208,6 +274,8 @@ async def _step3_dedup_claims(state: PipelineState, ctx: StepContext) -> None:
         model=model, output_type=DedupGroupingOutput, system_prompt=system, retries=3,
     )
     result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=50))
+    if ctx.debug and ctx.debug_log is not None:
+        ctx.debug_log.append(_render_debug_md(result, "Step 3 — Dedup Claims"))
     grouping = result.output
 
     for group in grouping.groups:
@@ -262,6 +330,8 @@ async def _step4_dedup_evidence(state: PipelineState, ctx: StepContext) -> None:
         model=model, output_type=DedupGroupingOutput, system_prompt=system, retries=3,
     )
     result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=50))
+    if ctx.debug and ctx.debug_log is not None:
+        ctx.debug_log.append(_render_debug_md(result, "Step 4 — Dedup Evidence"))
     grouping = result.output
 
     for group in grouping.groups:
@@ -323,7 +393,9 @@ async def _step5_verify(state: PipelineState, ctx: StepContext) -> None:
     agent: Agent[None, VerifyOutput] = Agent(
         model=model, output_type=VerifyOutput, system_prompt=system, retries=3,
     )
-    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=200))
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=500))
+    if ctx.debug and ctx.debug_log is not None:
+        ctx.debug_log.append(_render_debug_md(result, "Step 5 — Verify + Deps + Map + Contradict"))
     output = result.output
 
     state.support_map = output.support_map
@@ -360,7 +432,9 @@ async def _step6_load_bearing(state: PipelineState, ctx: StepContext) -> None:
     agent: Agent[None, LoadBearingOutput] = Agent(
         model=model, output_type=LoadBearingOutput, system_prompt=system, retries=3,
     )
-    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=200))
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=500))
+    if ctx.debug and ctx.debug_log is not None:
+        ctx.debug_log.append(_render_debug_md(result, "Step 6 — Load-Bearing"))
     state.load_bearing_claims = result.output.results
 
 
@@ -399,6 +473,7 @@ async def _step7_web_search(state: PipelineState, ctx: StepContext) -> None:
 
     user_msg = (
         f"## Triggered Claims\n\n{json.dumps(claims_for_search, ensure_ascii=False, default=str)}\n\n"
+        f"## Paper Citations\n\n{json.dumps([c.model_dump() for c in (state.citations or [])], ensure_ascii=False)}\n\n"
         f"## Instructions\n\n{prompt_body}"
     )
 
@@ -406,11 +481,37 @@ async def _step7_web_search(state: PipelineState, ctx: StepContext) -> None:
         model=model, output_type=WebSearchOutput, system_prompt=system, retries=3,
     )
 
-    if ctx.researcher is not None:
-        agent.tool_plain(ctx.researcher.web_search)
-        agent.tool_plain(ctx.researcher.web_fetch)
+    def _wrap_tool(fn, name):
+        """Wrap a tool function to log calls to stderr when debugging."""
+        if not ctx.debug:
+            return fn
+        import sys
+        import functools
 
-    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=200))
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            args_str = ", ".join(
+                [repr(a) for a in args] +
+                [f"{k}={repr(v)}" for k, v in kwargs.items()]
+            )
+            print(f"[tool] {name}({args_str})", file=sys.stderr, flush=True)
+            return await fn(*args, **kwargs)
+        return wrapper
+
+    if ctx.backend is not None:
+        from paperstore.tools import PaperstoreTools
+        ps_tools = PaperstoreTools(ctx.backend)
+        agent.tool_plain(_wrap_tool(ps_tools.paper_meta, "paper_meta"))
+        agent.tool_plain(_wrap_tool(ps_tools.paper_meta_latest, "paper_meta_latest"))
+        agent.tool_plain(_wrap_tool(ps_tools.read_file, "read_file"))
+
+    if ctx.researcher is not None:
+        agent.tool_plain(_wrap_tool(ctx.researcher.web_search, "web_search"))
+        agent.tool_plain(_wrap_tool(ctx.researcher.web_fetch, "web_fetch"))
+
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=500))
+    if ctx.debug and ctx.debug_log is not None:
+        ctx.debug_log.append(_render_debug_md(result, "Step 7 — Web Search"))
     state.external_evidence = result.output.external_evidence
 
 
@@ -438,7 +539,9 @@ async def _step8_resolve(state: PipelineState, ctx: StepContext) -> None:
     agent: Agent[None, ResolveOutput] = Agent(
         model=model, output_type=ResolveOutput, system_prompt=system, retries=3,
     )
-    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=200))
+    result = await agent.run(user_msg, usage_limits=UsageLimits(request_limit=500))
+    if ctx.debug and ctx.debug_log is not None:
+        ctx.debug_log.append(_render_debug_md(result, "Step 8 — Resolve External"))
     state.load_bearing_claims = result.output.load_bearing_claims
     state.web_resolutions = result.output.web_resolutions
 
@@ -524,6 +627,7 @@ async def review_paper(
     model_slots: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
     stop_after: int | None = None,
+    debug: bool = False,
 ) -> str:
     """Extract structural questions from a WG21 paper.
 
@@ -534,6 +638,9 @@ async def review_paper(
     Pass ``on_progress`` to receive :class:`~paperstore.progress.ProgressEvent`
     notifications at each step transition. The CLI uses this to drive a
     rich progress bar; other callers may pass ``None``.
+
+    Pass ``debug=True`` to write a single markdown transcript of every
+    LLM interaction to paperstore as ``<pid>.debug.md``.
 
     Raises :class:`ReviewError` if the paper is not found or has no
     converted markdown.
@@ -559,20 +666,44 @@ async def review_paper(
             sections=secs,
             model_slots=slots,
             researcher=researcher,
+            backend=backend,
             on_progress=on_progress,
+            debug=debug,
+            pid=pid,
         )
 
+        debug_log: list[str] = []
+        debug_path = backend.get_paper_md_path(pid).with_suffix(".debug.md")
+        if debug:
+            debug_path.unlink(missing_ok=True)
         total = len(_STEPS)
-        for i, (name, step_fn) in enumerate(_STEPS):
-            if stop_after is not None and i > stop_after:
-                break
+        try:
+            for i, (name, step_fn) in enumerate(_STEPS):
+                if stop_after is not None and i > stop_after:
+                    break
 
-            if on_progress is not None:
-                on_progress(ProgressEvent(
-                    step=i, total=total, name=name, pct=i / total,
-                ))
+                if on_progress is not None:
+                    on_progress(ProgressEvent(
+                        step=i, total=total, name=name, pct=i / total,
+                    ))
 
-            logger.info("Step %d: %s", i, name)
-            await step_fn(state, ctx)
+                logger.info("Step %d: %s", i, name)
+                try:
+                    await step_fn(state, ctx)
+                except Exception as exc:
+                    logger.error(
+                        "Step %d (%s) failed: %s", i, name, exc, exc_info=True
+                    )
+                    raise
+                finally:
+                    if debug and ctx.debug_log:
+                        debug_path.write_text(
+                            "\n\n---\n\n".join(ctx.debug_log), encoding="utf-8"
+                        )
+        finally:
+            if debug and ctx.debug_log:
+                debug_path.write_text(
+                    "\n\n---\n\n".join(ctx.debug_log), encoding="utf-8"
+                )
 
     return state.report or ""
