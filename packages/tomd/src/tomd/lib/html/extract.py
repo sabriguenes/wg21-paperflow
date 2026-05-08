@@ -734,7 +734,6 @@ def _extract_generic_metadata(soup: BeautifulSoup) -> dict:
     for pre in soup.find_all("pre"):
         code = pre.find("code")
         text = (code or pre).get_text()
-        pre_current: str | None = None
         for line in text.split("\n"):
             line = line.strip()
             if not line:
