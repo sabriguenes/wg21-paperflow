@@ -298,7 +298,8 @@ def _titles_match(h1: str, title: str) -> bool:
     def normalize(s: str) -> str:
         s = re.sub(r"[^\w\s]", "", s.lower())
         return re.sub(r"\s+", " ", s).strip()
-    return normalize(h1) == normalize(title)
+    h1_n, title_n = normalize(h1), normalize(title)
+    return h1_n == title_n or title_n.startswith(h1_n)
 
 
 _REDUNDANT_META_RE = re.compile(
@@ -310,6 +311,112 @@ _REDUNDANT_TABLE_RE = re.compile(
     r"^(?:\|[^\n]*\|\n){2,6}\n*---\n*",
     re.MULTILINE,
 )
+
+# Labels that identify a body line as leaked metadata.  Covers the
+# standard WG21 header fields plus common variants.
+_FREEFORM_META_LABEL_RE = re.compile(
+    r"^(?:Reply[- ]?to|Audience|Target|Date|Project|"
+    r"Authors?|Editors?|Co-?authors?|Subgroup|Source|"
+    r"Doc\.?\s*(?:No\.?|Number|#)|Previous|Issues?|"
+    r"Follow[- ]?up(?:\s+to)?|Ship\s+vehicle|Targeted\s+for)\s*:",
+    re.IGNORECASE,
+)
+
+# Lines that should never be stripped (structural markdown).
+_STRUCTURAL_LINE_RE = re.compile(r"^(?:#{1,6}\s|```|[>*\-+]\s|\d+\.\s|\|)")
+
+# Maximum non-blank body lines to scan for leaked metadata.
+_FREEFORM_SCAN_DEPTH = 15
+
+_strip_meta_log = _logging.getLogger(__name__)
+
+
+_LONG_CONTENT_THRESHOLD = 120
+_CODE_FENCE_RE = re.compile(r"^```")
+
+
+def _strip_freeform_metadata_lines(md: str) -> str:
+    """Strip free-form metadata lines leaked into the body after front matter.
+
+    Scans the first non-blank body lines (up to ``_FREEFORM_SCAN_DEPTH``)
+    and removes those that start with a known metadata label, plus any
+    continuation lines (indented / comma-prefixed) that follow them.
+    Stops at structural markdown (headings, lists, blockquotes, table
+    rows), long paragraph text, or code fences.
+    """
+    fm_end = _find_front_matter_end(md)
+    if fm_end is None:
+        return md
+    body_start = md.find("\n", fm_end)
+    if body_start < 0:
+        return md
+    body_start += 1
+
+    lines = md[body_start:].split("\n")
+    to_remove: set[int] = set()
+    non_blank_seen = 0
+    in_code_fence = False
+
+    for i, line in enumerate(lines):
+        if i in to_remove:
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        non_blank_seen += 1
+        if non_blank_seen > _FREEFORM_SCAN_DEPTH:
+            break
+
+        # Never touch content inside code fences.
+        if _CODE_FENCE_RE.match(stripped):
+            if in_code_fence:
+                in_code_fence = False
+                continue
+            in_code_fence = True
+            continue
+        if in_code_fence:
+            continue
+
+        # Structural markdown (headings, lists, blockquotes, tables):
+        # real body content has begun.
+        if _STRUCTURAL_LINE_RE.match(stripped):
+            break
+
+        # Long lines are body paragraphs: stop scanning.
+        if len(stripped) > _LONG_CONTENT_THRESHOLD and not _FREEFORM_META_LABEL_RE.match(stripped):
+            break
+
+        if _FREEFORM_META_LABEL_RE.match(stripped):
+            _strip_meta_log.debug(
+                "Stripping leaked metadata line %d: %.80s", i, stripped)
+            to_remove.add(i)
+            # Also remove continuation lines (indented or comma-prefixed,
+            # no label of their own) that belong to this metadata entry.
+            for k in range(i + 1, len(lines)):
+                cont = lines[k].strip()
+                if not cont:
+                    break
+                if _FREEFORM_META_LABEL_RE.match(cont):
+                    break
+                if _STRUCTURAL_LINE_RE.match(cont):
+                    break
+                if not lines[k][0].isspace() and not cont.startswith(","):
+                    break
+                to_remove.add(k)
+            continue
+
+        # Short non-metadata line: skip over it (title echo, page number,
+        # tomd uncertain marker, etc.).  Do not strip it.
+
+    if not to_remove:
+        return md
+
+    new_lines = [ln for j, ln in enumerate(lines) if j not in to_remove]
+    result = md[:body_start] + "\n".join(new_lines)
+    # Collapse runs of 3+ newlines left by removed lines into double.
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result
 
 
 def strip_redundant_body_meta(md: str) -> str:
@@ -324,6 +431,16 @@ def strip_redundant_body_meta(md: str) -> str:
     md = _REDUNDANT_META_RE.sub("", md)
     md = _strip_metadata_table(md)
     return md
+
+
+def strip_freeform_metadata_lines(md: str) -> str:
+    """Public entry point for free-form metadata stripping.
+
+    Called from ``api.convert_paper`` after ``_strip_body_metadata_text``,
+    so it runs on the final markdown but does not affect the golden-test
+    layer (``convert_pdf`` / ``convert_html``).
+    """
+    return _strip_freeform_metadata_lines(md)
 
 
 _META_TABLE_LABELS = frozenset({
@@ -422,6 +539,82 @@ ALLOWED_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 
+_deobfuscate_log = _logging.getLogger(__name__)
+
+# Three families of anti-spam obfuscation:
+# Family 1: word-based -- "user at domain dot com", all 4 bracket variants
+# Family 2: underscore-based -- "user_at_domain.com"  (real dots in domain)
+# Family 3: AT-only -- "user AT domain.tld" (obfuscated AT, real dots in domain)
+#
+# Bracket families for AT: (at), [at], {at}, <at>, bare "at"
+# Bracket families for DOT: (dot), [dot], {dot}, <dot>, bare "dot"
+_AT_ALTERNATION = r"(?:\(at\)|\[at\]|\{at\}|<at>|\bat\b)"
+_DOT_ALTERNATION = r"(?:\(dot\)|\[dot\]|\{dot\}|<dot>|\bdot\b)"
+_OBFUSCATED_WORD_RE = re.compile(
+    r"\b(\w[\w.+-]*)"
+    r"\s*" + _AT_ALTERNATION + r"\s*"
+    r"(\w[\w-]*"
+    r"(?:\s*" + _DOT_ALTERNATION + r"\s*\w[\w-]*)+)"
+    r"\b",
+    re.IGNORECASE,
+)
+_OBFUSCATED_AT_ONLY_RE = re.compile(
+    r"\b(\w[\w.+-]*)"
+    r"\s*" + _AT_ALTERNATION + r"\s*"
+    r"([\w][\w-]*(?:\.[\w][\w-]*)+)"
+    r"\b",
+    re.IGNORECASE,
+)
+_OBFUSCATED_UNDERSCORE_RE = re.compile(
+    r"\b(\w[\w.+-]*)_at_([\w.-]+\.\w+)\b",
+    re.IGNORECASE,
+)
+
+_DOT_REPLACE_RE = re.compile(
+    r"\s*" + _DOT_ALTERNATION + r"\s*",
+    re.IGNORECASE,
+)
+
+
+def deobfuscate_email(text: str) -> tuple[str, tuple[int, int]] | None:
+    """Reverse common anti-spam email obfuscation patterns.
+
+    Handles three families (checked most-specific-first):
+    - Underscore-based: ``user_at_domain.com`` (n5038/n5040 pattern)
+    - Word/bracket AT+DOT: ``user at domain dot com``, all bracket variants
+    - AT-only: ``user AT domain.tld`` (obfuscated AT, real dots in domain)
+
+    Returns ``(email, (match_start, match_end))`` when the reconstructed
+    address passes ``EMAIL_RE`` validation, or ``None``.  The span refers
+    to the obfuscated region in *text* so callers can slice the name
+    portion without re-matching.  Shared across HTML and PDF pipelines.
+    """
+    # Family 2: underscore (most specific, least likely to false-positive)
+    m = _OBFUSCATED_UNDERSCORE_RE.search(text)
+    if m:
+        candidate = f"{m.group(1)}@{m.group(2)}"
+        if EMAIL_RE.fullmatch(candidate):
+            return (candidate, (m.start(), m.end()))
+
+    # Family 1: word/bracket "at" + "dot" (both obfuscated)
+    m = _OBFUSCATED_WORD_RE.search(text)
+    if m:
+        local = m.group(1)
+        domain_raw = m.group(2)
+        domain = _DOT_REPLACE_RE.sub(".", domain_raw)
+        candidate = f"{local}@{domain}"
+        if EMAIL_RE.fullmatch(candidate):
+            return (candidate, (m.start(), m.end()))
+
+    # Family 3: AT-only (obfuscated AT, real dots in domain)
+    m = _OBFUSCATED_AT_ONLY_RE.search(text)
+    if m:
+        candidate = f"{m.group(1)}@{m.group(2)}"
+        if EMAIL_RE.fullmatch(candidate):
+            return (candidate, (m.start(), m.end()))
+
+    return None
+
 
 def parse_author_lines(lines, clean_line=None, skip_line=None):
     """Parse author name + email pairs from an iterable of raw line strings.
@@ -461,18 +654,196 @@ def parse_author_lines(lines, clean_line=None, skip_line=None):
             else:
                 authors.append(f"<{email}>")
         else:
-            cleaned = clean_line(line)
-            if cleaned and not skip_line(cleaned):
-                if pending_name:
-                    authors.append(pending_name)
-                pending_name = cleaned
+            deob_result = deobfuscate_email(line)
+            if deob_result:
+                deob, (match_start, _match_end) = deob_result
+                _deobfuscate_log.debug("deobfuscated an author email")
+                name_part = clean_line(line[:match_start])
+                name_part = name_part.strip(",").strip()
+                if name_part:
+                    authors.append(f"{name_part} <{deob}>")
+                    pending_name = None
+                elif pending_name:
+                    authors.append(f"{pending_name} <{deob}>")
+                    pending_name = None
+                else:
+                    authors.append(f"<{deob}>")
+            else:
+                cleaned = clean_line(line)
+                if cleaned and not skip_line(cleaned):
+                    if pending_name:
+                        authors.append(pending_name)
+                    pending_name = cleaned
 
     if pending_name:
         authors.append(pending_name)
 
     return authors
 
+_enrich_log = _logging.getLogger(__name__ + ".enrich")
+
+# Minimum length for a last-name token to qualify for email matching.
+# Short tokens (<=3 chars) cause false positives: "RCU" in "paulmckrcu".
+_MIN_LAST_NAME_LEN = 4
+
+# Reject name candidates that contain these: they're metadata labels or
+# title fragments, not person names.
+_NON_NAME_CHARS = re.compile(r"[:\[\]{}=<>]")
+
+
+def _looks_like_person_name(text: str) -> bool:
+    """Heuristic: reject strings that are obviously not person names."""
+    tokens = text.strip().split()
+    if len(tokens) < 2:
+        return False
+    if _NON_NAME_CHARS.search(text):
+        return False
+    # Person names are short; title/metadata fragments are long.
+    if len(text) > 60:
+        return False
+    return True
+
+
+def enrich_reply_to_names(
+    reply_to: list[str],
+    author_names: list[str],
+) -> list[str]:
+    """Pair bare ``<email>`` reply-to entries with author names.
+
+    For each entry that has an email but no name (e.g. ``<daveed@example.com>``),
+    extract the email local-part and domain, then check each *author_names*
+    entry for a last-name match against either the local-part or the domain
+    (case-insensitive).  If exactly one author matches, pair them.
+
+    ``author_names`` should contain bare name strings (no email) already
+    present in ``reply_to`` or elsewhere in the paper metadata.  Names that
+    already have an email (contain ``<`` or ``@``) are skipped as candidates.
+
+    Returns a new list; the input is not mutated.
+    """
+    if not reply_to or not author_names:
+        return list(reply_to)
+
+    # Build candidate name list: only bare names that look like person names.
+    bare_names = [
+        n for n in author_names
+        if "<" not in n and "@" not in n
+        and n.strip() and _looks_like_person_name(n)
+    ]
+    if not bare_names:
+        return list(reply_to)
+
+    result = []
+    for entry in reply_to:
+        stripped = entry.strip()
+        # Only process bare-email entries: <email> or just email, no name text.
+        email_m = EMAIL_RE.search(stripped)
+        has_name = (
+            email_m
+            and stripped[:email_m.start()].strip().strip("<>").strip()
+        )
+        if not email_m or has_name:
+            result.append(entry)
+            continue
+
+        email = email_m.group(0)
+        local_part = email.split("@")[0].lower()
+        domain = email.split("@")[1].lower() if "@" in email else ""
+        # Strip TLD from domain for matching (vandevoorde.com -> vandevoorde)
+        domain_base = domain.rsplit(".", 1)[0] if "." in domain else domain
+
+        matches = []
+        for name in bare_names:
+            tokens = name.strip().split()
+            if not tokens:
+                continue
+            last = tokens[-1].lower()
+            if len(last) < _MIN_LAST_NAME_LEN:
+                continue
+            if last in local_part or last in domain_base:
+                matches.append(name)
+
+        if len(matches) == 1:
+            _enrich_log.info(
+                "Paired bare reply-to email with author name"
+            )
+            result.append(f"{matches[0]} <{email}>")
+        else:
+            result.append(entry)
+
+    return result
+
+
 DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+
+_MONTH_MAP: dict[str, int] = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+    "jun": 6, "jul": 7, "aug": 8, "sep": 9, "sept": 9,
+    "oct": 10, "nov": 11, "dec": 12,
+}
+
+# "Month DD, YYYY" or "Month DD YYYY" (with optional period after abbrev)
+_NATURAL_DATE_RE = re.compile(
+    r"(?P<month>January|February|March|April|May|June|July|August|"
+    r"September|October|November|December|"
+    r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?"
+    r"\s+(?P<day>\d{1,2}),?\s+(?P<year>\d{4})",
+    re.IGNORECASE,
+)
+
+# "DD Month YYYY" (European style)
+_EURO_DATE_RE = re.compile(
+    r"(?P<day>\d{1,2})\s+(?P<month>January|February|March|April|May|June|July|August|"
+    r"September|October|November|December|"
+    r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?,?\s+(?P<year>\d{4})",
+    re.IGNORECASE,
+)
+
+_date_log = _logging.getLogger(__name__ + ".date")
+
+
+_SLASH_DATE_RE = re.compile(r"\b(\d{4})/(\d{2})/(\d{2})\b")
+
+
+def normalize_date(text: str) -> str | None:
+    """Parse common date formats and return ISO YYYY-MM-DD, or None.
+
+    Tries in order:
+      1. ISO literal (YYYY-MM-DD) via DATE_RE
+      2. Slash-separated YYYY/MM/DD (common in WG21 papers)
+      3. Natural "Month DD, YYYY" (e.g. "February 22, 2026")
+      4. European "DD Month YYYY" (e.g. "22 February 2026")
+
+    Returns None when no recognized date format is found.
+    """
+    if not text:
+        return None
+    m = DATE_RE.search(text)
+    if m:
+        return m.group(1)
+    m = _SLASH_DATE_RE.search(text)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    m = _NATURAL_DATE_RE.search(text)
+    if not m:
+        m = _EURO_DATE_RE.search(text)
+    if m:
+        month_num = _MONTH_MAP.get(m.group("month").lower().rstrip("."))
+        if month_num is None:
+            return None
+        day = int(m.group("day"))
+        year = int(m.group("year"))
+        if not (1 <= day <= 31 and 1900 <= year <= 2100):
+            return None
+        _date_log.debug(
+            "Converted natural date %r -> %04d-%02d-%02d",
+            m.group(0), year, month_num, day,
+        )
+        return f"{year:04d}-{month_num:02d}-{day:02d}"
+    return None
 
 # Core pattern shapes (no anchors, no label context) reused across modules
 # so every document- and section-number pattern has a single source of truth.

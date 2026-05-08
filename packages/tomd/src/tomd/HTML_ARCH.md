@@ -33,7 +33,7 @@ Deep technique numbering lives in [`lib/html/ARCHITECTURE.md`](lib/html/ARCHITEC
 
 ### Corpus-risk hotspots
 
-Unknown generator prompt suppression when generic metadata still succeeded; lossy table markers and QA coupling; `_needs_flat_reconstruction` heuristics; list item extraction order (nested lists and code blocks); reply-to enrichment pairing **1:1** bare names and emails; paragraph deduplication shared with PDF.
+Unknown generator prompt suppression when generic metadata still succeeded; lossy table markers and QA coupling; `_needs_flat_reconstruction` heuristics; list item extraction order (nested lists and code blocks); reply-to enrichment pairing **1:1** bare names and emails; author-name matching via last-name heuristic for bare emails; paragraph deduplication shared with PDF.
 
 ---
 
@@ -78,17 +78,32 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 - **schultke:** `_extract_schultke_metadata` (generic table pass **plus** `<dl>` overlay for labels containing reply or author fields).
 - **All others** (including **hackmd**, **dascandy/fiets**, **unknown**): `_extract_generic_metadata`.
 
+**Format-specific fallbacks inside extractors**
+
+- **bikeshed:** When `html.parser` collapses `<dl>` into a single `<dt>`, `_BIKESHED_AUDIENCE_RE` extracts audience from raw HTML as regex fallback.
+- **mpark:** Metadata may live in `<ul>`/`<ol>` lists adjacent to the header, not only in `<table>`. The extractor scans both.
+- **generic (hackmd):** After table scan, parses `<pre><code>` blocks for `Key: Value` metadata lines (document, date, audience, reply-to, authors). Also searches `<strong>Label</strong><span>: Value</span>` patterns for audience (HackMD inline metadata style).
+
 **Shared label mapping**
 
-- `_normalize_label` strips and lowercases labels; `_match_field` maps synonyms to **document**, **date**, **audience**, **reply-to** via `_FIELD_SYNONYMS` ([`extract.py`](lib/html/extract.py)).
+- `_normalize_label` strips and lowercases labels; `_match_field` maps synonyms to **document**, **date**, **intent**, **audience**, **reply-to** via `_FIELD_SYNONYMS` ([`extract.py`](lib/html/extract.py)). Labels in `_IGNORED_LABELS` (e.g. `contributor`) return `None` before fuzzy matching to prevent mis-mapping to similar fields like `co-author`.
+- **Date parsing:** All date fields are parsed via `normalize_date` ([`shared.py`](lib/shared.py)), which handles ISO `YYYY-MM-DD`, slash-separated `YYYY/MM/DD`, natural language `Month DD, YYYY` and `DD Month YYYY` (full or abbreviated). This replaces the former ISO-only `DATE_RE.search` calls.
+- **Intent extraction:** Only the exact label `intent` is in `_FIELD_SYNONYMS` (no synonyms). The value is stored lowercase. All six generator-specific extractors handle the `intent` field.
+
+**Reply-to and Authors merge (generic extractor)**
+
+- Reply-to entries and Author/Editor entries are collected into **separate buckets** during extraction.
+- **Reply-to wins:** When both buckets have data, only `reply_entries` becomes `reply-to`. Author names are stored as `_author_names` for the enrichment pass (not merged blindly).
+- **Authors as fallback:** When no Reply-to exists, `author_entries` becomes `reply-to`.
 
 **Reply-to enrichment post-pass**
 
 - Always runs `_enrich_reply_to` after the generator-specific extractor ([`extract_metadata`](lib/html/extract.py)).
-- **Bootstrap:** If there was no `reply-to`, seed from emails in the metadata region (before first `<h2>`) via mailto scan then plain-text `EMAIL_RE` in common containers ([`_collect_metadata_emails`](lib/html/extract.py)).
+- **Bootstrap:** If there was no `reply-to`, seed from emails in the metadata region (before first `<h2>`) via mailto scan then plain-text `EMAIL_RE` in common containers including `<pre>` and `<code>` ([`_collect_metadata_emails`](lib/html/extract.py)).
 - **Merge in-list:** When bare names and `<email>` entries count **match 1:1**, zip into `"Name <email>"`.
 - **External emails:** Pair remaining bare names with unassigned emails from the region when counts align; otherwise append `<email>` entries.
 - **Context names:** For `<email>`-only entries, recover adjacent names from parent text (Pandoc-style `Name <a mailto>`) ([`_recover_name_from_context`](lib/html/extract.py)).
+- **Name-email matching:** For remaining bare `<email>` entries, check `_author_names` (and any bare names already in reply-to) against the email local-part and domain via last-name heuristic ([`enrich_reply_to_names`](lib/shared.py)). Only matched names are paired; unmatched authors are dropped.
 
 **Why:** Phase 1 is structural per generator; phase 2 fills gaps without removing existing data (`_enrich_reply_to` docstring).
 
@@ -316,7 +331,7 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 ### Post-pass cleanup
 
 - **`dedup_paragraphs`** on full markdown string.
-- **`strip_leading_h1`** on body when front matter present (slice after first closing front matter newline).
+- **`strip_leading_h1`** on body when front matter present (slice after first closing front matter newline). Uses prefix matching: a truncated H1 is still stripped if the full title starts with the H1 text after normalization.
 - **`strip_redundant_body_meta`** removes redundant metadata lines or tables.
 - **`strip_leading_h1`** again after redundant strip ([`convert_html`](lib/html/__init__.py)).
 

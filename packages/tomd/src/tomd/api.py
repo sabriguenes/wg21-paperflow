@@ -34,7 +34,13 @@ import logging
 import re
 from pathlib import Path
 
-from tomd.lib import format_front_matter, sanitize_metadata
+from tomd.lib import (
+    format_front_matter,
+    sanitize_metadata,
+    strip_freeform_metadata_lines,
+    strip_leading_h1,
+    EMAIL_RE,
+)
 from tomd.lib.html import convert_html
 from tomd.lib.pdf import convert_pdf
 
@@ -182,6 +188,14 @@ def _normalize_front_matter(md: str, mailing_meta: dict | None) -> str:
     # Inject missing fields (or override authoritative ones) from mailing.
     if mailing_meta:
         present = set(parsed)
+        # Bare-name-only reply-to (no emails) should not block the
+        # mailing fallback: the mailing may have richer author+email data.
+        rt = parsed.get("reply-to")
+        if (
+            isinstance(rt, list) and rt
+            and not any(EMAIL_RE.search(e) for e in rt)
+        ):
+            present.discard("reply-to")
         added_yaml_keys: set[str] = set()
         for src_key, yaml_key in _FALLBACK_KEY_MAP.items():
             if yaml_key in added_yaml_keys:
@@ -192,6 +206,11 @@ def _normalize_front_matter(md: str, mailing_meta: dict | None) -> str:
             val = mailing_meta.get(src_key)
             if val in (None, "", []):
                 continue
+            if yaml_key == "date":
+                logger.debug(
+                    "Date fallback from mailing (%s=%r): source had no date",
+                    src_key, val,
+                )
             parsed[yaml_key] = val
             added_yaml_keys.add(yaml_key)
 
@@ -349,6 +368,21 @@ def convert_paper(
 
     md = _normalize_front_matter(md, meta)
     md = _strip_body_metadata_text(md)
+    md = strip_freeform_metadata_lines(md)
+
+    # Re-run H1 stripping: leaked metadata before the H1 may have
+    # blocked strip_leading_h1 in the emit layer.
+    title_m = re.search(r'^title:\s*"?(.+?)"?\s*$', md, re.MULTILINE)
+    if title_m and md.startswith("---"):
+        fm_close = md.find("\n---", 3)
+        if fm_close >= 0:
+            body_start = md.find("\n", fm_close + 1)
+            if body_start >= 0:
+                body_start += 1
+                body = md[body_start:]
+                body = strip_leading_h1(body, title_m.group(1))
+                md = md[:body_start] + body
+
     md = _strip_toc(md)
 
     extracted_intent = _extract_intent_from_front_matter(md)

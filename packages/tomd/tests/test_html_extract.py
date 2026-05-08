@@ -2,8 +2,11 @@
 
 from tomd.lib.html.extract import (
     parse_html, detect_generator, extract_metadata, strip_boilerplate,
-    _extract_generic_metadata, _extract_wg21_metadata, _extract_mailto_email, _extract_mailto_authors, _enrich_reply_to,
+    _extract_generic_metadata, _extract_wg21_metadata,
+    _extract_mailto_email, _extract_mailto_authors, _enrich_reply_to,
+    _extract_plaintext_authors,
 )
+from tomd.lib import deobfuscate_email
 
 
 class TestDetectGenerator:
@@ -1062,7 +1065,7 @@ class TestGenericMetadataAccumulation:
     """Tests for the fix-overwrite change in _extract_generic_metadata."""
 
     def test_reply_to_not_overwritten_by_authors(self):
-        """Reply-to row with email is not replaced by a later Authors row."""
+        """Reply-to row keeps its email; unmatched authors are NOT merged."""
         html = """
         <table>
           <tr><th>Reply-to:</th>
@@ -1072,10 +1075,10 @@ class TestGenericMetadataAccumulation:
         """
         meta = _extract_generic_metadata(parse_html(html))
         assert any("cpp@kaotic.software" in e for e in meta.get("reply-to", []))
-        assert any("Tiago Freire" in e for e in meta.get("reply-to", []))
+        assert not any("Tiago Freire" in e for e in meta.get("reply-to", []))
 
-    def test_both_buckets_merged(self):
-        """Both reply and author entries appear in the final list."""
+    def test_authors_not_merged_when_reply_exists(self):
+        """When Reply-to has data, Authors entries are NOT merged in."""
         html = """
         <table>
           <tr><th>Reply-to:</th>
@@ -1087,6 +1090,18 @@ class TestGenericMetadataAccumulation:
         meta = _extract_generic_metadata(parse_html(html))
         rt = meta.get("reply-to", [])
         assert any("Alice" in e and "a@x.com" in e for e in rt)
+        assert not any("Bob" in e for e in rt)
+
+    def test_authors_used_as_fallback(self):
+        """When no Reply-to exists, Authors entries become reply-to."""
+        html = """
+        <table>
+          <tr><th>Authors:</th>
+              <td><a href="mailto:b@x.com">Bob</a></td></tr>
+        </table>
+        """
+        meta = _extract_generic_metadata(parse_html(html))
+        rt = meta.get("reply-to", [])
         assert any("Bob" in e and "b@x.com" in e for e in rt)
 
 
@@ -1156,3 +1171,242 @@ class TestContinuationRows:
         rt = meta.get("reply-to", [])
         assert any("jens@gmx.net" in e for e in rt)
         assert any("Jens Maurer" in e for e in rt)
+
+
+class TestFuzzyLabelMatching:
+    """Fuzzy fallback in _match_field for typos like Repy-to."""
+
+    def test_repy_to_wg21_dl(self):
+        """Typo 'Repy-to' in a wg21-style <dl> is matched via fuzzy fallback."""
+        html = """
+        <div class="wg21-head">
+          <h1>Test Paper</h1>
+          <dl>
+            <dt>Document Number:</dt><dd>P9999R0</dd>
+            <dt>Repy-to:</dt>
+            <dd><a href="mailto:gasper@example.com">Gasper Azman</a></dd>
+          </dl>
+        </div>
+        """
+        meta = extract_metadata(parse_html(html), "wg21")
+        assert "reply-to" in meta
+        assert any("gasper@example.com" in e for e in meta["reply-to"])
+
+    def test_auther_generic_table(self):
+        """Typo 'Auther' in a generic table is matched via fuzzy fallback."""
+        html = """
+        <table>
+          <tr><td>Date:</td><td>2026-01-01</td></tr>
+          <tr><td>Auther:</td>
+              <td><a href="mailto:a@b.com">Alice</a></td></tr>
+        </table>
+        """
+        meta = extract_metadata(parse_html(html), "unknown")
+        assert "reply-to" in meta
+        assert any("a@b.com" in e for e in meta["reply-to"])
+
+    def test_garbage_label_not_matched(self):
+        """Random labels like 'Foobar' should NOT fuzzy-match anything."""
+        html = """
+        <div class="wg21-head">
+          <h1>Test</h1>
+          <dl>
+            <dt>Foobar:</dt><dd>some value</dd>
+          </dl>
+        </div>
+        """
+        meta = extract_metadata(parse_html(html), "wg21")
+        assert "reply-to" not in meta
+        assert "document" not in meta
+
+
+class TestDeobfuscateEmail:
+    """deobfuscate_email reverses common anti-spam patterns."""
+
+    def test_at_dot_spaces(self):
+        result = deobfuscate_email("akrzemi1 at gmail dot com")
+        assert result is not None
+        assert result[0] == "akrzemi1@gmail.com"
+        assert result[1] == (0, 25)
+
+    def test_parenthesized(self):
+        result = deobfuscate_email("foo (at) bar (dot) org")
+        assert result is not None
+        assert result[0] == "foo@bar.org"
+
+    def test_bracketed(self):
+        result = deobfuscate_email("foo [at] bar [dot] co [dot] uk")
+        assert result is not None
+        assert result[0] == "foo@bar.co.uk"
+
+    def test_rejects_prose(self):
+        assert deobfuscate_email("this is not at all dotty") is None
+
+    def test_rejects_already_valid(self):
+        assert deobfuscate_email("normal@email.com") is None
+
+    def test_rejects_empty(self):
+        assert deobfuscate_email("") is None
+
+    def test_mixed_case(self):
+        result = deobfuscate_email("Name AT example DOT com")
+        assert result is not None
+        assert result[0] == "Name@example.com"
+
+    def test_embedded_in_sentence(self):
+        result = deobfuscate_email("Contact me at user at example dot org please")
+        assert result is not None
+        assert result[0] == "user@example.org"
+        assert result[1] == (14, 37)
+
+    def test_underscore_at_pattern(self):
+        """n5038/n5040 pattern: braden.ganetsky_at_gmail.com"""
+        result = deobfuscate_email("braden.ganetsky_at_gmail.com")
+        assert result is not None
+        assert result[0] == "braden.ganetsky@gmail.com"
+        assert result[1] == (0, 28)
+
+    def test_underscore_at_with_name(self):
+        result = deobfuscate_email("Braden Ganetsky, braden.ganetsky_at_gmail.com")
+        assert result is not None
+        assert result[0] == "braden.ganetsky@gmail.com"
+        assert result[1] == (17, 45)
+
+    def test_underscore_at_subdomain(self):
+        result = deobfuscate_email("user_at_mail.example.co.uk")
+        assert result is not None
+        assert result[0] == "user@mail.example.co.uk"
+
+    def test_underscore_at_rejects_normal_underscores(self):
+        """Underscores that aren't _at_ should not match."""
+        assert deobfuscate_email("some_variable_name") is None
+
+    def test_at_only_real_dots(self):
+        """P3961R1 pattern: 'zy AT miator.net' -- AT obfuscated, domain dots real."""
+        result = deobfuscate_email("zy AT miator.net")
+        assert result is not None
+        assert result[0] == "zy@miator.net"
+
+    def test_at_only_with_name_prefix(self):
+        """AT-only obfuscation with a name before it."""
+        result = deobfuscate_email("Zhihao Yuan zy AT miator.net")
+        assert result is not None
+        assert result[0] == "zy@miator.net"
+        assert result[1][0] > 0
+
+    def test_at_only_subdomain(self):
+        """AT-only obfuscation with a multi-level domain."""
+        result = deobfuscate_email("user AT mail.example.co.uk")
+        assert result is not None
+        assert result[0] == "user@mail.example.co.uk"
+
+    def test_curly_brackets(self):
+        """Ronin bracket family: {at}/{dot}."""
+        result = deobfuscate_email("user {at} domain {dot} com")
+        assert result is not None
+        assert result[0] == "user@domain.com"
+
+    def test_angle_brackets(self):
+        """Ronin bracket family: <at>/<dot>."""
+        result = deobfuscate_email("user <at> domain <dot> com")
+        assert result is not None
+        assert result[0] == "user@domain.com"
+
+    def test_at_only_rejects_prose(self):
+        """'at' in normal prose should not match when no domain follows."""
+        assert deobfuscate_email("look at this thing") is None
+
+    def test_at_only_rejects_already_valid(self):
+        """Already-valid email should not match the AT-only pattern."""
+        assert deobfuscate_email("user@example.com") is None
+
+
+class TestExtractPlaintextAuthors:
+    """_extract_plaintext_authors extracts names from plain text when mailto fails."""
+
+    def test_address_with_obfuscated_email(self):
+        html = """<td>
+            <address>Andrzej K &lt;akrzemi1 at gmail dot com&gt;</address>
+            <address>Tomasz K &lt;tomaszkam at gmail dot com&gt;</address>
+        </td>"""
+        td = parse_html(html).find("td")
+        authors = _extract_plaintext_authors(td)
+        assert len(authors) == 2
+        assert any("Andrzej" in a for a in authors)
+        assert any("Tomasz" in a for a in authors)
+
+    def test_address_with_plaintext_email(self):
+        html = '<td><address>Alice alice@example.com</address></td>'
+        td = parse_html(html).find("td")
+        authors = _extract_plaintext_authors(td)
+        assert len(authors) == 1
+        assert "alice@example.com" in authors[0]
+
+    def test_no_address_uses_td_text(self):
+        html = "<td>Bob Smith</td>"
+        td = parse_html(html).find("td")
+        authors = _extract_plaintext_authors(td)
+        assert authors == ["Bob Smith"]
+
+    def test_empty_returns_empty(self):
+        html = "<td>   </td>"
+        td = parse_html(html).find("td")
+        authors = _extract_plaintext_authors(td)
+        assert authors == []
+
+
+class TestHandwrittenObfuscatedReplyTo:
+    """Integration: hand-written papers with obfuscated emails produce reply-to."""
+
+    def test_p2285r1_pattern(self):
+        """The exact HTML pattern from p2285r1.html produces reply-to."""
+        html = """
+        <table class="header"><tbody>
+          <tr><th>Document number:</th><th> </th><td class="header">P2285R1</td></tr>
+          <tr><th>Date:</th><th> </th><td class="header">2026-02-23</td></tr>
+          <tr><th>Audience:</th><th> </th><td class="header">EWG</td></tr>
+          <tr>
+            <th>Reply-to:</th><th> </th>
+            <td class="header">
+              <address>Andrzej Krzemie\u0144ski &lt;akrzemi1 at gmail dot com&gt;</address>
+              <address>Tomasz Kami\u0144ski &lt;tomaszkam at gmail dot com&gt;</address>
+            </td>
+          </tr>
+        </tbody></table>
+        <address>placeholder</address>
+        <h1>Are default function arguments in the immediate context?</h1>
+        """
+        soup = parse_html(html)
+        meta = extract_metadata(soup, "hand-written")
+        assert "reply-to" in meta, "reply-to must be present"
+        rt = meta["reply-to"]
+        assert len(rt) >= 2
+        names = " ".join(rt)
+        assert "Andrzej" in names
+        assert "Tomasz" in names
+
+    def test_no_false_positive_on_garbage_label(self):
+        """Labels that don't match reply/author/editor in table don't produce reply-to."""
+        html = """
+        <table class="header">
+          <tr><th>Foobar:</th><td>Some Random Text</td></tr>
+        </table>
+        <h1>Title</h1>
+        """
+        meta = extract_metadata(parse_html(html), "hand-written")
+        assert "reply-to" not in meta
+
+
+class TestEnrichReplyToPlaintextRecovery:
+    """_enrich_reply_to recovers names from plain-text contexts."""
+
+    def test_bootstrap_recovers_name_from_plaintext(self):
+        """P4044R0 pattern: HackMD paper with Name <email> in a <p> tag."""
+        html = (
+            '<p><strong><span>Authors</span></strong>'
+            '<span>: Lucian Radu Teodorescu &lt;lucteo@lucteo.ro&gt;</span></p>'
+        )
+        soup = parse_html(html)
+        metadata = {}
+        _enrich_reply_to(soup, metadata)
+        assert metadata["reply-to"] == ["Lucian Radu Teodorescu <lucteo@lucteo.ro>"]
