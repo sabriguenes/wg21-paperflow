@@ -5,13 +5,25 @@ import re
 
 from bs4 import BeautifulSoup, Tag
 
-from .. import DATE_RE, DOC_NUM_RE, EMAIL_RE, parse_author_lines
+from .. import (
+    DATE_RE, DOC_NUM_RE, EMAIL_RE, parse_author_lines,
+    deobfuscate_email, enrich_reply_to_names, normalize_date,
+)
+from ..similarity import fuzzy_match_label
 
 _log = logging.getLogger(__name__)
 
 _HACKMD_RE = re.compile(r"hackmd")
 _COMMA_COLLAPSE_RE = re.compile(r"(,\s*){2,}")
 _MAILTO_PREFIX_RE = re.compile(r"^mailto:/{0,2}")
+
+# html.parser cannot handle implicit dt/dd closing tags in bikeshed output.
+# When the DOM collapses the entire <dl> into a single <dt>, this regex
+# extracts audience from the raw HTML as a fallback.
+_BIKESHED_AUDIENCE_RE = re.compile(
+    r"<dt[^>]*>\s*Audience:\s*(?:</dt>)?\s*<dd[^>]*>(.*?)(?=<dt|</dl>)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _extract_mailto_email(href: str) -> str:
@@ -30,6 +42,96 @@ def _extract_mailto_authors(container: Tag) -> list[str]:
         entry = f"{name} <{email}>" if name and name != email else f"<{email}>"
         if entry not in authors:
             authors.append(entry)
+    return authors
+
+
+def _extract_plaintext_authors(container: Tag) -> list[str]:
+    """Fallback: extract author names from plain text when no mailto links exist.
+
+    Tries three signals in confidence order:
+    1. EMAIL_RE on full text (plain-text email without mailto link)
+    2. Deobfuscated emails paired with names from <address> children
+    3. Bare names from <address> children (lowest confidence)
+
+    Motivated by p2285r1 where <address> tags contain obfuscated emails
+    like ``akrzemi1 at gmail dot com`` that defeat mailto-only extraction.
+    """
+    authors: list[str] = []
+    seen: set[str] = set()
+
+    def _add(entry: str) -> None:
+        if entry not in seen:
+            seen.add(entry)
+            authors.append(entry)
+
+    addr_tags = container.find_all("address")
+    if not addr_tags:
+        lines = [
+            ln.strip()
+            for ln in container.get_text("\n", strip=True).split("\n")
+            if ln.strip()
+        ]
+    else:
+        lines = [a.get_text(strip=True) for a in addr_tags if a.get_text(strip=True)]
+
+    for line in lines:
+        email_m = EMAIL_RE.search(line)
+        if email_m:
+            email = email_m.group(0)
+            name = line[: email_m.start()].strip().rstrip("<").strip()
+            if name:
+                _add(f"{name} <{email}>")
+            else:
+                _add(f"<{email}>")
+            continue
+
+        # Handle "Name <obfuscated_email>" where angle brackets wrap the
+        # obfuscated text (e.g. "Mark Hoemmen <mark dot hoemmen at gmail dot com>").
+        # Deobfuscate the bracketed content separately so dots in the
+        # local part are not confused with the domain.
+        bracket_start = line.find("<")
+        bracket_end = line.rfind(">")
+        if bracket_start != -1 and bracket_end > bracket_start:
+            bracketed = line[bracket_start + 1:bracket_end]
+            deob_bracket = deobfuscate_email(bracketed)
+            if deob_bracket:
+                deob_email = deob_bracket[0]
+                # When the local part also contains "dot" (e.g.
+                # "mark dot hoemmen at gmail dot com"), deobfuscate_email
+                # may only capture from the last word before "at".
+                # Fall back to naive split-and-replace for the full
+                # bracketed text.
+                _AT_SPLIT = re.compile(r"\s+at\s+", re.IGNORECASE)
+                parts = _AT_SPLIT.split(bracketed, maxsplit=1)
+                if len(parts) == 2:
+                    _DOT_WORD = re.compile(r"\s+dot\s+", re.IGNORECASE)
+                    local = _DOT_WORD.sub(".", parts[0].strip())
+                    domain = _DOT_WORD.sub(".", parts[1].strip())
+                    naive = f"{local}@{domain}"
+                    if EMAIL_RE.fullmatch(naive):
+                        deob_email = naive
+                name = line[:bracket_start].strip()
+                if name:
+                    _add(f"{name} <{deob_email}>")
+                else:
+                    _add(f"<{deob_email}>")
+                continue
+
+        deob_result = deobfuscate_email(line)
+        if deob_result:
+            deob, (match_start, _match_end) = deob_result
+            _log.debug("deobfuscated an author email")
+            name = line[:match_start].strip().rstrip("<").strip()
+            if name:
+                _add(f"{name} <{deob}>")
+            else:
+                _add(f"<{deob}>")
+            continue
+
+        cleaned = line.strip()
+        if cleaned and not EMAIL_RE.search(cleaned):
+            _add(cleaned)
+
     return authors
 
 
@@ -114,6 +216,35 @@ def _extract_mpark_metadata(soup: BeautifulSoup) -> dict:
 
     table = header.find("table")
     if not table:
+        # Some mpark papers use <ul>/<ol> with <li><strong>Label:</strong> Value</li>,
+        # sometimes inside the header, sometimes as the next sibling.
+        meta_list = header.find("ul") or header.find("ol")
+        if not meta_list:
+            sib = header.find_next_sibling()
+            if sib and sib.name in ("ul", "ol"):
+                meta_list = sib
+        if meta_list:
+            for li in meta_list.find_all("li"):
+                strong = li.find("strong")
+                if not strong:
+                    continue
+                label = _normalize_label(strong.get_text(strip=True))
+                strong_text = strong.get_text(strip=True)
+                value = li.get_text(strip=True)[len(strong_text):].strip()
+                if label == "audience":
+                    metadata["audience"] = value
+                elif label == "intent":
+                    if value:
+                        metadata["intent"] = value.lower()
+                elif "document" in label:
+                    m = DOC_NUM_RE.search(value)
+                    if m:
+                        metadata["document"] = m.group(0).upper()
+                elif label == "date":
+                    parsed_date = normalize_date(value)
+                    if parsed_date:
+                        metadata["date"] = parsed_date
+
         # Pandoc papers: header has only <h1>, mailto links may be in
         # the header itself or the next sibling element.  The enrichment
         # post-pass (_enrich_reply_to) handles name-email correlation.
@@ -142,9 +273,14 @@ def _extract_mpark_metadata(soup: BeautifulSoup) -> dict:
 
         elif label == "date":
             text = value_cell.get_text(strip=True)
-            m = DATE_RE.search(text)
-            if m:
-                metadata["date"] = m.group(0)
+            parsed_date = normalize_date(text)
+            if parsed_date:
+                metadata["date"] = parsed_date
+
+        elif label == "intent":
+            text = value_cell.get_text(strip=True)
+            if text:
+                metadata["intent"] = text.lower()
 
         elif label == "audience":
             metadata["audience"] = _get_text_br_separated(value_cell)
@@ -218,9 +354,9 @@ def _extract_bikeshed_metadata(soup: BeautifulSoup) -> dict:
     time_tag = soup.find("time", class_="dt-updated")
     if time_tag:
         dt = time_tag.get("datetime") or time_tag.get_text(strip=True)
-        m = DATE_RE.search(dt)
-        if m:
-            metadata["date"] = m.group(0)
+        parsed_date = normalize_date(dt)
+        if parsed_date:
+            metadata["date"] = parsed_date
 
     spec_meta_div = soup.find("div", {"data-fill-with": "spec-metadata"})
     dl = (spec_meta_div or soup).find("dl")
@@ -233,10 +369,22 @@ def _extract_bikeshed_metadata(soup: BeautifulSoup) -> dict:
             if child.name == "dt":
                 current_label = _normalize_label(child.get_text(strip=True))
             elif child.name == "dd" and current_label:
-                if "audience" in current_label:
+                if current_label == "intent":
+                    value = child.get_text(strip=True)
+                    if value:
+                        metadata["intent"] = value.lower()
+                elif "audience" in current_label:
                     metadata["audience"] = _get_text_br_separated(child)
                 elif "editor" in current_label or "author" in current_label:
                     editor_dds.append(child)
+
+    # Fallback: html.parser mis-nests implicit dt/dd closings in bikeshed HTML.
+    # When the DOM iteration above fails, parse the raw HTML with a regex.
+    if "audience" not in metadata and dl:
+        m = _BIKESHED_AUDIENCE_RE.search(str(dl))
+        if m:
+            snip = BeautifulSoup(m.group(1), "html.parser")
+            metadata["audience"] = snip.get_text(strip=True)
 
     # Also collect <dd> elements with explicit editor/author CSS class
     if dl:
@@ -296,12 +444,18 @@ def _extract_handwritten_metadata(soup: BeautifulSoup) -> dict:
                 m = DOC_NUM_RE.search(line)
                 if m:
                     metadata["document"] = m.group(0).upper()
+            elif line.lower().startswith("intent"):
+                val = line.split(":", 1)[-1].strip()
+                if val:
+                    metadata["intent"] = val.lower()
             elif line.lower().startswith("audience"):
                 metadata["audience"] = line.split(":", 1)[-1].strip()
-            elif (m := DATE_RE.search(line)):
-                metadata["date"] = m.group(0)
+            elif (parsed_date := normalize_date(line)):
+                metadata["date"] = parsed_date
 
         addr_authors = _extract_mailto_authors(addr)
+        if not addr_authors:
+            addr_authors = _extract_plaintext_authors(addr)
         if addr_authors:
             metadata["reply-to"] = addr_authors
 
@@ -311,30 +465,44 @@ def _extract_handwritten_metadata(soup: BeautifulSoup) -> dict:
 
     table = soup.find("table", class_="header")
     if table:
+        current_field: str | None = None
         for row in table.find_all("tr"):
             th = row.find("th")
             td = row.find("td")
-            if th and td:
-                label = _normalize_label(th.get_text(strip=True))
-                value = td.get_text(strip=True)
-                if "document" in label:
-                    m = DOC_NUM_RE.search(value)
-                    if m:
-                        metadata["document"] = m.group(0).upper()
-                elif "date" in label:
-                    m = DATE_RE.search(value)
-                    if m:
-                        metadata["date"] = m.group(0)
-                elif "audience" in label:
-                    metadata["audience"] = _get_text_br_separated(td)
-                elif "reply" in label or "author" in label or "editor" in label:
-                    authors = _extract_mailto_authors(td)
-                    if authors:
-                        existing = metadata.get("reply-to", [])
-                        for a_entry in authors:
-                            if a_entry not in existing:
-                                existing.append(a_entry)
-                        metadata["reply-to"] = existing
+            if not td:
+                continue
+            label = _normalize_label(th.get_text(strip=True)) if th else ""
+            is_reply = "reply" in label or "author" in label or "editor" in label
+
+            if label:
+                current_field = "reply" if is_reply else label
+            elif not label and current_field != "reply":
+                continue
+
+            if "document" in label:
+                m = DOC_NUM_RE.search(td.get_text(strip=True))
+                if m:
+                    metadata["document"] = m.group(0).upper()
+            elif "date" in label:
+                parsed_date = normalize_date(td.get_text(strip=True))
+                if parsed_date:
+                    metadata["date"] = parsed_date
+            elif label == "intent":
+                val = td.get_text(strip=True)
+                if val:
+                    metadata["intent"] = val.lower()
+            elif "audience" in label:
+                metadata["audience"] = _get_text_br_separated(td)
+            elif is_reply or (not label and current_field == "reply"):
+                authors = _extract_mailto_authors(td)
+                if not authors:
+                    authors = _extract_plaintext_authors(td)
+                if authors:
+                    existing = metadata.get("reply-to", [])
+                    for a_entry in authors:
+                        if a_entry not in existing:
+                            existing.append(a_entry)
+                    metadata["reply-to"] = existing
 
     return metadata
 
@@ -353,6 +521,7 @@ _FIELD_SYNONYMS: dict[str, frozenset[str]] = {
         "document number", "document no", "doc no", "doc. no.", "doc", "number",
     }),
     "date":     frozenset({"date", "revision date"}),
+    "intent":   frozenset({"intent"}),
     "audience": frozenset({"audience", "subgroup"}),
     "reply-to": frozenset({
         "reply to", "reply-to", "author", "authors", "editor", "editors",
@@ -361,12 +530,34 @@ _FIELD_SYNONYMS: dict[str, frozenset[str]] = {
 }
 
 
+_ALL_SYNONYMS: dict[str, str] = {
+    syn: field for field, synonyms in _FIELD_SYNONYMS.items() for syn in synonyms
+}
+
+
+_IGNORED_LABELS = frozenset({
+    "contributor", "contributors",
+})
+
+
 def _match_field(label: str) -> str | None:
-    """Map a metadata label to its canonical field name, or None if unrecognized."""
+    """Map a metadata label to its canonical field name, or None if unrecognized.
+
+    Two-stage: exact synonym lookup first, then fuzzy fallback via
+    ``fuzzy_match_label`` from ``similarity.py``.
+    Explicitly ignored labels (e.g. "contributor") return None before
+    fuzzy matching can mis-map them to similar fields like "co-author".
+    """
     norm = _normalize_label(label)
+    if norm in _IGNORED_LABELS:
+        return None
     for field, synonyms in _FIELD_SYNONYMS.items():
         if norm in synonyms:
             return field
+    fuzzy_hit = fuzzy_match_label(norm, _ALL_SYNONYMS.keys())
+    if fuzzy_hit is not None:
+        _log.info("Fuzzy label match: %r -> %r (field %r)", norm, fuzzy_hit, _ALL_SYNONYMS[fuzzy_hit])
+        return _ALL_SYNONYMS[fuzzy_hit]
     return None
 
 
@@ -399,9 +590,12 @@ def _extract_wg21_metadata(soup: BeautifulSoup) -> dict:
                 if m:
                     metadata["document"] = m.group(0).upper()
             elif current_field == "date":
-                m = DATE_RE.search(value)
-                if m:
-                    metadata["date"] = m.group(0)
+                parsed_date = normalize_date(value)
+                if parsed_date:
+                    metadata["date"] = parsed_date
+            elif current_field == "intent":
+                if value:
+                    metadata["intent"] = value.lower()
             elif current_field == "audience":
                 metadata["audience"] = _get_text_br_separated(child)
             elif current_field == "reply-to":
@@ -460,9 +654,13 @@ def _extract_schultke_metadata(soup: BeautifulSoup) -> dict:
                         metadata["document"] = m.group(0).upper()
                 elif "date" in current_label:
                     text = child.get_text(strip=True)
-                    m = DATE_RE.search(text)
-                    if m:
-                        metadata["date"] = m.group(0)
+                    parsed_date = normalize_date(text)
+                    if parsed_date:
+                        metadata["date"] = parsed_date
+                elif current_label == "intent":
+                    text = child.get_text(strip=True)
+                    if text:
+                        metadata["intent"] = text.lower()
                 elif "audience" in current_label:
                     metadata["audience"] = _get_text_br_separated(child)
 
@@ -505,9 +703,12 @@ def _extract_generic_metadata(soup: BeautifulSoup) -> dict:
                     if m:
                         metadata["document"] = m.group(0).upper()
                 elif "date" in label:
-                    m = DATE_RE.search(value)
-                    if m:
-                        metadata["date"] = m.group(0)
+                    parsed_date = normalize_date(value)
+                    if parsed_date:
+                        metadata["date"] = parsed_date
+                elif label == "intent":
+                    if value:
+                        metadata["intent"] = value.lower()
                 elif "audience" in label:
                     metadata["audience"] = _get_text_br_separated(cells[-1])
                 elif is_reply or (not label and current_field == "reply"):
@@ -523,14 +724,81 @@ def _extract_generic_metadata(soup: BeautifulSoup) -> dict:
                             if entry not in bucket:
                                 bucket.append(entry)
 
-    # Merge: prefer reply_entries (from "Reply-to:"), fall back to
-    # author_entries (from "Authors:"/"Editors:"). Both are kept so the
-    # enrichment pass can correlate bare names with unassigned emails.
+    # Pre-formatted metadata: <pre><code>Key: Value\n...</code></pre>
+    # Used by some hand-authored papers (e.g. P4139R0).
+    _PRE_FIELD_RE = re.compile(
+        r"^(Document\s*#?|Date|Intent|Project|Title|Reply[- ]?to|Authors?|"
+        r"Editors?|Target|Audience|Subgroup)\s*:\s*(.+)",
+        re.IGNORECASE,
+    )
+    for pre in soup.find_all("pre"):
+        code = pre.find("code")
+        text = (code or pre).get_text()
+        pre_current: str | None = None
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            m_field = _PRE_FIELD_RE.match(line)
+            if m_field:
+                flabel = _normalize_label(m_field.group(1))
+                fvalue = m_field.group(2).strip()
+                is_reply_pre = "reply" in flabel or "author" in flabel or "editor" in flabel
+                pre_current = "reply" if is_reply_pre else flabel
+                if "document" in flabel:
+                    dm = DOC_NUM_RE.search(fvalue)
+                    if dm and "document" not in metadata:
+                        metadata["document"] = dm.group(0).upper()
+                elif "date" in flabel:
+                    parsed_date = normalize_date(fvalue)
+                    if parsed_date and "date" not in metadata:
+                        metadata["date"] = parsed_date
+                elif flabel == "intent":
+                    if fvalue and "intent" not in metadata:
+                        metadata["intent"] = fvalue.lower()
+                elif "audience" in flabel or "subgroup" in flabel:
+                    if "audience" not in metadata:
+                        metadata["audience"] = fvalue
+                elif flabel == "title":
+                    if "title" not in metadata:
+                        metadata["title"] = fvalue
+                elif is_reply_pre:
+                    # Split comma-separated authors (e.g. "Nathan Myers, Pablo Halpern")
+                    # into individual lines so parse_author_lines treats them separately.
+                    if "," in fvalue and not EMAIL_RE.search(fvalue):
+                        author_lines = [p.strip() for p in fvalue.split(",") if p.strip()]
+                    else:
+                        author_lines = [fvalue]
+                    parsed = parse_author_lines(author_lines)
+                    bucket = reply_entries if "reply" in flabel else author_entries
+                    for entry in parsed:
+                        if entry not in bucket:
+                            bucket.append(entry)
+
+    # HackMD pattern: <strong><span>Label</span></strong><span>: Value</span>
+    # Metadata fields appear inside a <p> with <br> separators.
+    if "audience" not in metadata:
+        for strong in soup.find_all("strong"):
+            label_text = strong.get_text(strip=True).lower()
+            if label_text in ("audience", "subgroup", "target"):
+                next_sib = strong.next_sibling
+                while next_sib and isinstance(next_sib, str) and not next_sib.strip():
+                    next_sib = next_sib.next_sibling
+                if next_sib and isinstance(next_sib, Tag):
+                    val = next_sib.get_text(strip=True).lstrip(":").strip()
+                    if val:
+                        metadata["audience"] = val
+                        break
+
+    # Merge: prefer reply_entries (from "Reply-to:"); use author_entries
+    # only as fallback when reply_entries is empty.  When both exist,
+    # store author names separately so the enrichment pass can match
+    # them against bare emails without polluting reply-to.
     merged = reply_entries or author_entries
     if reply_entries and author_entries:
-        for entry in author_entries:
-            if entry not in merged:
-                merged.append(entry)
+        metadata["_author_names"] = [
+            e for e in author_entries if "<" not in e and "@" not in e
+        ]
     if merged:
         metadata["reply-to"] = merged
 
@@ -541,8 +809,8 @@ def _collect_metadata_emails(soup: BeautifulSoup) -> list[str]:
     """Gather all email addresses from the metadata region (before first <h2>).
 
     Returns deduplicated list of bare email strings.  Sources checked
-    in confidence order: mailto links, then plain-text EMAIL_RE matches
-    in tables, lists, paragraphs, and definition lists.
+    in confidence order: mailto links, then plain-text EMAIL_RE matches,
+    then deobfuscated ``at``/``dot`` patterns (medium confidence, EMAIL_RE gate).
     """
     first_h2 = soup.find("h2")
     emails: list[str] = []
@@ -563,11 +831,20 @@ def _collect_metadata_emails(soup: BeautifulSoup) -> list[str]:
             _add(email)
 
     # Pass 2: plain-text emails in metadata containers
-    for tag in soup.find_all(["td", "dd", "li", "p", "span"]):
+    _EMAIL_TAGS = ["td", "dd", "li", "p", "span", "pre", "code"]
+    for tag in soup.find_all(_EMAIL_TAGS):
         if first_h2 and tag.find_previous("h2"):
             continue
         for m in EMAIL_RE.finditer(tag.get_text()):
             _add(m.group(0))
+
+    # Pass 3: deobfuscate "name at domain dot com" patterns (medium confidence)
+    for tag in soup.find_all(_EMAIL_TAGS + ["address"]):
+        if first_h2 and tag.find_previous("h2"):
+            continue
+        deob_result = deobfuscate_email(tag.get_text())
+        if deob_result:
+            _add(deob_result[0])
 
     return emails
 
@@ -575,11 +852,15 @@ def _collect_metadata_emails(soup: BeautifulSoup) -> list[str]:
 def _recover_name_from_context(soup: BeautifulSoup, email: str) -> str:
     """Find a human name adjacent to *email* in the metadata region.
 
-    Pandoc emits ``Name <a href="mailto:x">x</a>`` where the link text
-    equals the address.  The name sits in the parent element's text just
-    before the email.
+    Two strategies:
+    1. Pandoc mailto pattern: ``Name <a href="mailto:x">x</a>`` where the
+       link text equals the address.
+    2. Plain-text pattern: ``Name <email>`` in tags like ``<p>``, ``<span>``,
+       ``<td>`` (HackMD, hand-written papers).
     """
     first_h2 = soup.find("h2")
+
+    # Strategy 1: mailto links
     for a in soup.find_all("a", href=lambda h: h and "mailto:" in h):
         if first_h2 and a.find_previous("h2"):
             continue
@@ -598,6 +879,23 @@ def _recover_name_from_context(soup: BeautifulSoup, email: str) -> str:
         last_line = last_line.split(":")[-1].strip()
         if last_line and not EMAIL_RE.fullmatch(last_line):
             return last_line
+
+    # Strategy 2: plain-text "Name <email>" in metadata-region elements
+    for tag in soup.find_all(["td", "dd", "li", "p", "span", "address"]):
+        if first_h2 and tag.find_previous("h2"):
+            continue
+        text = tag.get_text(separator="\n", strip=True)
+        if email not in text:
+            continue
+        for line in text.split("\n"):
+            idx = line.find(email)
+            if idx <= 0:
+                continue
+            before = line[:idx].strip().rstrip("<").strip()
+            before = before.split(":")[-1].strip()
+            if before and not EMAIL_RE.fullmatch(before):
+                return before
+
     return ""
 
 
@@ -685,6 +983,14 @@ def _enrich_reply_to(soup: BeautifulSoup, metadata: dict) -> None:
         else:
             updated.append(entry)
     metadata["reply-to"] = updated
+
+    # --- Enrichment 3: match remaining bare emails against author names ---
+    rt = metadata["reply-to"]
+    bare_names = [e for e in rt if "<" not in e and "@" not in e]
+    extra_names = metadata.pop("_author_names", [])
+    candidates = bare_names + [n for n in extra_names if n not in bare_names]
+    if candidates:
+        metadata["reply-to"] = enrich_reply_to_names(rt, candidates)
 
 
 def strip_boilerplate(soup: BeautifulSoup, generator: str) -> list[str]:

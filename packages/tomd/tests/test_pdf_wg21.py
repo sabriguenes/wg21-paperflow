@@ -20,13 +20,15 @@ def _block(texts: list[str], page_num: int = 0) -> Block:
 class TestStoreFieldAppend:
     """_store_field must append to reply-to, never overwrite."""
 
-    def test_author_after_reply_to_appends(self):
+    def test_author_after_reply_to_stays_in_bucket(self):
+        """Author after explicit Reply-to goes to _author_names only."""
         metadata: dict = {}
         _store_field(metadata, "Reply to", ["Daveed Vandevoorde <daveed@vandevoorde.com>"])
         _store_field(metadata, "Author", ["Directions Group"])
-        assert len(metadata["reply-to"]) == 2
+        assert len(metadata["reply-to"]) == 1
         assert "Daveed Vandevoorde <daveed@vandevoorde.com>" in metadata["reply-to"]
-        assert "Directions Group" in metadata["reply-to"]
+        assert "Directions Group" not in metadata["reply-to"]
+        assert "Directions Group" in metadata["_author_names"]
 
     def test_duplicate_not_added(self):
         metadata: dict = {}
@@ -34,19 +36,23 @@ class TestStoreFieldAppend:
         _store_field(metadata, "Author", ["Alice <alice@example.com>"])
         assert len(metadata["reply-to"]) == 1
 
-    def test_bare_names_overwritten_by_later_label(self):
-        """When existing has no emails, later label overwrites (same-field re-parse)."""
+    def test_author_fallback_then_editor_stays_in_bucket(self):
+        """Authors as fallback fill reply-to; later Editor goes to _author_names."""
         metadata: dict = {}
         _store_field(metadata, "Authors", ["Alice", "Bob"])
+        assert metadata["reply-to"] == ["Alice", "Bob"]
         _store_field(metadata, "Editor", ["Charlie"])
-        assert metadata["reply-to"] == ["Charlie"]
+        # Editor does not overwrite or append: goes to _author_names only.
+        assert metadata["reply-to"] == ["Alice", "Bob"]
+        assert "Charlie" in metadata["_author_names"]
 
-    def test_append_when_existing_has_emails(self):
-        """When existing has emails, later bare-name label appends."""
+    def test_editor_after_explicit_reply_to_stays_in_bucket(self):
+        """When explicit Reply-to exists, Editor goes to _author_names only."""
         metadata: dict = {}
         _store_field(metadata, "Reply to", ["Alice <alice@example.com>"])
         _store_field(metadata, "Editor", ["Charlie"])
-        assert metadata["reply-to"] == ["Alice <alice@example.com>", "Charlie"]
+        assert metadata["reply-to"] == ["Alice <alice@example.com>"]
+        assert "Charlie" in metadata["_author_names"]
 
 
 class TestStoreFieldEmail:

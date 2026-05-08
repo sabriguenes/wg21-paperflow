@@ -402,14 +402,13 @@ def _run_pipeline(path: Path) -> PipelineResult:
     _override_revision_from_filename(metadata, path)
 
     if not metadata.get("title"):
+        from .types import KNOWN_SECTIONS
         for sec in sections:
             if sec.kind == SectionKind.HEADING:
-                candidate = " ".join(
-                    ln.strip().lstrip("# ").strip()
-                    for ln in sec.text.split("\n") if ln.strip()
-                )
-                if candidate:
-                    metadata["title"] = candidate
+                first_line = sec.text.split("\n")[0].strip().lstrip("# ").strip()
+                if (first_line
+                        and first_line.lower().rstrip(":") not in KNOWN_SECTIONS):
+                    metadata["title"] = first_line
                     break
 
     if not metadata.get("title") and pdf_info_title:
@@ -420,6 +419,15 @@ def _run_pipeline(path: Path) -> PipelineResult:
         )
         if not _TITLE_BOILERPLATE_RE.match(pdf_info_title):
             metadata["title"] = pdf_info_title
+
+    # Strip leading paper-ID prefix from titles regardless of extraction
+    # pathway (wg21, structure, heading fallback, PDF info). Import from
+    # structure where the regex is defined to keep a single source of truth.
+    if metadata.get("title"):
+        from .structure import _TITLE_PID_PREFIX_RE
+        stripped = _TITLE_PID_PREFIX_RE.sub("", metadata["title"]).strip()
+        if stripped:
+            metadata["title"] = stripped
 
     if "reply-to" not in metadata:
         pdf_info_author = (doc_metadata.get("author") or "").strip()

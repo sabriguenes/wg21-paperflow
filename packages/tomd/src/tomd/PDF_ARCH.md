@@ -211,6 +211,12 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 **WG21 block metadata**
 
 - Scan early MuPDF blocks with **text color lightness** map from **space characters** in texttrace so Type 3 black glyphs still reveal watermark lightness ([`_get_page0_text_colors`](lib/pdf/__init__.py), [`wg21.py`](lib/pdf/wg21.py)).
+- Recognize labels both with colon (`Audience:`) via `_LABEL_RE` and without colon (`Audience` alone on a line) via `_BARE_LABEL_RE` (Scrivener-style PDFs).
+- **Intent extraction:** `Intent:` (colon or bare) is recognized as a metadata label. The value is stored lowercase (e.g. `Inform` becomes `inform`, `Ask` becomes `ask`). Only the exact label `Intent` is accepted; no synonyms.
+- `_LABEL_RE` includes non-metadata stop-labels (`Issues`, `Previous`, `Follow up to`, `Co-authors`, `Source`, `Reference`, `Contributor`) that terminate value collection without storing a field, preventing adjacent lines from bleeding into the preceding field.
+- Strip author contamination from audience values: truncate at email addresses, angle brackets, or double-space boundaries that indicate merged PDF lines.
+- **Target as audience fallback:** `Target:` maps to the audience field only when no explicit `Audience:` or `Subgroup:` was already extracted. This prevents Target (typically `C++26`) from overwriting the committee audience value.
+- **Reply-to wins:** Explicit `Reply-to:` labels store directly into `reply-to`. `Author:`, `Editor:`, and `Co-author:` labels store into `_author_names` only and fill `reply-to` as fallback when no explicit Reply-to was extracted. When an explicit Reply-to entry has an email matching a bare-name fallback entry, the bare name is upgraded in place. Aligns with the HTML extractor bucket strategy ([`wg21.py`](lib/pdf/wg21.py)).
 
 **Why:** Title versus watermark disambiguation uses lightness proxy ([`__init__.py`](lib/pdf/__init__.py) docstring).
 
@@ -335,7 +341,9 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 **Date**
 
-- If missing, parse **`creationDate`** from PDF info dict to **YYYY-MM-DD** when possible ([`_parse_pdf_info_date`](lib/pdf/__init__.py)).
+- Date values are parsed via `normalize_date` ([`shared.py`](lib/shared.py)), which handles multiple formats in priority order: ISO `YYYY-MM-DD`, slash-separated `YYYY/MM/DD`, natural language `Month DD, YYYY` (full or abbreviated month names), and European `DD Month YYYY`.
+- Pre-label blocks matching `_BARE_DATE_RE` (e.g. "March 26, 2026" alone on a line, without a `Date:` label) are parsed and stored as `date` before the labeled-field scan runs.
+- If still missing after block extraction, parse **`creationDate`** from PDF info dict to **YYYY-MM-DD** when possible ([`_parse_pdf_info_date`](lib/pdf/__init__.py)). This is a last-resort fallback and may reflect the PDF generation timestamp rather than the paper date.
 
 **Revision**
 
@@ -352,6 +360,7 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 **Email enrichment**
 
 - If **no** reply-to entry contained an email yet, scan **first 30** lines of page zero for emails; pair **bare emails** with previous line names; merge into `"Name <email>"` ([`_enrich_pdf_reply_to`](lib/pdf/__init__.py)).
+- After pairing, remaining bare `<email>` entries are checked against `_author_names` (collected during `_store_field` in [`wg21.py`](lib/pdf/wg21.py)) via last-name heuristic ([`enrich_reply_to_names`](lib/shared.py)). Only matched names are paired; unmatched authors are dropped.
 
 **Sources:** `_run_pipeline` metadata section in [`lib/pdf/__init__.py`](lib/pdf/__init__.py).
 
@@ -397,7 +406,7 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 **Post-pass**
 
-- Run `dedup_paragraphs`, strip redundant body metadata tables or lines, strip duplicate leading **H1** when it matches title ([`emit.py`](lib/pdf/emit.py), [`lib/__init__.py`](lib/__init__.py)).
+- Run `dedup_paragraphs`, strip redundant body metadata tables or lines, strip duplicate leading **H1** when it matches or is a prefix of the title ([`emit.py`](lib/pdf/emit.py), [`lib/__init__.py`](lib/__init__.py)).
 
 **Wording prompts**
 

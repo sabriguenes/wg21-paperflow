@@ -26,6 +26,28 @@ _TITLE_SIZE_RATIO = 1.2
 _HEADING_MAX_WORDS = 12
 
 _TITLE_MAX_LENGTH = 120
+# Max font-size deviation (fraction) for a subsequent LARGE section to
+# be treated as a title continuation rather than a new heading.
+# Calibrated from corpus: real continuations are 0-6.3%; non-continuations
+# start at 20%+. The 10% threshold sits in the 14-point gap between the
+# two populations.
+_TITLE_CONT_FONT_TOL = 0.10
+_TITLE_CONT_SKIP = frozenset({
+    "revisions", "contents", "foreword", "agenda",
+    "table of contents", "tony table",
+})
+_TITLE_CONT_DATE_RE = re.compile(
+    r"^\s*(?:january|february|march|april|may|june|july|august|"
+    r"september|october|november|december"
+    r"|\d{4}[-/]\d{2}|\d{1,2}\s+\w+\s+\d{4})",
+    re.IGNORECASE,
+)
+# Strip leading paper-ID prefix (e.g. "P4016R0 — ...", "Nicolai Josuttis: P3725R2: ...")
+# from extracted titles. Only strips when meaningful text remains after removal.
+_TITLE_PID_PREFIX_RE = re.compile(
+    r"^(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s*:\s*)?"  # optional "Firstname Lastname: "
+    r"[PNpn]\d{3,5}[Rr]\d+\s*[\-\u2014:,.]?\s*",
+)
 _BODY_MARGIN_FRACTION = 0.1
 _BULLET_JOIN_MAX_CHARS = 3
 
@@ -411,8 +433,12 @@ def structure_sections(sections: list[Section],
 
     title_found = has_title
     structured: list[Section] = []
+    skip_indices: set[int] = set()
 
-    for sec in sections:
+    for idx, sec in enumerate(sections):
+        if idx in skip_indices:
+            continue
+
         if sec.kind in (SectionKind.UNCERTAIN, SectionKind.TABLE):
             structured.append(sec)
             continue
@@ -435,9 +461,36 @@ def structure_sections(sections: list[Section],
 
             if (is_large and not is_section_num and not is_known
                     and not has_email and not is_date and not too_long):
-                metadata["title"] = " ".join(
+                title_parts = [" ".join(
                     ln.strip() for ln in sec.text.split("\n") if ln.strip()
-                )
+                )]
+                title_fs = sec.font_size
+                large_thresh = body_size * _TITLE_SIZE_RATIO
+                for j in range(idx + 1, len(sections)):
+                    nxt = sections[j]
+                    if nxt.font_size <= large_thresh:
+                        break
+                    fl = nxt.text.split("\n")[0].strip()
+                    if abs(nxt.font_size - title_fs) / title_fs > _TITLE_CONT_FONT_TOL:
+                        break
+                    fl_low = fl.lower().rstrip(":")
+                    if fl_low in KNOWN_SECTIONS or fl_low in _TITLE_CONT_SKIP:
+                        break
+                    if SECTION_NUM_RE.match(fl):
+                        break
+                    if _TITLE_CONT_DATE_RE.match(fl):
+                        break
+                    if "@" in fl:
+                        break
+                    if not fl or fl.isspace():
+                        break
+                    if fl.strip().isdigit():
+                        break
+                    title_parts.append(fl)
+                    skip_indices.add(j)
+                raw_title = " ".join(title_parts)
+                stripped = _TITLE_PID_PREFIX_RE.sub("", raw_title).strip()
+                metadata["title"] = stripped if stripped else raw_title
                 sec.kind = SectionKind.TITLE
                 sec.heading_level = 1
                 sec.confidence = Confidence.HIGH

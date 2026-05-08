@@ -8,14 +8,35 @@ table detection or structuring runs.
 import logging
 import re
 
-from .. import strip_format_chars, EMAIL_RE, DATE_RE, parse_author_lines
+from .. import (
+    strip_format_chars, EMAIL_RE, DATE_RE, parse_author_lines,
+    deobfuscate_email, enrich_reply_to_names, normalize_date,
+)
 from .types import Block
 
 _log = logging.getLogger(__name__)
 
+# Guards for wg21 pre-label title continuation (mirrors structure.py guards).
+_KNOWN_CONT_SKIP = frozenset({
+    "abstract", "revisions", "contents", "foreword", "agenda",
+    "table of contents", "tony table", "introduction",
+    "proposed wording", "motivation", "overview",
+})
+_SECTION_NUM_LIKE = re.compile(r"^\d+[\.\)]\s")
+_SEPARATOR_LINE = re.compile(r"^[=\-_~*]{3,}$")
+_DOC_NO_LIKE = re.compile(r"(?:doc|document)\b.*\b(?:no|number|#)\b", re.IGNORECASE)
+
 _LABEL_RE = re.compile(
-    r"(Document\s*(?:Number|No\.?|#)|Doc\.?\s*No\.?|Title|Date|Audience|Subgroup|"
-    r"Reply[- ]?to|Authors?|Editors?|Target|Project|E-?mails?)\s*:",
+    r"(Document\s*(?:Number|No\.?|#)|Doc\.?\s*No\.?|Title|Date|Intent|Audience|Subgroup|"
+    r"Reply[- ]?to|Authors?|Editors?|Co-?authors?|Target|Project|"
+    r"E-?mails?|Issues?|Previous|Follow[- ]?up(?:\s+to)?|Source|Reference|Contributors?)\s*:",
+    re.IGNORECASE,
+)
+
+# Bare labels without colon (Scrivener-style PDFs place label alone on a line).
+_BARE_LABEL_RE = re.compile(
+    r"^(Document|Title|Date|Intent|Audience|Subgroup|Reply[- ]?to|Authors?|Editors?|"
+    r"Co-?authors?|Target|Project|Issues?|Previous|Follow[- ]?up|Contributors?)$",
     re.IGNORECASE,
 )
 
@@ -106,26 +127,74 @@ def _store_field(metadata: dict, label: str, value_lines: list[str]) -> None:
             metadata["document"] = m.group(1).upper()
     elif label_lower == "date":
         value = _clean(" ".join(value_lines))
-        m = DATE_RE.search(value)
-        if m:
-            metadata["date"] = m.group(0)
+        parsed = normalize_date(value)
+        if parsed:
+            metadata["date"] = parsed
+        else:
+            _log.debug("Date label found but could not parse: %r", value)
+    elif label_lower == "intent":
+        value = _clean(" ".join(value_lines)).lower()
+        if value:
+            metadata["intent"] = value
     elif label_lower in ("audience", "subgroup", "target"):
         value = _clean(" ".join(value_lines))
         if value:
-            metadata["audience"] = value
-    elif "reply" in label_lower or label_lower in ("author", "authors", "editor", "editors"):
+            # Strip author contamination: when the next line after audience
+            # has no label separator, its text (name + email) bleeds in.
+            # Truncate at angle bracket or email, then at double-space
+            # (indicates merged PDF lines where author name bled in).
+            angle_idx = value.find("<")
+            email_m = EMAIL_RE.search(value)
+            cut = None
+            if email_m:
+                cut = email_m.start()
+            if angle_idx >= 0 and (cut is None or angle_idx < cut):
+                cut = angle_idx
+            if cut is not None:
+                value = value[:cut].rstrip(" ,")
+            if "  " in value:
+                value = value.split("  ", 1)[0].rstrip(" ,")
+            if not value:
+                return
+            # Target is a fallback: only set audience when no explicit
+            # Audience/Subgroup field was already extracted.
+            if label_lower == "target" and "audience" in metadata:
+                pass
+            else:
+                metadata["audience"] = value
+    elif "reply" in label_lower or "author" in label_lower or label_lower in ("editor", "editors"):
+        is_explicit_reply_to = "reply" in label_lower
         authors = _parse_authors(value_lines)
         if authors:
-            existing = metadata.get("reply-to", [])
-            existing_has_emails = any(
-                "<" in e or "@" in e for e in existing
-            )
-            if existing and existing_has_emails:
+            # Track all author-like names for post-pass enrichment.
+            all_names = metadata.get("_author_names", [])
+            for a in authors:
+                if "<" not in a and "@" not in a and a not in all_names:
+                    all_names.append(a)
+            metadata["_author_names"] = all_names
+
+            if is_explicit_reply_to:
+                # Explicit Reply-to label: store directly, upgrading
+                # bare-name fallback entries with email-bearing ones.
+                existing = metadata.get("reply-to", [])
                 for entry in authors:
-                    if not _is_already_present(entry, existing):
+                    has_email = "<" in entry or "@" in entry
+                    upgraded = False
+                    if has_email:
+                        entry_name = entry.split("<")[0].strip()
+                        for idx, ex in enumerate(existing):
+                            ex_bare = "<" not in ex and "@" not in ex
+                            if ex_bare and ex.strip().lower() == entry_name.lower():
+                                existing[idx] = entry
+                                upgraded = True
+                                break
+                    if not upgraded and not _is_already_present(entry, existing):
                         existing.append(entry)
                 metadata["reply-to"] = existing
-            else:
+            elif "reply-to" not in metadata:
+                # Author/Editor/Co-author: only as fallback when no
+                # explicit Reply-to was extracted yet (aligns with
+                # HTML_ARCH "Reply-to wins" principle).
                 metadata["reply-to"] = authors
     elif label_lower in ("email", "emails", "e-mail"):
         raw = " ".join(value_lines)
@@ -180,7 +249,7 @@ def extract_metadata_from_blocks(blocks: list[Block],
     darkest color (secondary, via space-color proxy for Type 3 fonts).
 
     Returns (metadata_dict, consumed_block_indices).
-    Metadata dict keys: "title", "document", "date", "audience", "reply-to".
+    Metadata dict keys: "title", "document", "date", "intent", "audience", "reply-to".
     All keys are optional; only fields found in the PDF are included.
     "reply-to" value is a list of "Name <email>" strings.
     """
@@ -193,7 +262,11 @@ def extract_metadata_from_blocks(blocks: list[Block],
     for i, block in page0_blocks:
         if not block.lines:
             continue
-        has_label = any(_LABEL_RE.match(_strip_bullets(_clean(ln.text))) for ln in block.lines)
+        has_label = any(
+            _LABEL_RE.match(_strip_bullets(_clean(ln.text)))
+            or _BARE_LABEL_RE.match(_strip_bullets(_clean(ln.text)))
+            for ln in block.lines
+        )
         if has_label:
             break
         content_lines = [
@@ -210,7 +283,13 @@ def extract_metadata_from_blocks(blocks: list[Block],
         if not content_lines:
             continue
         joined = " ".join(content_lines)
-        if _NOT_A_TITLE.match(joined) or _BARE_DATE_RE.match(joined):
+        if _NOT_A_TITLE.match(joined):
+            continue
+        if _BARE_DATE_RE.match(joined):
+            parsed = normalize_date(joined)
+            if parsed and "date" not in metadata:
+                metadata["date"] = parsed
+                consumed.add(i)
             continue
         if block.font_size > 0:
             lightness = _lookup_lightness(text_colors, block.bbox[1])
@@ -220,7 +299,40 @@ def extract_metadata_from_blocks(blocks: list[Block],
     title_idx = None
     if pre_label_blocks:
         best = max(pre_label_blocks, key=lambda x: (x[1], -x[2]))
-        title_idx = (best[0], best[3])
+        best_pos = next(
+            i for i, e in enumerate(pre_label_blocks) if e is best
+        )
+        # Walk forward from best through contiguous pre-label blocks
+        # that share font size and lightness. Stop at the first block
+        # that fails any guard: digit-only, separator, section number,
+        # known section name, author name heuristic.
+        _CONT_TOL = 0.05
+        _LIGHT_TOL = 0.15
+        title_parts = [best[3]]
+        title_first_idx = best[0]
+        prev_block_idx = best[0]
+        for entry in pre_label_blocks[best_pos + 1:]:
+            if entry[0] != prev_block_idx + 1:
+                break
+            txt = entry[3].strip()
+            if not txt or txt.isdigit():
+                break
+            fs_ok = best[1] > 0 and abs(entry[1] - best[1]) / best[1] <= _CONT_TOL
+            light_ok = abs(entry[2] - best[2]) <= _LIGHT_TOL
+            if not (fs_ok and light_ok):
+                break
+            low = txt.lower().rstrip(":")
+            if low in _KNOWN_CONT_SKIP:
+                break
+            if _SECTION_NUM_LIKE.match(txt):
+                break
+            if _SEPARATOR_LINE.fullmatch(txt):
+                break
+            if _DOC_NO_LIKE.search(txt):
+                break
+            title_parts.append(txt)
+            prev_block_idx = entry[0]
+        title_idx = (title_first_idx, " ".join(title_parts))
         for entry in pre_label_blocks:
             consumed.add(entry[0])
 
@@ -239,12 +351,13 @@ def extract_metadata_from_blocks(blocks: list[Block],
 
             stripped_text = _strip_bullets(line_text)
             m = _LABEL_RE.match(stripped_text)
-            if not m:
+            bare_m = None if m else _BARE_LABEL_RE.match(stripped_text)
+            if not m and not bare_m:
                 continue
 
             found_any = True
-            label = m.group(1)
-            remainder = stripped_text[m.end():].strip()
+            label = m.group(1) if m else bare_m.group(1)
+            remainder = stripped_text[m.end():].strip() if m else ""
 
             value_lines = []
             if remainder:
@@ -252,7 +365,7 @@ def extract_metadata_from_blocks(blocks: list[Block],
 
             for vl in block.lines[li + 1:]:
                 vl_text = _strip_bullets(_clean(vl.text))
-                if _LABEL_RE.match(vl_text):
+                if _LABEL_RE.match(vl_text) or _BARE_LABEL_RE.match(vl_text):
                     break
                 value_lines.append(vl_text)
 
@@ -330,9 +443,11 @@ def extract_metadata_from_blocks(blocks: list[Block],
                 lt = _clean(ln.text)
                 if _LABEL_RE.match(lt):
                     continue
-                m = DATE_RE.search(lt)
-                if m and not _DOC_NUM_VALUE_RE.search(lt):
-                    metadata["date"] = m.group(0)
+                if _DOC_NUM_VALUE_RE.search(lt):
+                    continue
+                parsed = normalize_date(lt)
+                if parsed:
+                    metadata["date"] = parsed
                     break
             if "date" in metadata:
                 break
@@ -363,6 +478,35 @@ def extract_metadata_from_blocks(blocks: list[Block],
                     existing = metadata.get("reply-to", [])
                     if entry not in existing:
                         metadata["reply-to"] = existing + [entry]
+                    continue
+                deob_result = deobfuscate_email(lt)
+                if deob_result:
+                    deob_email, (match_start, _) = deob_result
+                    name = lt[:match_start].strip().rstrip(",").strip()
+                    entry = f"{name} <{deob_email}>" if name else f"<{deob_email}>"
+                    existing = metadata.get("reply-to", [])
+                    if entry not in existing:
+                        metadata["reply-to"] = existing + [entry]
+
+    # Post-pass: pair bare <email> entries with author names.  Name
+    # candidates come from _author_names (accumulated from Author/Editor
+    # labels) plus any bare names still in reply-to.
+    if "reply-to" in metadata:
+        all_names = metadata.pop("_author_names", [])
+        bare_in_rt = [
+            e for e in metadata["reply-to"]
+            if "<" not in e and "@" not in e
+        ]
+        candidates = list(all_names)
+        for n in bare_in_rt:
+            if n not in candidates:
+                candidates.append(n)
+        if candidates:
+            metadata["reply-to"] = enrich_reply_to_names(
+                metadata["reply-to"], candidates,
+            )
+    else:
+        metadata.pop("_author_names", None)
 
     if consumed:
         _log.debug("Extracted metadata: %s (consumed blocks %s)",
