@@ -6,7 +6,7 @@ import re
 from bs4 import BeautifulSoup, Tag
 
 from .. import (
-    DATE_RE, DOC_NUM_RE, EMAIL_RE, parse_author_lines,
+    DOC_NUM_RE, EMAIL_RE, parse_author_lines,
     deobfuscate_email, enrich_reply_to_names, normalize_date,
 )
 from ..similarity import fuzzy_match_label
@@ -744,7 +744,6 @@ def _extract_generic_metadata(soup: BeautifulSoup) -> dict:
                 flabel = _normalize_label(m_field.group(1))
                 fvalue = m_field.group(2).strip()
                 is_reply_pre = "reply" in flabel or "author" in flabel or "editor" in flabel
-                pre_current = "reply" if is_reply_pre else flabel
                 if "document" in flabel:
                     dm = DOC_NUM_RE.search(fvalue)
                     if dm and "document" not in metadata:
