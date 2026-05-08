@@ -9,7 +9,7 @@ import logging
 import re
 
 from .. import (
-    strip_format_chars, EMAIL_RE, DATE_RE, parse_author_lines,
+    strip_format_chars, EMAIL_RE, parse_author_lines,
     deobfuscate_email, enrich_reply_to_names, normalize_date,
 )
 from .types import Block
