@@ -9,7 +9,28 @@
 
 from __future__ import annotations
 
-from review.errors import ReviewError
+from review.errors import (
+    HookMismatchError,
+    MissingMetadataError,
+    PaperNotConvertedError,
+    PaperNotFoundError,
+    PromptFileError,
+    ReviewError,
+    StepError,
+    TransientStepError,
+    ValidationStepError,
+)
 from review.pipeline import review_paper
 
-__all__ = ["review_paper", "ReviewError"]
+__all__ = [
+    "review_paper",
+    "ReviewError",
+    "PaperNotFoundError",
+    "PaperNotConvertedError",
+    "PromptFileError",
+    "MissingMetadataError",
+    "HookMismatchError",
+    "StepError",
+    "TransientStepError",
+    "ValidationStepError",
+]

@@ -1,48 +1,118 @@
 # review - Agent Rules
 
-## What this is
+## Philosophy
 
-LLM-driven paper extraction pipeline for WG21 papers. Takes a paper ID,
-pulls markdown from paperstore, runs a multi-step extractor workflow via
-Pydantic AI + Anthropic, returns two bulleted question lists identifying
-unsupported claims.
+`extractor.md` is the upstream authority for pipeline structure. It
+defines the step sequence, step metadata (model slot, execution mode,
+reads, writes, tools, conditions), and all LLM-facing instructions.
+Python conforms to it.
+
+The lifecycle: human authors `extractor.orig.md` once, normalizer
+produces `extractor.md` once, frontier model generates Python once.
+From there, `extractor.md` and Python co-evolve. The system validates
+conformance at startup via `build_pipeline()`. When something drifts,
+the human opens `extractor.md` and fixes it. It is readable markdown.
+
+The `## Classes` section in `extractor.orig.md` was authored for the
+frontier model that generated the initial Python. It is removed from
+`extractor.md` because the Pydantic models in `models.py` are the sole
+schema authority at runtime (enforced via `output_type`).
 
 ## Layout
 
-- `extractor.md` - prompt document. Loaded whole at runtime, split on H2
-  headers by `parse.py`. All LLM-facing text lives here. Editing this
-  file changes the prompts without touching Python.
-- `parse.py` - **logically isolated, general-purpose** markdown section
-  splitter. Not specific to review, papers, or LLM pipelines.
-- `harness.py` - pure Python code harness: SourceLoc computation (bisect
-  on precomputed newline offsets), paper chunking, deterministic dedup
-  (tiers 0-1). No LLM, no paperstore imports, no network I/O.
-- `models.py` - Pydantic models for domain types, pre-loc types, per-step
-  outputs, and pipeline state.
-- `pipeline.py` - async `review_paper()` entry point with step-function
-  array and dispatch loop (rich progress).
-- `errors.py` - `ReviewError` exception.
+- `extractor.md` - prompt document and pipeline authority. Step metadata
+  (Model, Execution, Reads, Writes, Tools, Condition) is parsed by
+  `prompt.py` at startup. LLM-facing instructions are loaded as section
+  text. Editing this file changes prompts and pipeline config without
+  touching Python.
+- `prompt.py` - parses step metadata from `extractor.md` sections,
+  validates against registered hooks (bidirectional completeness),
+  builds the ordered `StepSpec` list. Raises `PromptFileError` subtypes
+  on structural mismatches.
+- `pipeline.py` - async orchestration: `StepContext`, hook registry
+  (`_HOOKS`), generic runner (`_run_agent`), dispatch loop, and the
+  public `review_paper()` entry point. Hooks are small prepare/extract
+  functions (~10-20 lines each).
+- `render.py` - rendering functions: `render_report` (final review),
+  `render_trace` (diagnostic trace), `render_debug_md` (LLM transcript).
+- `parse.py` - **domain-free** H2 markdown section splitter. No imports
+  from this package. No knowledge of steps, prompts, or pipelines.
+- `harness.py` - **pure Python** code harness: paper chunking,
+  SourceLoc computation, deterministic dedup (tiers 0-1), citation
+  extraction. No LLM, no paperstore imports, no network I/O.
+- `models.py` - Pydantic models for domain types, pre-loc types,
+  per-step outputs, and pipeline state. Sole schema authority.
+  `Field(description=...)` documents non-obvious semantics.
+- `errors.py` - error hierarchy. `PromptFileError` (user-fixable: edit
+  `extractor.md`), `StepError` (runtime: transient or validation).
+
+## Pipeline architecture
+
+Each step section in `extractor.md` declares structured metadata:
+
+```
+## Step 5 -- Verify + Deps + Map + Contradict
+
+- **Model:** default
+- **Execution:** main
+- **Reads:** claims, evidence
+- **Writes:** support_map, internal_contradictions
+```
+
+At startup, `prompt.py` parses this into `StepMeta` dataclasses and
+combines them with Python hooks from `_HOOKS` in `pipeline.py` to
+produce an ordered list of `StepSpec` instances. Steps are sorted by
+their numeric index, not by section position in the file.
+
+The generic runner (`_run_agent`) handles Agent construction, model slot
+lookup, usage limits, retries, retry-on-empty, tool registration, and
+debug logging. Tool registration is prompt-driven: the runner reads
+`meta.tools` and looks up each name in `ctx.tool_registry`.
+
+Bespoke hooks provide HOW: `prepare` formats state fields into the
+user message, `extract` stores the LLM output back into state. The
+prompt file provides WHAT: which model, which fields, which tools.
+
+## Error philosophy
+
+- `PromptFileError` (and subclasses `MissingMetadataError`,
+  `HookMismatchError`): user-fixable. Go edit `extractor.md`. The error
+  message names the step and the expected format.
+- `PaperNotFoundError`, `PaperNotConvertedError`: user-fixable. Run the
+  paperflow command in the error message.
+- `TransientStepError`: retryable. API timeout, rate limit, network.
+- `ValidationStepError`: pipeline bug. LLM output did not match schema.
+
+## Adding a step
+
+1. Add a `## Step N` section to `extractor.md` with the metadata block
+   (Model, Execution, Reads, Writes, and optionally Tools, Condition).
+2. Define a Pydantic output model in `models.py`.
+3. Write `_prepare_<name>` and `_extract_<name>` hooks in `pipeline.py`.
+4. Register in `_HOOKS` under the exact section header text.
+5. Add fields to `PipelineState` if the step writes new state.
 
 ## Invariants
 
+- **`extractor.md` is the authority.** Step metadata in `extractor.md`
+  drives model slot, execution mode, reads/writes, and tool
+  registration. Python conforms. `build_pipeline()` validates at startup.
 - **No hardcoded prompt strings.** All LLM-facing text comes from
-  `extractor.md` at runtime. Python code contains only structural strings
-  (section key names, field names, model slot keys, log messages, error
-  messages).
-- **`parse.py` is domain-free.** It accepts a `str | Path` and returns
-  `dict[str, str]`. No imports from this package or paperstore. No
-  knowledge of steps, prompts, or pipelines.
+  `extractor.md` at runtime.
+- **`parse.py` is domain-free.** No imports from this package or
+  paperstore.
 - **`harness.py` is pure Python.** No LLM calls, no paperstore imports,
   no network I/O. Deterministic functions only.
-- **Frozen domain models + model_copy.** Domain models (`Claim`,
-  `Evidence`, etc.) are `frozen=True`. Steps that need to update a field
-  (e.g., `merged_into`) use `model_copy(update=...)` and replace the list
-  wholesale on `PipelineState`.
+- **Frozen domain models + model_copy.** Domain models are
+  `frozen=True`. Steps that need to update a field use
+  `model_copy(update=...)`.
 - **Fully batch.** No interactive steps. No user identity.
 - **Paperstore is the only storage interface.** Never construct paths
   or write files directly.
-- **Three-way sync.** `extractor.md`, `models.py`, and `pipeline.py`
-  form a contract. When any one changes, the other two must be updated
-  in the same commit. Step section keys in `extractor.md` must match
-  `_STEPS` in `pipeline.py`. Domain model fields must match the Classes
-  section of `extractor.md`.
+- **Three-way sync.** `extractor.md` (metadata + instructions),
+  `models.py` (schema), and `pipeline.py` (hooks) form a contract.
+  When any one changes, the other two must be checked.
+- **No `default=str` in JSON serialization.** If pipeline state is not
+  cleanly serializable, that is a bug to fix, not a condition to mask.
+- **Library code uses `logging`, never `print()`.** No
+  `print(file=sys.stderr)` in any package except `cli`.

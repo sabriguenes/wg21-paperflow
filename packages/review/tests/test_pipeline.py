@@ -5,10 +5,10 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Tests for the extractor pipeline entry point.
+"""Tests for the extractor pipeline.
 
-Tests cover error paths, prompt loading, and structural correctness
-without hitting the LLM.
+Tests cover error paths, prompt loading, pure-Python step hooks, and
+structural correctness without hitting the LLM.
 """
 
 from __future__ import annotations
@@ -18,33 +18,42 @@ import pytest
 from paperstore.errors import MissingMetaError, MissingPaperMdError
 from paperstore.testing import store  # noqa: F401
 
-from review.errors import ReviewError
+from review.errors import PaperNotFoundError, PaperNotConvertedError
 from review.pipeline import (
     _load_paper,
+    _pure_read,
+    _pure_report,
+    _guard_web_search,
+    _guard_resolve,
     load_sections,
+    StepContext,
+)
+from review.models import (
+    Claim,
+    LoadBearingResult,
+    PipelineState,
+    SourceLoc,
+    SupportLink,
 )
 
 
-def test_paper_not_found_raises_review_error(store):  # noqa: F811
-    """get_meta raises MissingMetaError -> ReviewError with guidance."""
-    with pytest.raises(ReviewError, match="not found in paperstore") as exc_info:
+def test_paper_not_found_raises_specific_error(store):  # noqa: F811
+    with pytest.raises(PaperNotFoundError, match="not found in paperstore") as exc_info:
         _load_paper("P9999R0", store)
 
     assert isinstance(exc_info.value.__cause__, MissingMetaError)
 
 
-def test_paper_no_markdown_raises_review_error(store):  # noqa: F811
-    """Paper indexed but no markdown -> ReviewError with guidance."""
+def test_paper_no_markdown_raises_specific_error(store):  # noqa: F811
     store.upsert_year("2026", [{"paper_id": "P9999R0", "title": "Test"}])
 
-    with pytest.raises(ReviewError, match="no converted markdown") as exc_info:
+    with pytest.raises(PaperNotConvertedError, match="no converted markdown") as exc_info:
         _load_paper("P9999R0", store)
 
     assert isinstance(exc_info.value.__cause__, MissingPaperMdError)
 
 
 def test_load_paper_success(store):  # noqa: F811
-    """Paper with metadata and markdown loads successfully."""
     store.upsert_year("2026", [{"paper_id": "P9999R0", "title": "Test"}])
     store.write_paper_md("P9999R0", "# Test Paper\n\nContent.")
 
@@ -54,12 +63,75 @@ def test_load_paper_success(store):  # noqa: F811
 
 
 def test_load_sections_returns_system_prompt():
-    """Verify extractor.md has a System Prompt section."""
     secs = load_sections()
     assert "System Prompt" in secs
 
 
 def test_review_error_message_includes_pid(store):  # noqa: F811
-    """Error messages include the paper ID for actionability."""
-    with pytest.raises(ReviewError, match="P0001R0"):
+    with pytest.raises(PaperNotFoundError, match="P0001R0"):
         _load_paper("P0001R0", store)
+
+
+# -- Pure step hooks ---------------------------------------------------------
+
+
+def test_step0_read_chunks_and_citations():
+    import asyncio
+    state = PipelineState(paper_source="# Title\n\nSee P2300R10 for details.\n")
+    ctx = StepContext(sections={}, model_slots={})
+    asyncio.run(_pure_read(state, ctx))
+
+    assert state.chunks is not None
+    assert len(state.chunks) == 1
+    assert state.chunks[0].line_offset == 1
+    assert state.citations is not None
+    assert any(c.paper_id == "P2300R10" for c in state.citations)
+
+
+def _loc(line=1, start=0, end=10):
+    return SourceLoc(line=line, start_char=start, end_char=end)
+
+
+def test_step9_report_renders_unsupported():
+    import asyncio
+    state = PipelineState(
+        claims=[
+            Claim(loc=_loc(1), text="X is fast", original_quotes=["X is fast"],
+                  section="3", question="How fast is X?", depends_on=[]),
+        ],
+        support_map=[
+            SupportLink(claim_loc=_loc(1), evidence_locs=[], status="unsupported"),
+        ],
+    )
+    ctx = StepContext(sections={}, model_slots={}, pid="P0001R0")
+    asyncio.run(_pure_report(state, ctx))
+
+    assert state.report is not None
+    assert "X is fast" in state.report
+    assert "Unsupported Claims" in state.report
+
+
+# -- Guard hooks -------------------------------------------------------------
+
+
+def test_guard_web_search_skips_when_no_critical_gap():
+    state = PipelineState(
+        load_bearing_claims=[
+            LoadBearingResult(claim_loc=_loc(1), dependents=[], classification="anchored"),
+        ],
+    )
+    assert _guard_web_search(state) is False
+
+
+def test_guard_web_search_fires_on_critical_gap():
+    state = PipelineState(
+        load_bearing_claims=[
+            LoadBearingResult(claim_loc=_loc(1), dependents=[], classification="critical_gap"),
+        ],
+    )
+    assert _guard_web_search(state) is True
+
+
+def test_guard_resolve_skips_when_no_external():
+    state = PipelineState()
+    assert _guard_resolve(state) is False

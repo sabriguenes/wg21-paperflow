@@ -13,8 +13,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from review.errors import ReviewError
-
 _PREAMBLE_KEY = "_preamble"
 
 
@@ -34,12 +32,7 @@ def sections(source: str | Path) -> dict[str, str]:
     ``## `` (typically the H1 title, subtitle, mermaid diagram, etc.).
     """
     if isinstance(source, Path):
-        try:
-            text = source.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError) as exc:
-            raise ReviewError(
-                f"Failed to read markdown file '{source}': {exc}"
-            ) from exc
+        text = source.read_text(encoding="utf-8")
     else:
         text = source
 

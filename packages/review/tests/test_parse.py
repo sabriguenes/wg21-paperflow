@@ -128,3 +128,9 @@ def test_only_preamble():
     result = sections(md)
     assert result["_preamble"] == "# Title\n\nJust a title and text."
     assert len(result) == 1
+
+
+def test_missing_path_raises_os_error(tmp_path: Path):
+    missing = tmp_path / "does_not_exist.md"
+    with pytest.raises(FileNotFoundError):
+        sections(missing)
