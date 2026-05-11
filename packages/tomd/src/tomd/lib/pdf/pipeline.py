@@ -16,7 +16,7 @@ from .structure import compare_extractions, structure_sections
 from .table import detect_tables, exclude_table_regions
 from .wg21 import extract_metadata_from_blocks
 from .emit import emit_markdown, emit_prompts
-from .types import Section, SectionKind, is_readable
+from .types import KNOWN_SECTIONS, Section, SectionKind, is_readable
 from ..toc import find_toc_indices
 
 __all__ = ["convert_pdf", "PipelineResult"]
@@ -402,7 +402,6 @@ def _run_pipeline(path: Path) -> PipelineResult:
     _override_revision_from_filename(metadata, path)
 
     if not metadata.get("title"):
-        from .types import KNOWN_SECTIONS
         for sec in sections:
             if sec.kind == SectionKind.HEADING:
                 first_line = sec.text.split("\n")[0].strip().lstrip("# ").strip()
