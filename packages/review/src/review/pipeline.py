@@ -22,10 +22,16 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import (
+    ModelHTTPError,
+    UnexpectedModelBehavior,
+    UsageLimitExceeded,
+)
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 from paperstore.backend import PaperRow, StorageBackend
@@ -66,6 +72,7 @@ from review.prompt import StepHooks, StepSpec, build_pipeline
 from review.render import render_debug_md, render_report, render_trace
 
 if TYPE_CHECKING:
+    from reviewstore import ReviewStore
     from web_tools import WebResearcher
 
 logger = logging.getLogger(__name__)
@@ -86,6 +93,18 @@ _RETRIES_CHUNK = 5
 _RETRIES_SINGLE = 3
 _CLASSIFICATION_CRITICAL_GAP = "critical_gap"
 _RETRIES_EMPTY_OUTPUT = 3
+_DEBUG_SEPARATOR = "\n\n---\n\n"
+
+_STEP_0_READ = "Step 0 \u2014 Read"
+_STEP_1_EXTRACT_CLAIMS = "Step 1 \u2014 Extract Claims"
+_STEP_2_DEDUP_CLAIMS = "Step 2 \u2014 Dedup Claims"
+_STEP_3_EXTRACT_EVIDENCE = "Step 3 \u2014 Extract Evidence"
+_STEP_4_DEDUP_EVIDENCE = "Step 4 \u2014 Dedup Evidence"
+_STEP_5_VERIFY = "Step 5 \u2014 Verify + Deps + Map + Contradict"
+_STEP_6_LOAD_BEARING = "Step 6 \u2014 Load-Bearing"
+_STEP_7_WEB_SEARCH = "Step 7 \u2014 Web Search"
+_STEP_8_RESOLVE = "Step 8 \u2014 Resolve External"
+_STEP_9_REPORT = "Step 9 \u2014 Report"
 
 
 @dataclass
@@ -96,11 +115,11 @@ class StepContext:
     model_slots: dict[str, str]
     researcher: WebResearcher | None = None
     backend: StorageBackend | None = None
-    on_progress: ProgressCallback | None = None
     debug: bool = False
     pid: str = ""
     debug_log: list[str] | None = None
     tool_registry: dict[str, Callable[..., Any]] = field(default_factory=dict)
+    _current_spec: StepSpec | None = None
 
     def __post_init__(self) -> None:
         if self.debug and self.debug_log is None:
@@ -119,29 +138,11 @@ def load_sections() -> dict[str, str]:
         ) from exc
 
 
-def _load_paper(pid: str, backend: StorageBackend) -> tuple[PaperRow, str]:
-    """Load paper metadata and markdown."""
-    try:
-        meta = backend.get_meta(pid)
-    except MissingMetaError as exc:
-        raise PaperNotFoundError(
-            f"Paper '{pid}' not found in paperstore. "
-            f"Run 'paperflow mailing <year>' to index it, "
-            f"then 'paperflow download {pid}' to stage its source."
-        ) from exc
-
-    try:
-        paper_md = backend.get_paper_md(pid)
-    except MissingPaperMdError as exc:
-        raise PaperNotConvertedError(
-            f"Paper '{pid}' has no converted markdown. "
-            f"Run 'paperflow convert {pid}' first."
-        ) from exc
-
-    return meta, paper_md
-
-
 # -- Generic runner -----------------------------------------------------------
+
+
+_TRANSIENT_EXCEPTIONS = (ModelHTTPError,)
+_VALIDATION_EXCEPTIONS = (UnexpectedModelBehavior, UsageLimitExceeded)
 
 
 async def _run_agent(
@@ -159,10 +160,12 @@ async def _run_agent(
     """
     system = ctx.sections.get(_SECTION_SYSTEM_PROMPT, "")
     model_slot = spec.meta.model_slot
-    model = ctx.model_slots.get(model_slot, _DEFAULT_MODEL_SLOTS.get(model_slot, model_slot))
+    resolved = ctx.model_slots.get(model_slot)
+    if resolved is None:
+        resolved = _DEFAULT_MODEL_SLOTS.get(model_slot, model_slot)
 
     agent: Agent[None, Any] = Agent(
-        model=model,
+        model=resolved,
         output_type=spec.hooks.output_type or str,
         system_prompt=system,
         retries=retries,
@@ -185,6 +188,8 @@ async def _run_agent(
         result = await agent.run(
             user_msg, usage_limits=UsageLimits(request_limit=request_limit),
         )
+    except (*_TRANSIENT_EXCEPTIONS, *_VALIDATION_EXCEPTIONS, StepError, PromptFileError):
+        raise
     except Exception as exc:
         _classify_and_raise(exc, spec)
 
@@ -232,10 +237,9 @@ def _wrap_tool_debug(fn: Callable[..., Any], name: str) -> Callable[..., Any]:
 
 def _classify_and_raise(exc: Exception, spec: StepSpec) -> None:
     """Wrap a pydantic-ai exception into the appropriate StepError subclass."""
-    exc_type = type(exc).__name__
-    if exc_type in ("ModelHTTPError", "ModelAPIError"):
+    if isinstance(exc, _TRANSIENT_EXCEPTIONS):
         raise TransientStepError(spec.meta.number, spec.meta.name, exc) from exc
-    if exc_type in ("UnexpectedModelBehavior", "UsageLimitExceeded"):
+    if isinstance(exc, _VALIDATION_EXCEPTIONS):
         raise ValidationStepError(spec.meta.number, spec.meta.name, exc) from exc
     raise StepError(spec.meta.number, spec.meta.name, exc) from exc
 
@@ -244,7 +248,7 @@ def _classify_and_raise(exc: Exception, spec: StepSpec) -> None:
 
 
 def _prepare_claims_chunk(state: PipelineState, ctx: StepContext, chunk: Chunk) -> str:
-    prompt_body = ctx.sections.get("Step 1 \u2014 Extract Claims", "")
+    prompt_body = ctx.sections.get(_STEP_1_EXTRACT_CLAIMS, "")
     return (
         f"## Chunk\n\n{number_lines(chunk)}\n\n"
         f"## Instructions\n\n{prompt_body}"
@@ -252,7 +256,7 @@ def _prepare_claims_chunk(state: PipelineState, ctx: StepContext, chunk: Chunk) 
 
 
 def _prepare_evidence_chunk(state: PipelineState, ctx: StepContext, chunk: Chunk) -> str:
-    prompt_body = ctx.sections.get("Step 3 \u2014 Extract Evidence", "")
+    prompt_body = ctx.sections.get(_STEP_3_EXTRACT_EVIDENCE, "")
     return (
         f"## Chunk\n\n{number_lines(chunk)}\n\n"
         f"## Instructions\n\n{prompt_body}"
@@ -262,7 +266,7 @@ def _prepare_evidence_chunk(state: PipelineState, ctx: StepContext, chunk: Chunk
 def _prepare_dedup_claims(state: PipelineState, ctx: StepContext) -> str:
     assert state.claims is not None
     survivors = [c for c in state.claims if c.merged_into is None]
-    prompt_body = ctx.sections.get("Step 2 \u2014 Dedup Claims", "")
+    prompt_body = ctx.sections.get(_STEP_2_DEDUP_CLAIMS, "")
     survivor_questions = json.dumps(
         [{"idx": i, "question": s.question} for i, s in enumerate(survivors)],
         ensure_ascii=False,
@@ -276,7 +280,7 @@ def _prepare_dedup_claims(state: PipelineState, ctx: StepContext) -> str:
 def _prepare_dedup_evidence(state: PipelineState, ctx: StepContext) -> str:
     assert state.evidence is not None
     survivors = [e for e in state.evidence if e.merged_into is None]
-    prompt_body = ctx.sections.get("Step 4 \u2014 Dedup Evidence", "")
+    prompt_body = ctx.sections.get(_STEP_4_DEDUP_EVIDENCE, "")
     survivor_supports = json.dumps(
         [{"idx": i, "supports": s.supports} for i, s in enumerate(survivors)],
         ensure_ascii=False,
@@ -289,7 +293,7 @@ def _prepare_dedup_evidence(state: PipelineState, ctx: StepContext) -> str:
 
 def _prepare_verify(state: PipelineState, ctx: StepContext) -> str:
     assert state.claims is not None and state.evidence is not None
-    prompt_body = ctx.sections.get("Step 5 \u2014 Verify + Deps + Map + Contradict", "")
+    prompt_body = ctx.sections.get(_STEP_5_VERIFY, "")
     claims_json = json.dumps(
         [c.model_dump() for c in state.claims if c.merged_into is None],
         ensure_ascii=False,
@@ -307,7 +311,7 @@ def _prepare_verify(state: PipelineState, ctx: StepContext) -> str:
 
 def _prepare_load_bearing(state: PipelineState, ctx: StepContext) -> str:
     assert state.claims is not None and state.support_map is not None
-    prompt_body = ctx.sections.get("Step 6 \u2014 Load-Bearing", "")
+    prompt_body = ctx.sections.get(_STEP_6_LOAD_BEARING, "")
     claims_json = json.dumps(
         [c.model_dump() for c in state.claims if c.merged_into is None],
         ensure_ascii=False,
@@ -330,7 +334,7 @@ def _prepare_load_bearing(state: PipelineState, ctx: StepContext) -> str:
 
 def _prepare_web_search(state: PipelineState, ctx: StepContext) -> str:
     assert state.claims is not None and state.load_bearing_claims is not None
-    prompt_body = ctx.sections.get("Step 7 \u2014 Web Search", "")
+    prompt_body = ctx.sections.get(_STEP_7_WEB_SEARCH, "")
     triggered = [
         lb for lb in state.load_bearing_claims
         if lb.classification == _CLASSIFICATION_CRITICAL_GAP
@@ -352,7 +356,7 @@ def _prepare_web_search(state: PipelineState, ctx: StepContext) -> str:
 
 def _prepare_resolve(state: PipelineState, ctx: StepContext) -> str:
     assert state.load_bearing_claims is not None and state.claims is not None
-    prompt_body = ctx.sections.get("Step 8 \u2014 Resolve External", "")
+    prompt_body = ctx.sections.get(_STEP_8_RESOLVE, "")
     return (
         f"## Load-Bearing Claims\n\n"
         f"{json.dumps([lb.model_dump() for lb in state.load_bearing_claims], ensure_ascii=False)}\n\n"
@@ -495,10 +499,10 @@ async def _pure_dedup_claims(state: PipelineState, ctx: StepContext) -> None:
     if len(survivors) <= 1:
         return
 
-    spec = ctx._current_spec  # type: ignore[attr-defined]
+    assert ctx._current_spec is not None
     user_msg = _prepare_dedup_claims(state, ctx)
     result = await _run_agent_with_retry(
-        ctx, spec, user_msg,
+        ctx, ctx._current_spec, user_msg,
         request_limit=_REQUEST_LIMIT_DEDUP,
     )
     _extract_dedup_claims(state, result.output)
@@ -515,10 +519,10 @@ async def _pure_dedup_evidence(state: PipelineState, ctx: StepContext) -> None:
     if len(survivors) <= 1:
         return
 
-    spec = ctx._current_spec  # type: ignore[attr-defined]
+    assert ctx._current_spec is not None
     user_msg = _prepare_dedup_evidence(state, ctx)
     result = await _run_agent_with_retry(
-        ctx, spec, user_msg,
+        ctx, ctx._current_spec, user_msg,
         request_limit=_REQUEST_LIMIT_DEDUP,
     )
     _extract_dedup_evidence(state, result.output)
@@ -526,7 +530,7 @@ async def _pure_dedup_evidence(state: PipelineState, ctx: StepContext) -> None:
 
 async def _pure_report(state: PipelineState, ctx: StepContext) -> None:
     assert state.claims is not None
-    meta = ctx.backend.get_meta(ctx.pid) if ctx.backend else {}
+    meta = await asyncio.to_thread(ctx.backend.get_meta, ctx.pid) if ctx.backend else {}
     title = meta.get("title", "Untitled")
     state.report = render_report(state, ctx.pid, title)
 
@@ -551,9 +555,9 @@ def _guard_resolve(state: PipelineState) -> bool:
 
 # Step names must match exactly the ## headers in extractor.md.
 _HOOKS: dict[str, StepHooks] = {
-    "Step 0 \u2014 Read": StepHooks(pure=_pure_read),
+    _STEP_0_READ: StepHooks(pure=_pure_read),
 
-    "Step 1 \u2014 Extract Claims": StepHooks(
+    _STEP_1_EXTRACT_CLAIMS: StepHooks(
         output_type=ExtractClaimsOutput,
         prepare=_prepare_claims_chunk,
         extract=_extract_claims,
@@ -561,12 +565,12 @@ _HOOKS: dict[str, StepHooks] = {
         parallel=True,
     ),
 
-    "Step 2 \u2014 Dedup Claims": StepHooks(
+    _STEP_2_DEDUP_CLAIMS: StepHooks(
         output_type=DedupGroupingOutput,
         pure=_pure_dedup_claims,
     ),
 
-    "Step 3 \u2014 Extract Evidence": StepHooks(
+    _STEP_3_EXTRACT_EVIDENCE: StepHooks(
         output_type=ExtractEvidenceOutput,
         prepare=_prepare_evidence_chunk,
         extract=_extract_evidence,
@@ -574,38 +578,38 @@ _HOOKS: dict[str, StepHooks] = {
         parallel=True,
     ),
 
-    "Step 4 \u2014 Dedup Evidence": StepHooks(
+    _STEP_4_DEDUP_EVIDENCE: StepHooks(
         output_type=DedupGroupingOutput,
         pure=_pure_dedup_evidence,
     ),
 
-    "Step 5 \u2014 Verify + Deps + Map + Contradict": StepHooks(
+    _STEP_5_VERIFY: StepHooks(
         output_type=VerifyOutput,
         prepare=_prepare_verify,
         extract=_extract_verify,
     ),
 
-    "Step 6 \u2014 Load-Bearing": StepHooks(
+    _STEP_6_LOAD_BEARING: StepHooks(
         output_type=LoadBearingOutput,
         prepare=_prepare_load_bearing,
         extract=_extract_load_bearing,
     ),
 
-    "Step 7 \u2014 Web Search": StepHooks(
+    _STEP_7_WEB_SEARCH: StepHooks(
         output_type=WebSearchOutput,
         prepare=_prepare_web_search,
         extract=_extract_web_search,
         guard=_guard_web_search,
     ),
 
-    "Step 8 \u2014 Resolve External": StepHooks(
+    _STEP_8_RESOLVE: StepHooks(
         output_type=ResolveOutput,
         prepare=_prepare_resolve,
         extract=_extract_resolve,
         guard=_guard_resolve,
     ),
 
-    "Step 9 \u2014 Report": StepHooks(pure=_pure_report),
+    _STEP_9_REPORT: StepHooks(pure=_pure_report),
 }
 
 
@@ -637,8 +641,7 @@ async def _dispatch(
     *,
     stop_after: int | None = None,
     on_progress: ProgressCallback | None = None,
-    debug_path: Any = None,
-    rstore: Any = None,
+    rstore: ReviewStore | None = None,
     pid: str = "",
 ) -> None:
     """Execute the pipeline step by step."""
@@ -657,7 +660,7 @@ async def _dispatch(
             continue
 
         logger.info("Step %d: %s", i, spec.meta.name)
-        ctx._current_spec = spec  # type: ignore[attr-defined]
+        ctx._current_spec = spec
 
         try:
             if spec.hooks.pure:
@@ -679,11 +682,6 @@ async def _dispatch(
                 "Step %d (%s) failed: %s", i, spec.meta.name, exc, exc_info=True,
             )
             raise StepError(i, spec.meta.name, exc) from exc
-        finally:
-            if ctx.debug and ctx.debug_log and debug_path:
-                debug_path.write_text(
-                    "\n\n---\n\n".join(ctx.debug_log), encoding="utf-8",
-                )
 
         if rstore is not None:
             if i == 0 and state.citations:
@@ -692,6 +690,8 @@ async def _dispatch(
                 rstore.store_claims(pid, state.claims)
             elif i == 4 and state.evidence:
                 rstore.store_evidence(pid, state.evidence)
+            elif i == 5 and state.support_map and state.claims:
+                rstore.store_questions(pid, state.claims, state.support_map)
             elif i == 7 and state.external_evidence:
                 rstore.store_external_citations(pid, state.external_evidence)
 
@@ -749,7 +749,23 @@ async def review_paper(
 
     pipeline = build_pipeline(secs, _HOOKS)
 
-    meta, paper_md = _load_paper(pid, backend)
+    try:
+        meta = backend.get_meta(pid)
+    except MissingMetaError as exc:
+        raise PaperNotFoundError(
+            f"Paper '{pid}' not found in paperstore. "
+            f"Run 'paperflow mailing <year>' to index it, "
+            f"then 'paperflow download {pid}' to stage its source."
+        ) from exc
+
+    try:
+        paper_md = backend.get_paper_md(pid)
+    except MissingPaperMdError as exc:
+        raise PaperNotConvertedError(
+            f"Paper '{pid}' has no converted markdown. "
+            f"Run 'paperflow convert {pid}' first."
+        ) from exc
+
     backend.clear_review(pid)
 
     state = PipelineState(paper_source=paper_md)
@@ -771,7 +787,6 @@ async def review_paper(
             model_slots=slots,
             researcher=researcher,
             backend=backend,
-            on_progress=on_progress,
             debug=debug,
             pid=pid,
             tool_registry=tool_reg,
@@ -786,14 +801,13 @@ async def review_paper(
                 pipeline, state, ctx,
                 stop_after=stop_after,
                 on_progress=on_progress,
-                debug_path=debug_path,
                 rstore=rstore,
                 pid=pid,
             )
         finally:
             if debug and ctx.debug_log:
                 debug_path.write_text(
-                    "\n\n---\n\n".join(ctx.debug_log), encoding="utf-8",
+                    _DEBUG_SEPARATOR.join(ctx.debug_log), encoding="utf-8",
                 )
             rstore.close()
 

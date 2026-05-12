@@ -14,6 +14,7 @@ from reviewstore.models import (
     EvidenceRow,
     ExternalCitationRow,
     PaperCitationRow,
+    QuestionRow,
 )
 from reviewstore.store import ReviewStore
 
@@ -23,4 +24,5 @@ __all__ = [
     "EvidenceRow",
     "PaperCitationRow",
     "ExternalCitationRow",
+    "QuestionRow",
 ]

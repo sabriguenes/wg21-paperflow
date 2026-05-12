@@ -59,3 +59,11 @@ class ExternalCitationRow:
     text: str
     finding: str
     stance: str
+
+
+@dataclass(frozen=True)
+class QuestionRow:
+    paper_id: str
+    claim_text: str
+    section: str
+    question: str
