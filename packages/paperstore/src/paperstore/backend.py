@@ -80,6 +80,11 @@ class PaperRow(TypedDict):
 
 class StorageBackend(ABC):
 
+    @property
+    @abstractmethod
+    def workspace_dir(self) -> Path:
+        """Root directory of the workspace (used by ReviewStore, tools, etc.)."""
+
     # ---- year-based mailing index -----------------------------------------
 
     @abstractmethod

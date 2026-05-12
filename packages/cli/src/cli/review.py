@@ -53,6 +53,7 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
                     on_progress=on_progress,
                     stop_after=stop_after,
                     debug=args.debug,
+                    trace=getattr(args, "trace", False),
                 )
             )
         except ReviewError as exc:

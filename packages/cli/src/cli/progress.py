@@ -57,7 +57,6 @@ def make_progress_handler(
         MofNCompleteColumn(),
         TimeElapsedColumn(),
         console=console,
-        transient=True,
     )
     task_id: int | None = None
 

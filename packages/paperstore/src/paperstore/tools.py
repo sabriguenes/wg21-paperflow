@@ -90,7 +90,7 @@ class PaperstoreTools:
         content. Only files under the paperstore workspace directory can
         be read. offset is 1-based; limit is the max number of lines.
         """
-        workspace = self._backend.workspace_dir  # type: ignore[attr-defined]
+        workspace = self._backend.workspace_dir
         try:
             resolved = Path(path).resolve()
         except (OSError, ValueError) as exc:

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from collections.abc import Mapping
 from typing import Any
 
 from review.models import PipelineState
@@ -163,7 +164,7 @@ def render_report(state: PipelineState, pid: str, title: str) -> str:
     return "\n".join(lines)
 
 
-def render_trace(state: PipelineState, meta: dict, stop_step: int) -> str:
+def render_trace(state: PipelineState, meta: Mapping[str, Any], stop_step: int) -> str:
     """Render a diagnostic trace of pipeline state up to stop_step."""
     title = meta.get("title", "Untitled")
     pid = meta.get("paper_id", "")
@@ -239,44 +240,48 @@ def render_trace(state: PipelineState, meta: dict, stop_step: int) -> str:
                 lines.append(f'   - Supports: "{supports_str}"')
         lines.append("")
 
+    claims = state.claims or []
+    evidence = state.evidence or []
+
+    def _claim_text(loc: Any) -> str:
+        for c in claims:
+            if c.loc == loc and c.merged_into is None:
+                return c.text
+        return f"(loc {loc.line}:{loc.start_char})"
+
+    def _ev_text(loc: Any) -> str:
+        for e in evidence:
+            if e.loc == loc and e.merged_into is None:
+                return e.text
+        return f"(loc {loc.line}:{loc.start_char})"
+
     if stop_step >= 5:
         lines.append("## 5. Verify + Deps + Map\n")
         smap = state.support_map or []
-        claims = state.claims or []
-        evidence = state.evidence or []
-
-        def _claim_text(loc: Any) -> str:
-            for c in claims:
-                if c.loc == loc and c.merged_into is None:
-                    return c.text
-            return f"(loc {loc.line}:{loc.start_char})"
-
-        def _ev_text(loc: Any) -> str:
-            for e in evidence:
-                if e.loc == loc and e.merged_into is None:
-                    return e.text
-            return f"(loc {loc.line}:{loc.start_char})"
 
         directly = [s for s in smap if s.status == "directly_supported"]
         transitively = [s for s in smap if s.status == "transitively_supported"]
         unsupported = [s for s in smap if s.status == "unsupported"]
         contras = state.internal_contradictions or []
 
-        lines.append(f"### Internal Contradictions ({len(contras)})\n")
-        for ic in contras:
-            lines.append(f'- Claim: "{_claim_text(ic.claim_loc)}"')
-            lines.append(f'  - Contradicted by: "{_ev_text(ic.evidence_loc)}"')
-        lines.append("")
+        if contras:
+            lines.append(f"### Internal Contradictions ({len(contras)})\n")
+            for ic in contras:
+                lines.append(f'- Claim: "{_claim_text(ic.claim_loc)}"')
+                lines.append(f'  - Contradicted by: "{_ev_text(ic.evidence_loc)}"')
+            lines.append("")
 
-        lines.append(f"### Unsupported ({len(unsupported)})\n")
-        for s in unsupported:
-            lines.append(f'- "{_claim_text(s.claim_loc)}"')
-        lines.append("")
+        if unsupported:
+            lines.append(f"### Unsupported ({len(unsupported)})\n")
+            for s in unsupported:
+                lines.append(f'- "{_claim_text(s.claim_loc)}"')
+            lines.append("")
 
-        lines.append(f"### Transitively Supported ({len(transitively)})\n")
-        for s in transitively:
-            lines.append(f'- "{_claim_text(s.claim_loc)}"')
-        lines.append("")
+        if transitively:
+            lines.append(f"### Transitively Supported ({len(transitively)})\n")
+            for s in transitively:
+                lines.append(f'- "{_claim_text(s.claim_loc)}"')
+            lines.append("")
 
         lines.append(f"### Directly Supported ({len(directly)})\n")
         for s in directly:
@@ -289,9 +294,14 @@ def render_trace(state: PipelineState, meta: dict, stop_step: int) -> str:
         lines.append("## 6. Load-Bearing\n")
         lb = state.load_bearing_claims or []
         if lb:
-            counts = Counter(item.classification for item in lb)
-            for cls, n in counts.most_common():
-                lines.append(f"- {cls}: {n}")
+            by_cls: dict[str, list[Any]] = {}
+            for item in lb:
+                by_cls.setdefault(item.classification, []).append(item)
+            for cls, items in sorted(by_cls.items(), key=lambda kv: -len(kv[1])):
+                lines.append(f"### {cls} ({len(items)})\n")
+                for item in items:
+                    lines.append(f'- "{_claim_text(item.claim_loc)}"')
+                lines.append("")
         else:
             lines.append("No classifications.")
         lines.append("")
@@ -301,14 +311,21 @@ def render_trace(state: PipelineState, meta: dict, stop_step: int) -> str:
         ext = state.external_evidence or []
         lines.append(f"{len(ext)} external evidence items found:\n")
         for ex in ext[:10]:
-            lines.append(f"- [{ex.source_title}]({ex.source_url}) -- {ex.stance}")
+            lines.append(f"- [{ex.source_title}]({ex.source_url}) — {ex.stance}")
             lines.append(f"  - {ex.finding}")
         lines.append("")
 
     if stop_step >= 8:
         lines.append("## 8. Resolve External\n")
         resolutions = state.web_resolutions or []
-        lines.append(f"{len(resolutions)} resolutions applied.\n")
+        if resolutions:
+            lines.append(f"{len(resolutions)} resolutions applied:\n")
+            for wr in resolutions:
+                lines.append(f"- [{wr.finding}]({wr.source_url}) — {wr.stance}")
+                for cl in wr.resolved_claims:
+                    lines.append(f"  - Resolved: \"{_claim_text(cl)}\"")
+        else:
+            lines.append("No resolutions.")
         lines.append("")
 
     return "\n".join(lines)

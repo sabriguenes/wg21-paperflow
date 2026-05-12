@@ -26,8 +26,9 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
-from paperstore.backend import StorageBackend
+from paperstore.backend import PaperRow, StorageBackend
 from paperstore.progress import ProgressCallback, ProgressEvent
 from paperstore.errors import MissingMetaError, MissingPaperMdError
 
@@ -76,7 +77,7 @@ _DEFAULT_MODEL_SLOTS = {
     "default": "anthropic:claude-opus-4-6",
 }
 
-_DEFAULT_MODEL_SETTINGS = {"max_tokens": 80000}
+_DEFAULT_MODEL_SETTINGS = ModelSettings(max_tokens=80000)
 
 _SECTION_SYSTEM_PROMPT = "System Prompt"
 _REQUEST_LIMIT = 500
@@ -118,7 +119,7 @@ def load_sections() -> dict[str, str]:
         ) from exc
 
 
-def _load_paper(pid: str, backend: StorageBackend) -> tuple[dict, str]:
+def _load_paper(pid: str, backend: StorageBackend) -> tuple[PaperRow, str]:
     """Load paper metadata and markdown."""
     try:
         meta = backend.get_meta(pid)
@@ -162,7 +163,7 @@ async def _run_agent(
 
     agent: Agent[None, Any] = Agent(
         model=model,
-        output_type=spec.hooks.output_type,
+        output_type=spec.hooks.output_type or str,
         system_prompt=system,
         retries=retries,
         model_settings=_DEFAULT_MODEL_SETTINGS,
@@ -694,6 +695,11 @@ async def _dispatch(
             elif i == 7 and state.external_evidence:
                 rstore.store_external_citations(pid, state.external_evidence)
 
+    if on_progress is not None:
+        on_progress(ProgressEvent(
+            step=total, total=total, name="done", pct=1.0,
+        ))
+
 
 # -- Public API ---------------------------------------------------------------
 
@@ -706,6 +712,7 @@ async def review_paper(
     on_progress: ProgressCallback | None = None,
     stop_after: int | None = None,
     debug: bool = False,
+    trace: bool = False,
 ) -> str:
     """Extract structural questions from a WG21 paper.
 
@@ -719,6 +726,10 @@ async def review_paper(
 
     Pass ``debug=True`` to write a single markdown transcript of every
     LLM interaction to paperstore as ``<pid>.debug.md``.
+
+    Pass ``trace=True`` to write a pipeline state summary to
+    ``<pid>.trace.md`` alongside the review. Shows intermediate state
+    at every step (claims, evidence, support map, etc.).
 
     Raises :class:`PromptFileError` if ``extractor.md`` has structural
     problems. Raises :class:`PaperNotFoundError` or
@@ -788,5 +799,12 @@ async def review_paper(
 
     if stop_after is not None:
         return render_trace(state, meta, stop_after)
+
+    if trace:
+        last_step = len(pipeline) - 1
+        trace_path = backend.get_paper_md_path(pid).with_suffix(".trace.md")
+        trace_path.write_text(
+            render_trace(state, meta, last_step), encoding="utf-8",
+        )
 
     return state.report or ""
