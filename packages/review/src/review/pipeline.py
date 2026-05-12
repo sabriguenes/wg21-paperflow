@@ -22,7 +22,6 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel
@@ -34,7 +33,7 @@ from pydantic_ai.exceptions import (
 )
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
-from paperstore.backend import PaperRow, StorageBackend
+from paperstore.backend import StorageBackend
 from paperstore.progress import ProgressCallback, ProgressEvent
 from paperstore.errors import MissingMetaError, MissingPaperMdError
 
