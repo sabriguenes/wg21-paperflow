@@ -231,7 +231,10 @@ def _wrap_tool_debug(fn: Callable[..., Any], name: str) -> Callable[..., Any]:
             [f"{k}={repr(v)}" for k, v in kwargs.items()]
         )
         logger.debug("[tool] %s(%s)", name, args_str)
-        return await fn(*args, **kwargs)
+        result = fn(*args, **kwargs)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
     return wrapper
 
 
@@ -684,15 +687,16 @@ async def _dispatch(
             raise StepError(i, spec.meta.name, exc) from exc
 
         if rstore is not None:
-            if i == 0 and state.citations:
+            step_name = spec.meta.name
+            if step_name == _STEP_0_READ and state.citations:
                 rstore.store_paper_citations(pid, state.citations)
-            elif i == 2 and state.claims:
+            elif step_name == _STEP_2_DEDUP_CLAIMS and state.claims:
                 rstore.store_claims(pid, state.claims)
-            elif i == 4 and state.evidence:
+            elif step_name == _STEP_4_DEDUP_EVIDENCE and state.evidence:
                 rstore.store_evidence(pid, state.evidence)
-            elif i == 5 and state.support_map and state.claims:
+            elif step_name == _STEP_5_VERIFY and state.support_map and state.claims:
                 rstore.store_questions(pid, state.claims, state.support_map)
-            elif i == 7 and state.external_evidence:
+            elif step_name == _STEP_7_WEB_SEARCH and state.external_evidence:
                 rstore.store_external_citations(pid, state.external_evidence)
 
     if on_progress is not None:

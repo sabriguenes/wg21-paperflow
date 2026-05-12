@@ -209,14 +209,16 @@ def dedup_tier1(items: list[T]) -> list[T]:
             if i == j or result[idx_b].merged_into is not None:
                 continue
             if a.text in b.text and a.text != b.text:
-                merged_quotes = list(b.original_quotes) + list(a.original_quotes)
-                result[idx_b] = b.model_copy(update={"original_quotes": merged_quotes})
-                result[idx_a] = a.model_copy(update={"merged_into": b.loc})
+                cur_b = result[idx_b]
+                merged_quotes = list(cur_b.original_quotes) + list(a.original_quotes)
+                result[idx_b] = cur_b.model_copy(update={"original_quotes": merged_quotes})
+                result[idx_a] = a.model_copy(update={"merged_into": cur_b.loc})
                 break
             elif b.text in a.text and a.text != b.text:
-                merged_quotes = list(a.original_quotes) + list(b.original_quotes)
-                result[idx_a] = a.model_copy(update={"original_quotes": merged_quotes})
-                result[idx_b] = b.model_copy(update={"merged_into": a.loc})
+                cur_a = result[idx_a]
+                merged_quotes = list(cur_a.original_quotes) + list(b.original_quotes)
+                result[idx_a] = cur_a.model_copy(update={"original_quotes": merged_quotes})
+                result[idx_b] = b.model_copy(update={"merged_into": cur_a.loc})
 
     return result
 
