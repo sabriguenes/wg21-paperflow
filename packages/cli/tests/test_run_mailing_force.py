@@ -39,7 +39,7 @@ def test_run_mailing_skips_past_indexed_year_by_default(tmp_path: Path) -> None:
     fetch.assert_not_called()
     assert result["skipped"] == ["2024"]
     assert result["succeeded"] == []
-    assert store.list_papers_for_year("2024")[0]["title"] == "Original Title"
+    assert store.list_papers_for_year("2024")[0].title == "Original Title"
 
 
 def test_run_mailing_force_bypasses_skip_and_updates_metadata(tmp_path: Path) -> None:
@@ -57,7 +57,7 @@ def test_run_mailing_force_bypasses_skip_and_updates_metadata(tmp_path: Path) ->
     assert result["skipped"] == []
     assert result["succeeded"] == [{"year": "2024", "papers": 1}]
     # Metadata refreshed; row count unchanged.
-    assert store.list_papers_for_year("2024")[0]["title"] == "Refreshed Title"
+    assert store.list_papers_for_year("2024")[0].title == "Refreshed Title"
 
 
 def test_run_mailing_force_preserves_source_and_markdown_paths(
@@ -70,8 +70,8 @@ def test_run_mailing_force_preserves_source_and_markdown_paths(
     store.write_paper_md("P1000R0", "# converted body")
 
     before = store.list_papers_for_year("2024")[0]
-    assert before["source_file"]
-    assert before["markdown_path"]
+    assert before.source_file
+    assert before.markdown_path
 
     with patch("mailing.scrape.fetch_all_mailings_for_year", side_effect=_fake_fetch):
         asyncio.run(
@@ -79,9 +79,9 @@ def test_run_mailing_force_preserves_source_and_markdown_paths(
         )
 
     after = store.list_papers_for_year("2024")[0]
-    assert after["source_file"] == before["source_file"]
-    assert after["markdown_path"] == before["markdown_path"]
-    assert after["title"] == "Refreshed Title"
+    assert after.source_file == before.source_file
+    assert after.markdown_path == before.markdown_path
+    assert after.title == "Refreshed Title"
 
 
 def test_run_mailing_current_year_always_refetches(tmp_path: Path) -> None:

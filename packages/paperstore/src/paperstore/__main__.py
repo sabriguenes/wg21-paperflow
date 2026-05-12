@@ -42,8 +42,8 @@ def _cmd_show_year(backend: SqliteBackend, year: str) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     for row in rows:
-        pid = row.get("paper_id", "?")
-        title = row.get("title", "")
+        pid = row.paper_id
+        title = row.title
         print(f"{pid}\t{title}")
     return 0
 
@@ -71,7 +71,7 @@ def _cmd_ls_papers(backend: SqliteBackend, year: str | None) -> int:
         except MissingMailingIndexError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
-        ids = [row["paper_id"].upper() for row in rows]
+        ids = [row.paper_id.upper() for row in rows]
     else:
         ids = backend.list_all_paper_ids()
 

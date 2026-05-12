@@ -23,8 +23,20 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
+
+from paperstore.extract_rows import (
+    CaputCausaeRow,
+    CitationAuditRow,
+    ClaimRow,
+    EvidenceRow,
+    ExternalCitationRow,
+    MarkerRow,
+    PaperCitationRow,
+    QuestionRow,
+)
 
 
 def parse_authors_raw(raw: str | list) -> list[str]:
@@ -55,27 +67,28 @@ def parse_authors_raw(raw: str | list) -> list[str]:
     return [a.strip() for a in raw.split(",") if a.strip()]
 
 
-class PaperRow(TypedDict):
-    """Typed dict for a paper row returned by storage backend read methods.
+@dataclass(frozen=True)
+class PaperRow:
+    """Immutable record for a paper row returned by storage backend read methods.
 
     ``authors`` is always a ``list[str]`` (deserialized from JSON or
     comma-separated storage). ``source_file`` and ``markdown_path`` are
     empty strings when the corresponding artifact has not been staged.
     """
 
-    paper_id: str
-    year: str
-    title: str
-    authors: list[str]
-    target_group: str
-    intent: str
-    url: str
-    document_date: str
-    mailing_date: str
-    source_file: str
-    markdown_path: str
-    review_path: str
-    line_count: int
+    paper_id: str = ""
+    year: str = ""
+    title: str = ""
+    authors: list[str] = field(default_factory=list)
+    target_group: str = ""
+    intent: str = ""
+    url: str = ""
+    document_date: str = ""
+    mailing_date: str = ""
+    source_file: str = ""
+    markdown_path: str = ""
+    review_path: str = ""
+    line_count: int = 0
 
 
 class StorageBackend(ABC):
@@ -83,7 +96,7 @@ class StorageBackend(ABC):
     @property
     @abstractmethod
     def workspace_dir(self) -> Path:
-        """Root directory of the workspace (used by ReviewStore, tools, etc.)."""
+        """Root directory of the workspace (used by ExtractStore, tools, etc.)."""
 
     # ---- year-based mailing index -----------------------------------------
 
@@ -244,3 +257,75 @@ class StorageBackend(ABC):
     @abstractmethod
     def list_years(self) -> list[tuple[str, int]]:
         """Return ``[(year, paper_count)]`` sorted by year."""
+
+    @abstractmethod
+    def list_papers_since(self, month: str) -> list[PaperRow]:
+        """Return papers where ``mailing_date`` >= ``month``."""
+
+    # ---- extract writes ---------------------------------------------------
+
+    @abstractmethod
+    def store_claims(self, paper_id: str, claims) -> None:
+        """Replace all claims for ``paper_id``."""
+
+    @abstractmethod
+    def store_evidence(self, paper_id: str, evidence) -> None:
+        """Replace all evidence for ``paper_id``."""
+
+    @abstractmethod
+    def store_paper_citations(self, paper_id: str, citations) -> None:
+        """Replace paper citations for ``paper_id``."""
+
+    @abstractmethod
+    def store_external_citations(self, paper_id: str, externals) -> None:
+        """Replace external citations for ``paper_id``."""
+
+    @abstractmethod
+    def store_questions(self, paper_id: str, claims, support_map) -> None:
+        """Store questions for unsupported claims of ``paper_id``."""
+
+    @abstractmethod
+    def store_markers(self, paper_id: str, markers) -> None:
+        """Replace rhetorical markers for ``paper_id``."""
+
+    @abstractmethod
+    def store_caput_causae(self, paper_id: str, thesis: str) -> None:
+        """Store or replace the caput causae thesis for ``paper_id``."""
+
+    @abstractmethod
+    def store_citation_audit(self, paper_id: str, audits) -> None:
+        """Replace citation audit entries for ``paper_id``."""
+
+    # ---- extract reads ----------------------------------------------------
+
+    @abstractmethod
+    def get_claims(self, paper_id: str) -> list[ClaimRow]:
+        """Return all claims for ``paper_id``."""
+
+    @abstractmethod
+    def get_evidence(self, paper_id: str) -> list[EvidenceRow]:
+        """Return all evidence for ``paper_id``."""
+
+    @abstractmethod
+    def get_paper_citations(self, paper_id: str) -> list[PaperCitationRow]:
+        """Return all paper citations for ``paper_id``."""
+
+    @abstractmethod
+    def get_external_citations(self, paper_id: str) -> list[ExternalCitationRow]:
+        """Return all external citations for ``paper_id``."""
+
+    @abstractmethod
+    def get_questions(self, paper_id: str) -> list[QuestionRow]:
+        """Return all questions for ``paper_id``."""
+
+    @abstractmethod
+    def get_markers(self, paper_id: str) -> list[MarkerRow]:
+        """Return all rhetorical markers for ``paper_id``."""
+
+    @abstractmethod
+    def get_caput_causae(self, paper_id: str) -> CaputCausaeRow | None:
+        """Return the caput causae for ``paper_id``, or None."""
+
+    @abstractmethod
+    def get_citation_audit(self, paper_id: str) -> list[CitationAuditRow]:
+        """Return all citation audit entries for ``paper_id``."""

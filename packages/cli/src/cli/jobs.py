@@ -164,6 +164,15 @@ async def run_mailing(
             logger.exception("Failed to fetch year %s", year)
             failed.append({"year": year, "error": str(exc)})
 
+    if on_progress is not None:
+        try:
+            on_progress(ProgressEvent(
+                step=total_years, total=total_years,
+                name="done", pct=1.0,
+            ))
+        except Exception:
+            pass
+
     return {"succeeded": succeeded, "skipped": skipped, "failed": failed}
 
 
@@ -193,22 +202,22 @@ async def run_download(
 
     # Apply idempotency filter via SQL-equivalent: exclude already-downloaded.
     if not force:
-        to_process = [p for p in all_papers if not p.get("source_file")]
+        to_process = [p for p in all_papers if not p.source_file]
     else:
-        to_process = [p for p in all_papers if p.get("url")]
+        to_process = [p for p in all_papers if p.url]
 
     total = len(to_process)
     semaphore = asyncio.Semaphore(concurrency)
 
     async with default_client() as http:
 
-        async def _one(paper: dict) -> dict:
-            pid = paper["paper_id"]
-            url = paper.get("url", "")
+        async def _one(paper: PaperRow) -> dict:
+            pid = paper.paper_id
+            url = paper.url
             if not url:
                 return {"paper_id": pid, "status": "skipped", "reason": "no_url"}
             async with semaphore:
-                if verify and paper.get("source_file"):
+                if verify and paper.source_file:
                     cl = await content_length(url, client=http)
                     if cl is not None:
                         try:
@@ -237,11 +246,11 @@ async def run_download(
         tasks = [asyncio.create_task(_one(p)) for p in to_process]
         succeeded = []
         failed = []
-        to_process_ids = {p["paper_id"] for p in to_process}
+        to_process_ids = {p.paper_id for p in to_process}
         skipped_papers = [
-            {"paper_id": p["paper_id"],
-             "reason": "no_url" if not p.get("url") else "already_staged"}
-            for p in all_papers if p["paper_id"] not in to_process_ids
+            {"paper_id": p.paper_id,
+             "reason": "no_url" if not p.url else "already_staged"}
+            for p in all_papers if p.paper_id not in to_process_ids
         ]
 
         completed = 0
@@ -301,31 +310,31 @@ async def run_convert(
 
     if not force:
         to_process = [p for p in all_papers
-                      if p.get("source_file") and not p.get("markdown_path")]
+                      if p.source_file and not p.markdown_path]
     else:
-        to_process = [p for p in all_papers if p.get("source_file")]
+        to_process = [p for p in all_papers if p.source_file]
 
     total = len(to_process)
     semaphore = asyncio.Semaphore(concurrency)
 
     def _make_paper(row: PaperRow) -> Paper:
-        authors = parse_authors_raw(row.get("authors") or [])
+        authors = parse_authors_raw(row.authors or [])
         return Paper(
-            document_id=row["paper_id"],
-            year=row.get("year", ""),
-            title=row.get("title", ""),
+            document_id=row.paper_id,
+            year=row.year,
+            title=row.title,
             authors=authors,
-            mailing_date=row.get("mailing_date", ""),
-            document_date=row.get("document_date", ""),
-            audience=row.get("target_group", ""),
-            intent=row.get("intent", ""),
-            url=row.get("url", ""),
-            source_file=row.get("source_file", ""),
-            markdown_path=row.get("markdown_path", ""),
+            mailing_date=row.mailing_date,
+            document_date=row.document_date,
+            audience=row.target_group,
+            intent=row.intent,
+            url=row.url,
+            source_file=row.source_file,
+            markdown_path=row.markdown_path,
         )
 
-    async def _one(paper_row: dict) -> dict:
-        pid = paper_row["paper_id"]
+    async def _one(paper_row: PaperRow) -> dict:
+        pid = paper_row.paper_id
         async with semaphore:
             try:
                 paper = _make_paper(paper_row)
@@ -355,9 +364,9 @@ async def run_convert(
     tasks = [asyncio.create_task(_one(p)) for p in to_process]
     succeeded = []
     failed = []
-    to_process_ids = {p["paper_id"] for p in to_process}
-    skipped = [{"paper_id": p["paper_id"], "reason": "already_converted"}
-               for p in all_papers if p["paper_id"] not in to_process_ids]
+    to_process_ids = {p.paper_id for p in to_process}
+    skipped = [{"paper_id": p.paper_id, "reason": "already_converted"}
+               for p in all_papers if p.paper_id not in to_process_ids]
 
     completed = 0
     for coro in asyncio.as_completed(tasks):
@@ -414,7 +423,7 @@ def run_qa(
     items: list[tuple[str, str]] = []
     skipped: list[dict] = []
     for row in rows:
-        pid = row["paper_id"]
+        pid = row.paper_id
         try:
             md = backend.get_paper_md(pid)
         except MissingPaperMdError:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -63,7 +64,7 @@ def test_put_source_and_get_source_path(store: SqliteBackend, tmp_path: Path):
 def test_put_source_updates_source_file_in_db(store: SqliteBackend):
     path = store.put_source("P1", b"x", suffix=".pdf")
     meta = store.get_meta("P1")
-    assert meta["source_file"] == str(path)
+    assert meta.source_file == str(path)
 
 
 def test_put_source_overwrites_existing(store: SqliteBackend):
@@ -91,7 +92,7 @@ def test_get_paper_md_missing_raises(store: SqliteBackend):
 def test_write_paper_md_updates_markdown_path(store: SqliteBackend):
     path = store.write_paper_md("P1", "content")
     meta = store.get_meta("P1")
-    assert meta["markdown_path"] == str(path)
+    assert meta.markdown_path == str(path)
 
 
 def test_write_intermediate(store: SqliteBackend, tmp_path: Path):
@@ -109,7 +110,7 @@ def test_upsert_year_and_list_papers(store: SqliteBackend):
     ]
     store.upsert_year("2026", papers)
     rows = store.list_papers_for_year("2026")
-    ids = {r["paper_id"] for r in rows}
+    ids = {r.paper_id for r in rows}
     assert ids == {"P1", "P2"}
 
 
@@ -119,7 +120,7 @@ def test_upsert_year_preserves_source_file(store: SqliteBackend):
     source_path = store.put_source("P1", b"bytes", suffix=".pdf")
     store.upsert_year("2026", [{"paper_id": "P1", "title": "Updated"}])
     meta = store.get_meta("P1")
-    assert meta["source_file"] == str(source_path)
+    assert meta.source_file == str(source_path)
 
 
 def test_close_is_idempotent(tmp_path: Path):
@@ -293,7 +294,7 @@ def test_resolve_year_for_paper_hit(store: SqliteBackend):
     assert result is not None
     year, row = result
     assert year == "2026"
-    assert row["url"] == "https://example.com/p1.pdf"
+    assert row.url == "https://example.com/p1.pdf"
 
 
 def test_resolve_year_for_paper_miss(store: SqliteBackend):
@@ -314,7 +315,7 @@ def test_get_meta_missing_raises(store: SqliteBackend):
 def test_authors_roundtrip_as_list(store: SqliteBackend):
     store.upsert_year("2026", [{"paper_id": "P1", "authors": ["Alice", "Bob"]}])
     meta = store.get_meta("P1")
-    assert meta["authors"] == ["Alice", "Bob"]
+    assert meta.authors == ["Alice", "Bob"]
 
 
 def test_list_years(store: SqliteBackend):
@@ -335,7 +336,7 @@ def test_write_review_md(store: SqliteBackend):
     assert path.name == "p1000r0.review.md"
     assert path.read_text(encoding="utf-8") == "# Review\n\nContent."
     meta = store.get_meta("P1000R0")
-    assert meta["review_path"] == str(path)
+    assert meta.review_path == str(path)
 
 
 def test_get_review_path(store: SqliteBackend):
@@ -387,4 +388,116 @@ def test_reconcile_finds_review_files(store: SqliteBackend):
     counts = store.reconcile()
     assert counts["reviews"] == 1
     meta = store.get_meta("P1000R0")
-    assert meta["review_path"] == str(review_path)
+    assert meta.review_path == str(review_path)
+
+
+# ---- extract store/get round-trips ----------------------------------------
+
+
+def _make_loc(line=1, start_char=0, end_char=10):
+    return SimpleNamespace(line=line, start_char=start_char, end_char=end_char)
+
+
+def _make_claim(text="test claim", section="intro", question="why?", line=1):
+    return SimpleNamespace(
+        loc=_make_loc(line=line),
+        text=text,
+        section=section,
+        question=question,
+        merged_into=None,
+        original_quotes=[text],
+        depends_on=[],
+    )
+
+
+def _make_marker(text="however", section="intro", marker_type="hedge",
+                 target="claim", intensity="low", line=5):
+    return SimpleNamespace(
+        loc=_make_loc(line=line),
+        text=text,
+        section=section,
+        marker_type=marker_type,
+        target=target,
+        intensity=intensity,
+    )
+
+
+def _make_paper_citation(paper_id="P2000R0", count=3):
+    return SimpleNamespace(paper_id=paper_id, count=count)
+
+
+def test_store_and_get_claims(store: SqliteBackend):
+    claims = [
+        _make_claim(text="claim A", section="intro", question="why A?", line=1),
+        _make_claim(text="claim B", section="design", question="why B?", line=10),
+    ]
+    store.store_claims("P1", claims)
+    rows = store.get_claims("P1")
+    assert len(rows) == 2
+    assert rows[0].text == "claim A"
+    assert rows[0].section == "intro"
+    assert rows[0].question == "why A?"
+    assert rows[0].loc_line == 1
+    assert rows[0].loc_start == 0
+    assert rows[0].loc_end == 10
+    assert rows[0].merged_into_line is None
+    assert rows[1].text == "claim B"
+    assert rows[1].section == "design"
+
+
+def test_store_and_get_markers(store: SqliteBackend):
+    markers = [
+        _make_marker(text="however", marker_type="hedge", target="claim",
+                     intensity="low", line=5),
+        _make_marker(text="clearly", marker_type="booster", target="evidence",
+                     intensity="high", line=12),
+    ]
+    store.store_markers("P1", markers)
+    rows = store.get_markers("P1")
+    assert len(rows) == 2
+    assert rows[0].text == "however"
+    assert rows[0].marker_type == "hedge"
+    assert rows[0].target == "claim"
+    assert rows[0].intensity == "low"
+    assert rows[0].loc_line == 5
+    assert rows[1].text == "clearly"
+    assert rows[1].marker_type == "booster"
+    assert rows[1].intensity == "high"
+
+
+def test_store_and_get_paper_citations(store: SqliteBackend):
+    cites = [
+        _make_paper_citation("P2000R0", 5),
+        _make_paper_citation("P3000R1", 2),
+    ]
+    store.store_paper_citations("P1", cites)
+    rows = store.get_paper_citations("P1")
+    assert len(rows) == 2
+    assert rows[0].cited_paper_id == "P2000R0"
+    assert rows[0].count == 5
+    assert rows[1].cited_paper_id == "P3000R1"
+    assert rows[1].count == 2
+
+
+def test_store_replaces_previous(store: SqliteBackend):
+    store.store_claims("P1", [_make_claim(text="old")])
+    assert len(store.get_claims("P1")) == 1
+
+    store.store_claims("P1", [_make_claim(text="new A", line=2), _make_claim(text="new B", line=3)])
+    rows = store.get_claims("P1")
+    assert len(rows) == 2
+    texts = {r.text for r in rows}
+    assert texts == {"new A", "new B"}
+
+
+def test_list_papers_since(store: SqliteBackend):
+    store.upsert_year("2026", [
+        {"paper_id": "P1", "title": "Jan", "mailing_date": "2026-01"},
+        {"paper_id": "P2", "title": "Feb", "mailing_date": "2026-02"},
+        {"paper_id": "P3", "title": "Mar", "mailing_date": "2026-03"},
+        {"paper_id": "P4", "title": "Apr", "mailing_date": "2026-04"},
+    ])
+    rows = store.list_papers_since("2026-03")
+    ids = {r.paper_id for r in rows}
+    assert ids == {"P3", "P4"}
+    assert all(r.mailing_date >= "2026-03" for r in rows)

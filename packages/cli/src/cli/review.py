@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 import sys
 
 import pydantic_ai.exceptions
 
 from paperstore.backend import StorageBackend
+
+_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 def _resolve_pid(target: str, backend: StorageBackend) -> str:
@@ -31,17 +34,41 @@ def _resolve_pid(target: str, backend: StorageBackend) -> str:
 
     result = backend.resolve_year_for_paper(pid)
     if result is not None:
-        return result[1]["paper_id"]
+        return result[1].paper_id
 
     return pid
 
 
 def command(args: argparse.Namespace, backend: StorageBackend) -> int:
-    from review import ReviewError, review_paper
+    from review import ReviewError, review_paper, review_since
     from cli.progress import make_progress_handler
 
-    pid = _resolve_pid(args.targets[0], backend)
-    stop_after = args.stop_after
+    target = args.targets[0]
+
+    trace = args.trace is not None
+    stop_after = args.trace if args.trace is not None and args.trace >= 0 else None
+
+    if _MONTH_RE.match(target):
+        progress_ctx, on_progress = make_progress_handler("Batch review")
+        with progress_ctx:
+            results = asyncio.run(
+                review_since(
+                    target, backend,
+                    on_progress=on_progress,
+                    debug=args.debug,
+                    trace=trace,
+                )
+            )
+
+        ok = sum(1 for r in results if r["status"] == "ok")
+        failed = sum(1 for r in results if r["status"] == "error")
+        print(f"Batch review: {ok} succeeded, {failed} failed out of {len(results)} papers")
+        for r in results:
+            if r["status"] == "error":
+                print(f"  FAILED: {r['paper_id']}: {r['error']}", file=sys.stderr)
+        return 1 if failed else 0
+
+    pid = _resolve_pid(target, backend)
 
     progress_ctx, on_progress = make_progress_handler("Extracting")
 
@@ -53,7 +80,7 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
                     on_progress=on_progress,
                     stop_after=stop_after,
                     debug=args.debug,
-                    trace=getattr(args, "trace", False),
+                    trace=trace,
                 )
             )
         except ReviewError as exc:

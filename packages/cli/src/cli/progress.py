@@ -45,6 +45,7 @@ def make_progress_handler(
         TextColumn,
         TimeElapsedColumn,
     )
+    from rich.table import Column
 
     console = Console(stderr=True)
     if not console.is_terminal:
@@ -52,7 +53,7 @@ def make_progress_handler(
 
     progress = Progress(
         SpinnerColumn(style="green"),
-        TextColumn("[bold]{task.description}"),
+        TextColumn("[bold]{task.description}", table_column=Column(min_width=8)),
         BarColumn(complete_style="green", finished_style="bold green"),
         MofNCompleteColumn(),
         TimeElapsedColumn(),

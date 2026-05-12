@@ -19,6 +19,16 @@ from paperstore.errors import (
     MissingSourceError,
     PaperstoreError,
 )
+from paperstore.extract_rows import (
+    CaputCausaeRow,
+    CitationAuditRow,
+    ClaimRow,
+    EvidenceRow,
+    ExternalCitationRow,
+    MarkerRow,
+    PaperCitationRow,
+    QuestionRow,
+)
 from paperstore.factory import WORKSPACE_ENV_VAR, default_workspace_dir, from_uri
 from paperstore.progress import ProgressCallback as ProgressCallback
 from paperstore.progress import ProgressEvent as ProgressEvent
@@ -43,4 +53,12 @@ __all__ = [
     "WORKSPACE_ENV_VAR",
     "ProgressCallback",
     "ProgressEvent",
+    "CaputCausaeRow",
+    "CitationAuditRow",
+    "ClaimRow",
+    "EvidenceRow",
+    "ExternalCitationRow",
+    "MarkerRow",
+    "PaperCitationRow",
+    "QuestionRow",
 ]

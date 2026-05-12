@@ -20,10 +20,11 @@ from review.errors import (
     TransientStepError,
     ValidationStepError,
 )
-from review.pipeline import review_paper
+from review.pipeline import review_paper, review_since
 
 __all__ = [
     "review_paper",
+    "review_since",
     "ReviewError",
     "PaperNotFoundError",
     "PaperNotConvertedError",

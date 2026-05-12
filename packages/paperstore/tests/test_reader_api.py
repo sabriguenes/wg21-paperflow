@@ -39,7 +39,7 @@ def test_get_source_path_missing_raises(tmp_path: Path):
 def test_get_meta_from_upserted_row(tmp_path: Path):
     store = SqliteBackend(tmp_path)
     store.upsert_year("2026", [{"paper_id": "P1", "title": "from mailing"}])
-    assert store.get_meta("P1")["title"] == "from mailing"
+    assert store.get_meta("P1").title == "from mailing"
 
 
 def test_get_meta_missing_raises(tmp_path: Path):
@@ -73,7 +73,7 @@ def test_list_papers_for_year_roundtrip_and_missing(tmp_path: Path):
     store = SqliteBackend(tmp_path)
     store.upsert_year("2026", [{"paper_id": "P1"}])
     rows = store.list_papers_for_year("2026")
-    assert [r["paper_id"] for r in rows] == ["P1"]
+    assert [r.paper_id for r in rows] == ["P1"]
     with pytest.raises(MissingMailingIndexError):
         store.list_papers_for_year("9999")
 

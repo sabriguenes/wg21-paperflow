@@ -27,8 +27,8 @@ def test_resolve_hit(tmp_path: Path):
     assert result is not None
     year, row = result
     assert year == "2026"
-    assert row["paper_id"] == "P3000R5"
-    assert row["url"] == "https://example.com/p3000r5.pdf"
+    assert row.paper_id == "P3000R5"
+    assert row.url == "https://example.com/p3000r5.pdf"
 
 
 def test_resolve_case_insensitive(tmp_path: Path):

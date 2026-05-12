@@ -65,7 +65,7 @@ _VERB_TARGETS_HELP = {
     "download": 'Year (2026), paper id(s) (P3642R4 ...), or "all".',
     "convert":  'Year (2026), paper id(s) (P3642R4 ...), or "all".',
     "full":     'Year (2026), paper id(s) (P3642R4 ...), or "all".',
-    "review":   "Paper ID to review (e.g. P4003R2, p4003r2).",
+    "review":   "Paper ID (P4003R2) or year-month (2026-01) for batch review.",
 }
 
 _COMMANDS = {
@@ -82,7 +82,7 @@ _VERB_FLAGS: dict[str, set[str]] = {
     "convert":  {"force", "concurrency", "no_prompts", "qa", "qa_json",
                  "workers", "timeout"},
     "full":     {"force", "verify", "concurrency"},
-    "review":   {"stop_after", "dump_steps", "debug", "trace"},
+    "review":   {"debug", "trace"},
 }
 
 _FLAG_DEFS: list[dict] = [
@@ -104,21 +104,16 @@ _FLAG_DEFS: list[dict] = [
          metavar="N", help="QA parallelism."),
     dict(name="timeout", flags=["--timeout"], type=int, default=None,
          metavar="SEC", help="QA straggler timeout in seconds."),
-    dict(name="stop_after", flags=["--stop-after"], type=int, default=None,
-         metavar="N",
-         help="Run steps 0..N then dump the output and exit (debugging)."),
-    dict(name="dump_steps", flags=["--dump-steps"], action="store_true",
-         default=False,
-         help="Print each step's structured output as JSON after completion."),
     dict(name="debug", flags=["--debug"], action="store_true",
          default=False,
          help="Write full LLM transcripts per step to paperstore as a single .debug.md file."),
-    dict(name="trace", flags=["--trace"], action="store_true",
-         default=False,
-         help="Write a pipeline state trace to .trace.md alongside the review."),
+    dict(name="trace", flags=["--trace"], type=int, nargs="?",
+         const=-1, default=None, metavar="N",
+         help="Write pipeline state trace to .trace.md. With N, stop after step N."),
 ]
 
 _PAPER_ID_RE = re.compile(r"^[PND]\d{3,5}(R\d+)?$", re.IGNORECASE)
+_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 _EPILOG = """\
 Examples:
@@ -128,6 +123,7 @@ Examples:
   paperflow convert all            convert all staged-but-not-converted
   paperflow full all               full pipeline for all pending work
   paperflow review P4003R2         LLM-driven paper review
+  paperflow review 2026-01         batch review papers from Jan 2026 onward
 """
 
 
@@ -142,16 +138,18 @@ def _add_flags(p: argparse.ArgumentParser, verb: str) -> None:
 
 
 def _classify_target(t: str) -> str:
-    """Return 'paper', 'year', 'all', or raise ValueError."""
+    """Return 'paper', 'year', 'month', 'all', or raise ValueError."""
     if t.lower() == "all":
         return "all"
     if _PAPER_ID_RE.match(t):
         return "paper"
     if t.isdigit() and len(t) == 4 and int(t) >= 2011:
         return "year"
+    if _MONTH_RE.match(t):
+        return "month"
     raise ValueError(
         f"Unrecognized target {t!r}. "
-        "Expected a paper ID (P4003R2), year (2026), or 'all'."
+        "Expected a paper ID (P4003R2), year (2026), year-month (2026-01), or 'all'."
     )
 
 
@@ -181,13 +179,13 @@ def _validate_targets(verb: str, targets: list[str]) -> None:
     if verb == "review":
         if "year" in kinds or "all" in kinds:
             print(
-                "paperflow review: accepts exactly one paper ID, not years or 'all'.",
+                "paperflow review: accepts a paper ID or year-month, not years or 'all'.",
                 file=sys.stderr,
             )
             sys.exit(1)
         if len(targets) != 1:
             print(
-                f"paperflow review: accepts exactly one paper ID, got {len(targets)}.",
+                f"paperflow review: accepts exactly one target, got {len(targets)}.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -257,9 +255,7 @@ def main() -> int:
 
     for verb, mod in _COMMANDS.items():
         nargs = "*" if verb == "mailing" else "+"
-        metavar = "YEAR_OR_ALL" if verb == "mailing" else (
-            "PAPER_ID" if verb == "review" else "TARGET"
-        )
+        metavar = "YEAR_OR_ALL" if verb == "mailing" else "TARGET"
         p = subparsers.add_parser(
             verb,
             help=_VERB_HELP[verb],

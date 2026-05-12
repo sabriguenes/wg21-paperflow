@@ -203,7 +203,11 @@ def _normalize_front_matter(md: str, mailing_meta: dict | None) -> str:
             is_override = yaml_key in _OVERRIDE_KEYS
             if yaml_key in present and not is_override:
                 continue
-            val = mailing_meta.get(src_key)
+            val = (
+                mailing_meta.get(src_key)
+                if isinstance(mailing_meta, dict)
+                else getattr(mailing_meta, src_key, None)
+            )
             if val in (None, "", []):
                 continue
             if yaml_key == "date":

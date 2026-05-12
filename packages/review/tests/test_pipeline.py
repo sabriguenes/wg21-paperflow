@@ -24,12 +24,15 @@ from review.pipeline import (
     _pure_report,
     _guard_web_search,
     _guard_resolve,
+    _guard_verify_citations,
+    _guard_caput_causae,
     load_sections,
     review_paper,
     StepContext,
 )
 from review.models import (
     Claim,
+    ExternalEvidence,
     LoadBearingResult,
     PipelineState,
     SourceLoc,
@@ -63,7 +66,7 @@ def test_load_paper_success(store):  # noqa: F811
 
     meta = store.get_meta("P9999R0")
     paper_md = store.get_paper_md("P9999R0")
-    assert meta["paper_id"] == "P9999R0"
+    assert meta.paper_id == "P9999R0"
     assert "Content." in paper_md
 
 
@@ -99,7 +102,7 @@ def _loc(line=1, start=0, end=10):
     return SourceLoc(line=line, start_char=start, end_char=end)
 
 
-def test_step9_report_renders_unsupported():
+def test_step13_report_renders_unsupported():
     import asyncio
     state = PipelineState(
         claims=[
@@ -114,7 +117,7 @@ def test_step9_report_renders_unsupported():
     asyncio.run(_pure_report(state, ctx))
 
     assert state.report is not None
-    assert "X is fast" in state.report
+    assert "How fast is X?" in state.report
     assert "Unsupported Claims" in state.report
 
 
@@ -137,6 +140,51 @@ def test_guard_web_search_fires_on_critical_gap():
         ],
     )
     assert _guard_web_search(state) is True
+
+
+def test_guard_web_search_skips_when_citation_evidence_covers_gap():
+    state = PipelineState(
+        load_bearing_claims=[
+            LoadBearingResult(claim_loc=_loc(1), dependents=[], classification="critical_gap"),
+        ],
+        external_evidence=[
+            ExternalEvidence(
+                claim_loc=_loc(1), source_url="https://example.com",
+                source_title="Ex", text="passage", finding="confirmed",
+                stance="supports", quantitative=False, cited=True,
+                verifiable=True, normative=False,
+            ),
+        ],
+    )
+    assert _guard_web_search(state) is False
+
+
+def test_guard_verify_citations_skips_when_no_citations():
+    state = PipelineState(citations=None)
+    assert _guard_verify_citations(state) is False
+
+
+def test_guard_verify_citations_skips_when_empty():
+    state = PipelineState(citations=[])
+    assert _guard_verify_citations(state) is False
+
+
+def test_guard_caput_causae_skips_when_no_anchored():
+    state = PipelineState(
+        load_bearing_claims=[
+            LoadBearingResult(claim_loc=_loc(1), dependents=[], classification="critical_gap"),
+        ],
+    )
+    assert _guard_caput_causae(state) is False
+
+
+def test_guard_caput_causae_fires_when_anchored():
+    state = PipelineState(
+        load_bearing_claims=[
+            LoadBearingResult(claim_loc=_loc(1), dependents=[], classification="anchored"),
+        ],
+    )
+    assert _guard_caput_causae(state) is True
 
 
 def test_guard_resolve_skips_when_no_external():

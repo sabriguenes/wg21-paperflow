@@ -28,6 +28,16 @@ from pathlib import Path
 from typing import Any
 
 from paperstore.backend import PaperRow, StorageBackend, parse_authors_raw
+from paperstore.extract_rows import (
+    CaputCausaeRow,
+    CitationAuditRow,
+    ClaimRow,
+    EvidenceRow,
+    ExternalCitationRow,
+    MarkerRow,
+    PaperCitationRow,
+    QuestionRow,
+)
 from paperstore.errors import (
     MissingMailingIndexError,
     MissingMetaError,
@@ -58,6 +68,94 @@ CREATE TABLE IF NOT EXISTS years (
     added  TEXT DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS claims (
+    paper_id         TEXT NOT NULL,
+    loc_line         INTEGER NOT NULL,
+    loc_start        INTEGER NOT NULL,
+    loc_end          INTEGER NOT NULL,
+    text             TEXT NOT NULL,
+    section          TEXT DEFAULT '',
+    question         TEXT DEFAULT '',
+    kind             TEXT DEFAULT 'normative',
+    merged_into_line INTEGER,
+    merged_into_start INTEGER,
+    merged_into_end  INTEGER,
+    PRIMARY KEY (paper_id, loc_line, loc_start, loc_end)
+);
+
+CREATE TABLE IF NOT EXISTS evidence (
+    paper_id         TEXT NOT NULL,
+    loc_line         INTEGER NOT NULL,
+    loc_start        INTEGER NOT NULL,
+    loc_end          INTEGER NOT NULL,
+    text             TEXT NOT NULL,
+    section          TEXT DEFAULT '',
+    supports         TEXT DEFAULT '[]',
+    quantitative     INTEGER DEFAULT 0,
+    cited            INTEGER DEFAULT 0,
+    verifiable       INTEGER DEFAULT 0,
+    normative        INTEGER DEFAULT 0,
+    merged_into_line INTEGER,
+    merged_into_start INTEGER,
+    merged_into_end  INTEGER,
+    PRIMARY KEY (paper_id, loc_line, loc_start, loc_end)
+);
+
+CREATE TABLE IF NOT EXISTS paper_citations (
+    paper_id         TEXT NOT NULL,
+    cited_paper_id   TEXT NOT NULL,
+    count            INTEGER DEFAULT 1,
+    PRIMARY KEY (paper_id, cited_paper_id)
+);
+
+CREATE TABLE IF NOT EXISTS external_citations (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id         TEXT NOT NULL,
+    source_url       TEXT DEFAULT '',
+    source_title     TEXT DEFAULT '',
+    text             TEXT DEFAULT '',
+    finding          TEXT DEFAULT '',
+    stance           TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS questions (
+    paper_id         TEXT NOT NULL,
+    claim_text       TEXT NOT NULL,
+    section          TEXT DEFAULT '',
+    question         TEXT NOT NULL,
+    kind             TEXT DEFAULT 'normative',
+    PRIMARY KEY (paper_id, claim_text, kind)
+);
+
+CREATE TABLE IF NOT EXISTS rhetorical_markers (
+    paper_id         TEXT NOT NULL,
+    loc_line         INTEGER NOT NULL,
+    loc_start        INTEGER NOT NULL,
+    loc_end          INTEGER NOT NULL,
+    text             TEXT NOT NULL,
+    section          TEXT DEFAULT '',
+    marker_type      TEXT DEFAULT '',
+    target           TEXT DEFAULT '',
+    intensity        TEXT DEFAULT 'moderate',
+    PRIMARY KEY (paper_id, loc_line, loc_start, loc_end)
+);
+
+CREATE TABLE IF NOT EXISTS caput_causae (
+    paper_id TEXT PRIMARY KEY,
+    thesis TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS citation_audit (
+    paper_id TEXT NOT NULL,
+    cited_paper_id TEXT NOT NULL,
+    resolution_method TEXT NOT NULL,
+    resolved INTEGER NOT NULL,
+    source_url TEXT DEFAULT '',
+    quote_match TEXT DEFAULT 'not_checked',
+    discrepancy TEXT DEFAULT '',
+    PRIMARY KEY (paper_id, cited_paper_id)
+);
+
 """
 
 
@@ -69,6 +167,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "line_count" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN line_count INTEGER DEFAULT 0")
 
+    claim_cols = {r[1] for r in conn.execute("PRAGMA table_info(claims)").fetchall()}
+    if "kind" not in claim_cols:
+        conn.execute("ALTER TABLE claims ADD COLUMN kind TEXT DEFAULT 'normative'")
+
 
 def _atomic_replace(src: Path, dst: Path) -> None:
     """Rename ``src`` to ``dst``, retrying on PermissionError (Windows AV/EDR)."""
@@ -79,6 +181,12 @@ def _atomic_replace(src: Path, dst: Path) -> None:
         except PermissionError:
             time.sleep(0.1)
     os.replace(src, dst)
+
+
+def _merged_triple(merged_into: object) -> tuple[int | None, int | None, int | None]:
+    if merged_into is not None:
+        return merged_into.line, merged_into.start_char, merged_into.end_char  # type: ignore[union-attr]
+    return None, None, None
 
 
 class SqliteBackend(StorageBackend):
@@ -178,10 +286,23 @@ class SqliteBackend(StorageBackend):
             raise
         return path
 
-    def _row_to_dict(self, row: sqlite3.Row) -> PaperRow:
+    def _row_to_paper(self, row: sqlite3.Row) -> PaperRow:
         d = dict(row)
-        d["authors"] = parse_authors_raw(d.get("authors", ""))
-        return d
+        return PaperRow(
+            paper_id=d.get("paper_id", ""),
+            year=d.get("year", ""),
+            title=d.get("title", ""),
+            authors=parse_authors_raw(d.get("authors", "")),
+            target_group=d.get("target_group", ""),
+            intent=d.get("intent", ""),
+            url=d.get("url", ""),
+            document_date=d.get("document_date", ""),
+            mailing_date=d.get("mailing_date", ""),
+            source_file=d.get("source_file", ""),
+            markdown_path=d.get("markdown_path", ""),
+            review_path=d.get("review_path", ""),
+            line_count=d.get("line_count", 0),
+        )
 
     # ---- year-based mailing index -----------------------------------------
 
@@ -250,7 +371,7 @@ class SqliteBackend(StorageBackend):
                 f"No papers found for year {year!r}. "
                 f"Run 'paperflow mailing {year}' first."
             )
-        return [self._row_to_dict(r) for r in rows]
+        return [self._row_to_paper(r) for r in rows]
 
     def list_all_paper_ids(self) -> list[str]:
         rows = self._conn.execute("SELECT paper_id FROM papers").fetchall()
@@ -262,8 +383,8 @@ class SqliteBackend(StorageBackend):
         ).fetchone()
         if row is None:
             return None
-        d = self._row_to_dict(row)
-        return d["year"], d
+        paper = self._row_to_paper(row)
+        return paper.year, paper
 
     # ---- writes -----------------------------------------------------------
 
@@ -461,7 +582,7 @@ class SqliteBackend(StorageBackend):
                 f"No metadata for {paper_id!r}. "
                 f"Run 'paperflow mailing' then 'paperflow download' first."
             )
-        return self._row_to_dict(row)
+        return self._row_to_paper(row)
 
     def get_source_path(self, paper_id: str) -> Path:
         row = self._conn.execute(
@@ -528,3 +649,237 @@ class SqliteBackend(StorageBackend):
             "WHERE year != '' GROUP BY year ORDER BY year"
         ).fetchall()
         return [(r["year"], r["n"]) for r in rows]
+
+    def list_papers_since(self, month: str) -> list[PaperRow]:
+        rows = self._conn.execute(
+            "SELECT * FROM papers WHERE mailing_date >= ? ORDER BY mailing_date",
+            (month,),
+        ).fetchall()
+        return [self._row_to_paper(r) for r in rows]
+
+    # ---- extract writes ---------------------------------------------------
+
+    def store_claims(self, paper_id: str, claims) -> None:
+        pid = paper_id.strip().upper()
+        rows = []
+        for c in claims:
+            ml, ms, me = _merged_triple(c.merged_into)
+            rows.append((
+                pid, c.loc.line, c.loc.start_char, c.loc.end_char,
+                c.text, c.section, c.question,
+                getattr(c, "kind", "normative"), ml, ms, me,
+            ))
+        with self._conn:
+            self._conn.execute("DELETE FROM claims WHERE paper_id = ?", (pid,))
+            self._conn.executemany(
+                "INSERT INTO claims (paper_id, loc_line, loc_start, loc_end, "
+                "text, section, question, kind, merged_into_line, "
+                "merged_into_start, merged_into_end) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def store_evidence(self, paper_id: str, evidence) -> None:
+        pid = paper_id.strip().upper()
+        rows = []
+        for e in evidence:
+            ml, ms, me = _merged_triple(e.merged_into)
+            rows.append((
+                pid, e.loc.line, e.loc.start_char, e.loc.end_char,
+                e.text, e.section, json.dumps(e.supports),
+                int(e.quantitative), int(e.cited),
+                int(e.verifiable), int(e.normative), ml, ms, me,
+            ))
+        with self._conn:
+            self._conn.execute("DELETE FROM evidence WHERE paper_id = ?", (pid,))
+            self._conn.executemany(
+                "INSERT INTO evidence (paper_id, loc_line, loc_start, loc_end, "
+                "text, section, supports, quantitative, cited, verifiable, "
+                "normative, merged_into_line, merged_into_start, merged_into_end) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def store_paper_citations(self, paper_id: str, citations) -> None:
+        pid = paper_id.strip().upper()
+        rows = [(pid, c.paper_id, c.count) for c in citations]
+        with self._conn:
+            self._conn.execute("DELETE FROM paper_citations WHERE paper_id = ?", (pid,))
+            self._conn.executemany(
+                "INSERT INTO paper_citations (paper_id, cited_paper_id, count) "
+                "VALUES (?, ?, ?)",
+                rows,
+            )
+
+    def store_external_citations(self, paper_id: str, externals) -> None:
+        pid = paper_id.strip().upper()
+        rows = [
+            (pid, ex.source_url, ex.source_title, ex.text, ex.finding, ex.stance)
+            for ex in externals
+        ]
+        with self._conn:
+            self._conn.execute("DELETE FROM external_citations WHERE paper_id = ?", (pid,))
+            self._conn.executemany(
+                "INSERT INTO external_citations (paper_id, source_url, "
+                "source_title, text, finding, stance) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def store_questions(self, paper_id: str, claims, support_map) -> None:
+        pid = paper_id.strip().upper()
+        unsupported_locs = {
+            s.claim_loc for s in support_map if s.status == "unsupported"
+        }
+        rows = [
+            (pid, c.text, c.section, c.question, getattr(c, "kind", "normative"))
+            for c in claims
+            if c.merged_into is None and c.loc in unsupported_locs
+        ]
+        with self._conn:
+            self._conn.execute("DELETE FROM questions WHERE paper_id = ?", (pid,))
+            self._conn.executemany(
+                "INSERT INTO questions (paper_id, claim_text, section, question, kind) "
+                "VALUES (?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def store_markers(self, paper_id: str, markers) -> None:
+        pid = paper_id.strip().upper()
+        rows = [
+            (pid, m.loc.line, m.loc.start_char, m.loc.end_char,
+             m.text, m.section, m.marker_type, m.target, m.intensity)
+            for m in markers
+        ]
+        with self._conn:
+            self._conn.execute("DELETE FROM rhetorical_markers WHERE paper_id = ?", (pid,))
+            self._conn.executemany(
+                "INSERT INTO rhetorical_markers (paper_id, loc_line, loc_start, loc_end, "
+                "text, section, marker_type, target, intensity) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def store_caput_causae(self, paper_id: str, thesis: str) -> None:
+        pid = paper_id.strip().upper()
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO caput_causae (paper_id, thesis) "
+                "VALUES (?, ?)",
+                (pid, thesis),
+            )
+
+    def store_citation_audit(self, paper_id: str, audits) -> None:
+        pid = paper_id.strip().upper()
+        rows = [
+            (pid, a.cited_paper_id, a.resolution_method,
+             int(a.resolved), a.source_url, a.quote_match, a.discrepancy)
+            for a in audits
+        ]
+        with self._conn:
+            self._conn.execute("DELETE FROM citation_audit WHERE paper_id = ?", (pid,))
+            self._conn.executemany(
+                "INSERT INTO citation_audit (paper_id, cited_paper_id, "
+                "resolution_method, resolved, source_url, quote_match, "
+                "discrepancy) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    # ---- extract reads ----------------------------------------------------
+
+    def get_claims(self, paper_id: str) -> list[ClaimRow]:
+        pid = paper_id.strip().upper()
+        rows = self._conn.execute(
+            "SELECT * FROM claims WHERE paper_id = ?", (pid,)
+        ).fetchall()
+        return [ClaimRow(
+            paper_id=r["paper_id"], loc_line=r["loc_line"],
+            loc_start=r["loc_start"], loc_end=r["loc_end"],
+            text=r["text"], section=r["section"], question=r["question"],
+            kind=r["kind"], merged_into_line=r["merged_into_line"],
+            merged_into_start=r["merged_into_start"],
+            merged_into_end=r["merged_into_end"],
+        ) for r in rows]
+
+    def get_evidence(self, paper_id: str) -> list[EvidenceRow]:
+        pid = paper_id.strip().upper()
+        rows = self._conn.execute(
+            "SELECT * FROM evidence WHERE paper_id = ?", (pid,)
+        ).fetchall()
+        return [EvidenceRow(
+            paper_id=r["paper_id"], loc_line=r["loc_line"],
+            loc_start=r["loc_start"], loc_end=r["loc_end"],
+            text=r["text"], section=r["section"], supports=r["supports"],
+            quantitative=bool(r["quantitative"]), cited=bool(r["cited"]),
+            verifiable=bool(r["verifiable"]), normative=bool(r["normative"]),
+            merged_into_line=r["merged_into_line"],
+            merged_into_start=r["merged_into_start"],
+            merged_into_end=r["merged_into_end"],
+        ) for r in rows]
+
+    def get_paper_citations(self, paper_id: str) -> list[PaperCitationRow]:
+        pid = paper_id.strip().upper()
+        rows = self._conn.execute(
+            "SELECT * FROM paper_citations WHERE paper_id = ? ORDER BY count DESC",
+            (pid,),
+        ).fetchall()
+        return [PaperCitationRow(
+            paper_id=r["paper_id"], cited_paper_id=r["cited_paper_id"],
+            count=r["count"],
+        ) for r in rows]
+
+    def get_external_citations(self, paper_id: str) -> list[ExternalCitationRow]:
+        pid = paper_id.strip().upper()
+        rows = self._conn.execute(
+            "SELECT * FROM external_citations WHERE paper_id = ?", (pid,)
+        ).fetchall()
+        return [ExternalCitationRow(
+            paper_id=r["paper_id"], source_url=r["source_url"],
+            source_title=r["source_title"], text=r["text"],
+            finding=r["finding"], stance=r["stance"],
+        ) for r in rows]
+
+    def get_questions(self, paper_id: str) -> list[QuestionRow]:
+        pid = paper_id.strip().upper()
+        rows = self._conn.execute(
+            "SELECT * FROM questions WHERE paper_id = ?", (pid,)
+        ).fetchall()
+        return [QuestionRow(
+            paper_id=r["paper_id"], claim_text=r["claim_text"],
+            section=r["section"], question=r["question"],
+            kind=r["kind"],
+        ) for r in rows]
+
+    def get_markers(self, paper_id: str) -> list[MarkerRow]:
+        pid = paper_id.strip().upper()
+        rows = self._conn.execute(
+            "SELECT * FROM rhetorical_markers WHERE paper_id = ?", (pid,)
+        ).fetchall()
+        return [MarkerRow(
+            paper_id=r["paper_id"], loc_line=r["loc_line"],
+            loc_start=r["loc_start"], loc_end=r["loc_end"],
+            text=r["text"], section=r["section"],
+            marker_type=r["marker_type"], target=r["target"],
+            intensity=r["intensity"],
+        ) for r in rows]
+
+    def get_caput_causae(self, paper_id: str) -> CaputCausaeRow | None:
+        pid = paper_id.strip().upper()
+        row = self._conn.execute(
+            "SELECT * FROM caput_causae WHERE paper_id = ?", (pid,)
+        ).fetchone()
+        if row is None:
+            return None
+        return CaputCausaeRow(paper_id=row["paper_id"], thesis=row["thesis"])
+
+    def get_citation_audit(self, paper_id: str) -> list[CitationAuditRow]:
+        pid = paper_id.strip().upper()
+        rows = self._conn.execute(
+            "SELECT * FROM citation_audit WHERE paper_id = ?", (pid,)
+        ).fetchall()
+        return [CitationAuditRow(
+            paper_id=r["paper_id"], cited_paper_id=r["cited_paper_id"],
+            resolution_method=r["resolution_method"],
+            resolved=bool(r["resolved"]), source_url=r["source_url"],
+            quote_match=r["quote_match"], discrepancy=r["discrepancy"],
+        ) for r in rows]

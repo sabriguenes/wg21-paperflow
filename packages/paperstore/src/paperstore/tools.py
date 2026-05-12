@@ -49,7 +49,7 @@ class PaperstoreTools:
             return json.dumps(
                 {"error": f"Paper '{paper_id.strip().upper()}' not found in paperstore."}
             )
-        return json.dumps(row, ensure_ascii=False)
+        return json.dumps(vars(row), ensure_ascii=False)
 
     async def paper_meta_latest(self, paper_number: str) -> str:
         """Get metadata for the latest revision of a paper number (e.g. 'P4014').

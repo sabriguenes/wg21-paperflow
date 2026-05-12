@@ -5,9 +5,9 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Pydantic models for the extractor pipeline.
+"""Pydantic models for the review pipeline.
 
-Domain models are the sole schema authority. ``extractor.md`` provides
+Domain models are the sole schema authority. ``review.md`` provides
 LLM instructions; these models enforce the output structure via Pydantic
 AI's ``output_type``. Frozen domain models are updated via
 ``model_copy(update=...)``.
@@ -20,6 +20,8 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 Stance = Literal["supports", "contradicts"]
+ClaimKind = Literal["normative", "factual"]
+ContradictionKind = Literal["evidence_vs_claim", "claim_vs_claim"]
 
 
 # -- Domain models -----------------------------------------------------------
@@ -51,7 +53,12 @@ class CitationRef(BaseModel, frozen=True):
 
 
 class Claim(BaseModel, frozen=True):
-    """A normative assertion extracted from the paper."""
+    """An assertion extracted from the paper, normative or factual.
+
+    Normative claims argue something ought to be true. Factual claims
+    assert verifiable properties that the paper's argument depends on.
+    The ``kind`` field distinguishes the two.
+    """
 
     loc: SourceLoc
     text: str = Field(description="Exact quote from the paper.")
@@ -61,6 +68,11 @@ class Claim(BaseModel, frozen=True):
     section: str = Field(description="Section header where the claim appears.")
     question: str = Field(
         description="Question whose answer would constitute sufficient evidence.",
+    )
+    kind: ClaimKind = Field(
+        default="normative",
+        description="'normative': argues something ought to be true. "
+        "'factual': asserts a verifiable property the argument depends on.",
     )
     depends_on: list[SourceLoc] = Field(
         description="Claims whose truth this claim requires. "
@@ -74,7 +86,7 @@ class Claim(BaseModel, frozen=True):
 
 
 class Evidence(BaseModel, frozen=True):
-    """A factual statement offered in support of one or more claims."""
+    """A statement offered in support of one or more claims."""
 
     loc: SourceLoc
     text: str = Field(description="Exact quote from the paper.")
@@ -120,14 +132,28 @@ class SupportLink(BaseModel, frozen=True):
 
 
 class InternalContradiction(BaseModel, frozen=True):
-    """An evidence item that contradicts a claim within the same paper."""
+    """A contradiction detected within the paper.
 
-    evidence_loc: SourceLoc
+    When ``kind`` is ``evidence_vs_claim``, an evidence item undermines
+    a claim. When ``kind`` is ``claim_vs_claim``, two claims assert
+    incompatible things about the same or analogous subjects.
+    """
+
+    source_loc: SourceLoc = Field(
+        description="Location of the contradicting item. "
+        "An evidence loc when kind is evidence_vs_claim, "
+        "a claim loc when kind is claim_vs_claim.",
+    )
     claim_loc: SourceLoc
+    kind: ContradictionKind = Field(
+        default="evidence_vs_claim",
+        description="'evidence_vs_claim': evidence undermines a claim. "
+        "'claim_vs_claim': two claims assert incompatible things.",
+    )
 
 
 class LoadBearingResult(BaseModel, frozen=True):
-    """Graph analysis result: how critical a claim is to the paper's argument."""
+    """Load-Bearing step output: how critical a claim is to the paper's argument."""
 
     claim_loc: SourceLoc
     dependents: list[SourceLoc] = Field(
@@ -153,7 +179,7 @@ class LoadBearingResult(BaseModel, frozen=True):
 
 
 class ExternalEvidence(BaseModel, frozen=True):
-    """Evidence found via web search for a triggered claim."""
+    """Evidence found via citation verification or web search."""
 
     claim_loc: SourceLoc
     source_url: str
@@ -165,6 +191,26 @@ class ExternalEvidence(BaseModel, frozen=True):
     cited: bool
     verifiable: bool
     normative: bool
+
+
+MarkerType = Literal[
+    "dismissal",
+    "concession",
+    "provocation",
+    "scope_deflection",
+    "political_signal",
+]
+
+
+class RhetoricalMarker(BaseModel, frozen=True):
+    """A rhetorical signal extracted from the paper."""
+
+    loc: SourceLoc
+    text: str = Field(description="Exact quote from the paper.")
+    section: str = Field(description="Section header where the marker appears.")
+    marker_type: MarkerType
+    target: str = Field(description="What is being dismissed/conceded/deflected.")
+    intensity: Literal["mild", "moderate", "strong"]
 
 
 class WebResolution(BaseModel, frozen=True):
@@ -179,11 +225,53 @@ class WebResolution(BaseModel, frozen=True):
     )
 
 
+class CaputCausae(BaseModel, frozen=True):
+    """The paper's central thesis, derived from the convergence of anchored claims.
+
+    Computed after external evidence resolution so the thesis reflects
+    the full support picture. Stored in the database and injected as
+    context into subsequent pipeline steps.
+    """
+
+    thesis: str = Field(description="One sentence stating what the paper's argument asserts.")
+    anchored_claim_locs: list[SourceLoc] = Field(
+        default=[],
+        description="Anchored claims the thesis was derived from.",
+    )
+    evidence_root_locs: list[SourceLoc] = Field(
+        default=[],
+        description="Evidence items supporting multiple anchored claims.",
+    )
+
+
+class CitationAuditEntry(BaseModel, frozen=True):
+    """Resolution and verification result for a single citation.
+
+    Records whether the cited source was found, how it was resolved,
+    and whether the paper accurately represents what the source says.
+    """
+
+    paper_id: str = Field(description="Cited paper number, e.g. 'P1928R15'.")
+    resolution_method: str = Field(
+        description="How the citation was resolved: 'wg21_link', 'isocpp', 'not_found'.",
+    )
+    resolved: bool = Field(description="True if the cited source was successfully fetched.")
+    source_url: str = Field(default="", description="URL where the source was found.")
+    quote_match: Literal["exact", "partial", "mismatch", "not_checked"] = Field(
+        default="not_checked",
+        description="Whether the paper's quotes match the cited source.",
+    )
+    discrepancy: str = Field(
+        default="",
+        description="Description of the mismatch, if any.",
+    )
+
+
 # -- Pre-loc models (LLM output before harness adds SourceLocs) --------------
 
 
 class RawClaim(BaseModel, frozen=True):
-    """LLM output before the harness computes SourceLoc."""
+    """LLM extraction output before the harness computes SourceLoc."""
 
     text: str
     start_line: int = Field(
@@ -194,6 +282,10 @@ class RawClaim(BaseModel, frozen=True):
     original_quotes: list[str] = []
     section: str = ""
     question: str = ""
+    kind: str = Field(
+        default="normative",
+        description="'normative' or 'factual'. Validated on promotion to Claim.",
+    )
     depends_on: list[str] = Field(
         default=[],
         description="Quoted text of claims this one depends on. "
@@ -202,7 +294,7 @@ class RawClaim(BaseModel, frozen=True):
 
 
 class RawEvidence(BaseModel, frozen=True):
-    """LLM output before the harness computes SourceLoc."""
+    """LLM extraction output before the harness computes SourceLoc."""
 
     text: str
     start_line: int = Field(
@@ -218,89 +310,166 @@ class RawEvidence(BaseModel, frozen=True):
     normative: bool = False
 
 
+class RawMarker(BaseModel, frozen=True):
+    """LLM extraction output before the harness computes SourceLoc."""
+
+    text: str
+    start_line: int = Field(
+        default=0,
+        description="Line number reported by the LLM. 0 means unreported.",
+    )
+    section: str = ""
+    marker_type: str = ""
+    target: str = ""
+    intensity: str = "moderate"
+
+
 # -- Per-step output models --------------------------------------------------
 
 
-class ExtractClaimsOutput(BaseModel, frozen=True):
-    """Step 1: per-chunk claim extraction."""
+class ExtractAllOutput(BaseModel, frozen=True):
+    """Extract Normative step output: combined per-chunk extraction."""
+
+    claims: list[RawClaim] = []
+    evidence: list[RawEvidence] = []
+    markers: list[RawMarker] = []
+
+
+class ExtractFactualOutput(BaseModel, frozen=True):
+    """Extract Factual step output: factual claims from a single chunk."""
 
     claims: list[RawClaim] = []
 
 
-class ExtractEvidenceOutput(BaseModel, frozen=True):
-    """Step 3: per-chunk evidence extraction."""
-
-    evidence: list[RawEvidence] = []
-
-
 class DedupGroupingOutput(BaseModel, frozen=True):
-    """Steps 2/4 tier 2: semantic grouping indices."""
+    """Dedup Claims / Dedup Factual / Dedup Evidence tier 2 output: semantic grouping indices."""
 
     groups: list[list[int]] = []
 
 
 class VerifyOutput(BaseModel, frozen=True):
-    """Step 5: verify + deps + map + contradict."""
+    """Verify step output: support map, internal contradictions, and cross-chunk dependencies."""
 
     support_map: list[SupportLink] = []
     internal_contradictions: list[InternalContradiction] = []
 
 
 class LoadBearingOutput(BaseModel, frozen=True):
-    """Step 6: load-bearing classification."""
+    """Load-Bearing step output: classification of each claim by structural importance."""
 
     results: list[LoadBearingResult] = []
 
 
+class CitationTaskOutput(BaseModel, frozen=True):
+    """Per-citation run_task return: audit entry plus opportunistic evidence."""
+
+    audit: CitationAuditEntry
+    evidence: list[ExternalEvidence] = []
+
+
+class CitationAuditOutput(BaseModel, frozen=True):
+    """Verify Citations step output: systematic verification of every citation."""
+
+    entries: list[CitationAuditEntry] = []
+
+
 class WebSearchOutput(BaseModel, frozen=True):
-    """Step 7: web search results."""
+    """Web Search step output: external evidence for triggered claims."""
 
     external_evidence: list[ExternalEvidence] = []
 
 
 class ResolveOutput(BaseModel, frozen=True):
-    """Step 8: resolve external evidence."""
+    """Resolve External step output: resolved classifications and web resolutions."""
 
     load_bearing_claims: list[LoadBearingResult] = []
     web_resolutions: list[WebResolution] = []
+
+
+class AsymmetryPattern(BaseModel, frozen=True):
+    """A dismissal whose target appears as an unqualified positive claim elsewhere."""
+
+    marker_loc: SourceLoc
+    claim_loc: SourceLoc
+    description: str
+
+
+class ConcessionCluster(BaseModel, frozen=True):
+    """Multiple concession markers targeting the same topic."""
+
+    topic: str
+    marker_locs: list[SourceLoc]
+
+
+class ScopeChain(BaseModel, frozen=True):
+    """Scope deflection markers naming companion papers."""
+
+    paper_id: str
+    marker_locs: list[SourceLoc]
+
+
+class PatternDetectionOutput(BaseModel, frozen=True):
+    """Detect Patterns step output: cross-marker pattern analysis."""
+
+    asymmetries: list[AsymmetryPattern] = []
+    concession_clusters: list[ConcessionCluster] = []
+    scope_chains: list[ScopeChain] = []
+
+
+class CaputCausaeOutput(BaseModel, frozen=True):
+    """Caput Causae step output: the paper's central thesis and its derivation."""
+
+    caput_causae: CaputCausae
 
 
 # -- Pipeline state ----------------------------------------------------------
 
 
 class PipelineState(BaseModel):
-    """Mutable accumulator threaded through every step."""
+    """Mutable accumulator threaded through every pipeline step."""
 
     paper_source: Optional[str] = None
 
-    # Step 0
+    # Read
     chunks: Optional[list[Chunk]] = None
     citations: Optional[list[CitationRef]] = None
 
-    # Step 1
+    # Extract Normative
     raw_claims: Optional[list[RawClaim]] = None
-
-    # Step 2
     raw_evidence: Optional[list[RawEvidence]] = None
+    raw_markers: Optional[list[RawMarker]] = None
+    markers: Optional[list[RhetoricalMarker]] = None
 
-    # Step 3
+    # Dedup Claims
     claims: Optional[list[Claim]] = None
 
-    # Step 4
+    # Extract Factual
+    raw_factual_claims: Optional[list[RawClaim]] = None
+
+    # Dedup Evidence
     evidence: Optional[list[Evidence]] = None
 
-    # Step 5
+    # Verify
     support_map: Optional[list[SupportLink]] = None
     internal_contradictions: Optional[list[InternalContradiction]] = None
 
-    # Step 6
+    # Load-Bearing
     load_bearing_claims: Optional[list[LoadBearingResult]] = None
 
-    # Step 7
+    # Verify Citations
+    citation_audit: Optional[list[CitationAuditEntry]] = None
+
+    # Web Search + Verify Citations (both contribute)
     external_evidence: Optional[list[ExternalEvidence]] = None
 
-    # Step 8
+    # Resolve External
     web_resolutions: Optional[list[WebResolution]] = None
 
-    # Step 9
+    # Detect Patterns
+    marker_patterns: Optional[PatternDetectionOutput] = None
+
+    # Caput Causae
+    caput_causae: Optional[CaputCausae] = None
+
+    # Report
     report: Optional[str] = None

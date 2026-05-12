@@ -41,6 +41,10 @@ paperflow convert  2026-04
 paperflow full     2026-04
 paperflow          2026-04
 
+# Review - single paper or mailing batch
+paperflow review P4003R2
+paperflow review 2026-01
+
 # Idempotent batch - skips papers already at or past the target stage
 paperflow download all
 paperflow convert  all
@@ -109,6 +113,9 @@ reply-to:
 
 ```
 WG21_DATA_DIR/
+  paperstore.db                   # extract tables: claims, evidence,
+                                  #   paper_citations, external_citations,
+                                  #   questions, rhetorical_markers
   paperstore/
     <pid>.review.md               # review report
 ```

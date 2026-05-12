@@ -12,9 +12,14 @@ from __future__ import annotations
 import pytest
 
 from review.models import (
+    CaputCausae,
+    CitationAuditEntry,
+    CitationTaskOutput,
     Claim,
     Chunk,
     Evidence,
+    ExtractAllOutput,
+    ExtractFactualOutput,
     ExternalEvidence,
     InternalContradiction,
     LoadBearingResult,
@@ -24,8 +29,6 @@ from review.models import (
     SourceLoc,
     SupportLink,
     WebResolution,
-    ExtractClaimsOutput,
-    ExtractEvidenceOutput,
 )
 
 
@@ -77,8 +80,14 @@ def test_support_link_round_trip():
 
 
 def test_internal_contradiction_round_trip():
-    ic = InternalContradiction(evidence_loc=_loc(1), claim_loc=_loc(2))
+    ic = InternalContradiction(source_loc=_loc(1), claim_loc=_loc(2), kind="evidence_vs_claim")
     assert InternalContradiction.model_validate(ic.model_dump()) == ic
+
+
+def test_internal_contradiction_claim_vs_claim():
+    ic = InternalContradiction(source_loc=_loc(3), claim_loc=_loc(4), kind="claim_vs_claim")
+    assert ic.kind == "claim_vs_claim"
+    assert ic.source_loc.line == 3
 
 
 def test_load_bearing_result_round_trip():
@@ -145,17 +154,87 @@ def test_frozen_models_are_immutable():
         c.text = "Y"  # type: ignore[misc]
 
 
-def test_extract_claims_output():
+def test_extract_all_output_claims():
     rc = RawClaim(text="X", original_quotes=["X"], section="1", question="Q?", depends_on=[])
-    out = ExtractClaimsOutput(claims=[rc])
+    out = ExtractAllOutput(claims=[rc])
     assert len(out.claims) == 1
 
 
-def test_extract_evidence_output():
+def test_extract_all_output_evidence():
     re_ = RawEvidence(
         text="E", original_quotes=["E"], section="2",
         supports=["S"], quantitative=False, cited=False,
         verifiable=False, normative=False,
     )
-    out = ExtractEvidenceOutput(evidence=[re_])
+    out = ExtractAllOutput(evidence=[re_])
     assert len(out.evidence) == 1
+
+
+def test_claim_kind_factual():
+    c = Claim(
+        loc=_loc(), text="X is 5ns", original_quotes=["X is 5ns"],
+        section="2", question="How fast is X?", kind="factual", depends_on=[],
+    )
+    assert c.kind == "factual"
+    assert Claim.model_validate(c.model_dump()) == c
+
+
+def test_caput_causae_round_trip():
+    cc = CaputCausae(
+        thesis="The paper argues for coroutines.",
+        anchored_claim_locs=[_loc(1), _loc(2)],
+        evidence_root_locs=[_loc(3)],
+    )
+    assert CaputCausae.model_validate(cc.model_dump()) == cc
+
+
+def test_caput_causae_defaults():
+    cc = CaputCausae(thesis="Minimal thesis.")
+    assert cc.anchored_claim_locs == []
+    assert cc.evidence_root_locs == []
+
+
+def test_citation_audit_entry_round_trip():
+    entry = CitationAuditEntry(
+        paper_id="P1928R15",
+        resolution_method="wg21_link",
+        resolved=True,
+        source_url="https://example.com",
+        quote_match="exact",
+        discrepancy="",
+    )
+    assert CitationAuditEntry.model_validate(entry.model_dump()) == entry
+
+
+def test_citation_audit_entry_defaults():
+    entry = CitationAuditEntry(
+        paper_id="P0001R0",
+        resolution_method="not_found",
+        resolved=False,
+    )
+    assert entry.source_url == ""
+    assert entry.quote_match == "not_checked"
+    assert entry.discrepancy == ""
+
+
+def test_citation_task_output_round_trip():
+    audit = CitationAuditEntry(
+        paper_id="P2300R10",
+        resolution_method="wg21_link",
+        resolved=True,
+    )
+    ee = ExternalEvidence(
+        claim_loc=_loc(1), source_url="https://example.com",
+        source_title="Paper", text="passage", finding="confirmed",
+        stance="supports", quantitative=False, cited=True,
+        verifiable=True, normative=False,
+    )
+    out = CitationTaskOutput(audit=audit, evidence=[ee])
+    assert CitationTaskOutput.model_validate(out.model_dump()) == out
+
+
+def test_extract_factual_output():
+    rc = RawClaim(text="X", section="1", question="Q?", kind="factual")
+    out = ExtractFactualOutput(claims=[rc])
+    assert len(out.claims) == 1
+    assert out.claims[0].kind == "factual"

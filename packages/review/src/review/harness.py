@@ -27,6 +27,8 @@ from review.models import (
     Evidence,
     RawClaim,
     RawEvidence,
+    RawMarker,
+    RhetoricalMarker,
     SourceLoc,
 )
 
@@ -49,7 +51,7 @@ def number_lines(chunk: Chunk) -> str:
     )
 
 
-def chunk_paper(source: str, max_chars: int = 70_000) -> list[Chunk]:
+def chunk_paper(source: str, max_chars: int = 40_000) -> list[Chunk]:
     """Split paper into chunks of <= max_chars at markdown heading boundaries.
 
     Adjacent chunks overlap by 5 lines: the next chunk starts 5 lines
@@ -118,6 +120,7 @@ def promote_claims(raws: list[RawClaim], source: str) -> list[Claim]:
             original_quotes=quotes,
             section=raw.section,
             question=raw.question,
+            kind=raw.kind,
             depends_on=[],
             merged_into=None,
         ))
@@ -167,6 +170,34 @@ def promote_evidence(raws: list[RawEvidence], source: str) -> list[Evidence]:
         ))
 
     return evidence
+
+
+def promote_markers(raws: list[RawMarker], source: str) -> list[RhetoricalMarker]:
+    """Convert RawMarkers to RhetoricalMarkers using start_line for location.
+
+    Same pattern as promote_claims/promote_evidence. No items dropped.
+    """
+    lines = source.splitlines()
+    markers: list[RhetoricalMarker] = []
+    line_counts: dict[int, int] = {}
+
+    for raw in raws:
+        line = raw.start_line if raw.start_line > 0 else 1
+        line_text = lines[line - 1] if line <= len(lines) else ""
+        ordinal = line_counts.get(line, 0)
+        line_counts[line] = ordinal + 1
+        loc = SourceLoc(line=line, start_char=ordinal, end_char=len(line_text))
+        text = _strip_line_prefix(raw.text)
+        markers.append(RhetoricalMarker(
+            loc=loc,
+            text=text,
+            section=raw.section,
+            marker_type=raw.marker_type,
+            target=raw.target,
+            intensity=raw.intensity,
+        ))
+
+    return markers
 
 
 def dedup_tier0(items: list[T]) -> list[T]:

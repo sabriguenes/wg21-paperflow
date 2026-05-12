@@ -16,22 +16,42 @@ from review.models import (
     SourceLoc,
     SupportLink,
 )
-from review.render import render_report, render_trace, safe_quote
+from paperstore.backend import PaperRow
+from review.render import render_report, render_trace, sanitize_md
 
 
 def _loc(line=1, start=0, end=10):
     return SourceLoc(line=line, start_char=start, end_char=end)
 
 
-def test_safe_quote_simple():
-    assert safe_quote("hello") == '"hello"'
+def test_sanitize_md_balanced_code_span_preserved():
+    assert sanitize_md("`std::vector`") == "`std::vector`"
 
 
-def test_safe_quote_with_code_fence():
-    text = "before```python\ncode()```after"
-    result = safe_quote(text)
-    assert "```" in result
-    assert '"before"' in result
+def test_sanitize_md_bare_angle_brackets_escaped():
+    assert sanitize_md("vector<int>") == r"vector\<int\>"
+
+
+def test_sanitize_md_pipes_escaped():
+    assert sanitize_md("a | b") == r"a \| b"
+
+
+def test_sanitize_md_leading_hash_escaped():
+    assert sanitize_md("# heading") == r"\# heading"
+
+
+def test_sanitize_md_unbalanced_asterisk_escaped():
+    assert sanitize_md("one * here") == r"one \* here"
+
+
+def test_sanitize_md_balanced_bold_preserved():
+    assert sanitize_md("**bold**") == "**bold**"
+
+
+def test_sanitize_md_mixed_code_span_and_prose():
+    result = sanitize_md("use `std::vector<int>` for this")
+    assert "`std::vector<int>`" in result
+    assert r"\<" not in result.split("`")[2]
 
 
 def test_render_report_unsupported():
@@ -46,7 +66,6 @@ def test_render_report_unsupported():
     )
     report = render_report(state, "P0001R0", "Test Paper")
     assert "Unsupported Claims" in report
-    assert "X is fast" in report
     assert "How fast?" in report
 
 
@@ -68,7 +87,7 @@ def test_render_report_supported():
     )
     report = render_report(state, "P0001R0", "Test Paper")
     assert "Supported Claims" in report
-    assert "X is fast" in report
+    assert "How fast?" in report
     assert "measured 5ns" in report
 
 
@@ -83,21 +102,25 @@ def test_render_trace_step0():
         chunks=[],
         citations=[],
     )
-    trace = render_trace(state, {"title": "T", "paper_id": "P0001R0"}, 0)
+    trace = render_trace(state, PaperRow(title="T", paper_id="P0001R0"), 0)
     assert "0. Read" in trace
 
 
-def test_render_trace_step5():
+def test_render_trace_step6():
     state = PipelineState(
         chunks=[],
         citations=[],
         raw_claims=[],
         claims=[],
         raw_evidence=[],
+        raw_factual_claims=[],
         evidence=[],
         support_map=[],
         internal_contradictions=[],
     )
-    trace = render_trace(state, {"title": "T", "paper_id": "P0001R0"}, 5)
-    assert "5. Verify" in trace
+    trace = render_trace(state, PaperRow(title="T", paper_id="P0001R0"), 6)
     assert "0. Read" in trace
+    assert "1. Extract Normative" in trace
+    assert "3. Extract Factual" in trace
+    assert "5. Dedup Evidence" in trace
+    assert "6. Verify" in trace

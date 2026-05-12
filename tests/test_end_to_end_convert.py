@@ -90,5 +90,5 @@ def test_end_to_end_convert(store):
 
     # Verify both paths recorded in DB.
     db_meta = store.get_meta(paper_id)
-    assert db_meta["source_file"] == str(source_path)
-    assert db_meta["markdown_path"] == str(md_path)
+    assert db_meta.source_file == str(source_path)
+    assert db_meta.markdown_path == str(md_path)

@@ -5,7 +5,11 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Row types for the reviewstore database. Stdlib only — no Pydantic."""
+"""Row types for extract pipeline results stored in paperstore.db.
+
+Stdlib only, no Pydantic. Write methods on :class:`~paperstore.SqliteBackend`
+accept duck-typed domain objects; read methods return these frozen dataclasses.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ class ClaimRow:
     text: str
     section: str
     question: str
+    kind: str = "normative"
     merged_into_line: int | None = None
     merged_into_start: int | None = None
     merged_into_end: int | None = None
@@ -67,3 +72,34 @@ class QuestionRow:
     claim_text: str
     section: str
     question: str
+    kind: str = "normative"
+
+
+@dataclass(frozen=True)
+class CaputCausaeRow:
+    paper_id: str
+    thesis: str
+
+
+@dataclass(frozen=True)
+class CitationAuditRow:
+    paper_id: str
+    cited_paper_id: str
+    resolution_method: str
+    resolved: bool
+    source_url: str = ""
+    quote_match: str = "not_checked"
+    discrepancy: str = ""
+
+
+@dataclass(frozen=True)
+class MarkerRow:
+    paper_id: str
+    loc_line: int
+    loc_start: int
+    loc_end: int
+    text: str
+    section: str
+    marker_type: str
+    target: str
+    intensity: str

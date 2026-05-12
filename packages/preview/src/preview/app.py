@@ -102,7 +102,7 @@ def _resolve_title(backend: StorageBackend, pid: str) -> str:
         meta = backend.get_meta(pid)
     except MissingMetaError:
         return pid
-    return meta.get("title") or pid
+    return meta.title or pid
 
 
 def _mime_for(path: Path) -> str:

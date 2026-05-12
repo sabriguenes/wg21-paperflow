@@ -20,8 +20,9 @@ from review.harness import (
     number_lines,
     promote_claims,
     promote_evidence,
+    promote_markers,
 )
-from review.models import Chunk, Claim, Evidence, RawClaim, RawEvidence, SourceLoc
+from review.models import Chunk, Claim, Evidence, RawClaim, RawEvidence, RawMarker, SourceLoc
 
 
 def test_number_lines():
@@ -76,6 +77,17 @@ def test_promote_claims_never_drops():
     ]
     claims = promote_claims(raws, source)
     assert len(claims) == 1
+
+
+def test_promote_claims_preserves_kind():
+    source = "factual claim text"
+    raws = [
+        RawClaim(text="factual claim text", start_line=1, section="1",
+                 question="Q?", kind="factual"),
+    ]
+    claims = promote_claims(raws, source)
+    assert len(claims) == 1
+    assert claims[0].kind == "factual"
 
 
 def test_promote_claims_resolves_depends_on():
@@ -138,6 +150,21 @@ def test_dedup_tier1_substring_tombstone():
     assert result[0].merged_into == c_long.loc
     assert result[1].merged_into is None
     assert "AB" in result[1].original_quotes
+
+
+def test_promote_markers_uses_start_line():
+    source = "This is line one.\nWe dismiss complexity.\nLine three."
+    raws = [
+        RawMarker(
+            text="We dismiss complexity.", start_line=2,
+            section="1", marker_type="dismissal",
+            target="complexity", intensity="moderate",
+        ),
+    ]
+    markers = promote_markers(raws, source)
+    assert len(markers) == 1
+    assert markers[0].loc.line == 2
+    assert markers[0].marker_type == "dismissal"
 
 
 def test_extract_citations_basic():

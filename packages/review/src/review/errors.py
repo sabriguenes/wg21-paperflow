@@ -9,7 +9,7 @@
 
 Three categories, each with a different response:
 
-- **User-fixable**: edit ``extractor.md`` or run a paperflow command.
+- **User-fixable**: edit ``review.md`` or run a paperflow command.
   ``PromptFileError`` and its subclasses carry the step name and
   expected format. ``PaperNotFoundError`` and ``PaperNotConvertedError``
   carry the paperflow command to run.
@@ -26,7 +26,7 @@ class ReviewError(Exception):
     """Base for all review pipeline errors."""
 
 
-# -- User-fixable: edit extractor.md or run a paperflow command ---------------
+# -- User-fixable: edit review.md or run a paperflow command ------------------
 
 
 class PaperNotFoundError(ReviewError):
@@ -44,7 +44,7 @@ class PaperNotConvertedError(ReviewError):
 
 
 class PromptFileError(ReviewError):
-    """``extractor.md`` has a structural problem the user must fix.
+    """``review.md`` has a structural problem the user must fix.
 
     Every subclass carries the step name (if applicable) and a
     description of the expected format.
@@ -60,7 +60,7 @@ class MissingMetadataError(PromptFileError):
 
 
 class HookMismatchError(PromptFileError):
-    """A step in ``extractor.md`` has no registered Python hook,
+    """A step in ``review.md`` has no registered Python hook,
     a hook is registered for a step that does not exist,
     or a declared tool has no matching callable in the registry.
     """

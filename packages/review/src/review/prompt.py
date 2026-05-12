@@ -5,16 +5,16 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Parse step metadata from ``extractor.md`` and build the pipeline.
+"""Parse step metadata from ``review.md`` and build the pipeline.
 
-``extractor.md`` is the upstream authority for pipeline structure. Each
+``review.md`` is the upstream authority for pipeline structure. Each
 step section declares metadata (model slot, execution mode, reads,
 writes, tools, conditions). This module parses that metadata, validates
 it, and combines it with registered Python hooks to produce an ordered
 list of ``StepSpec`` instances.
 
 Raises ``PromptFileError`` subtypes on any structural mismatch so the
-user knows to go fix ``extractor.md``.
+user knows to go fix ``review.md``.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ _META_RE = re.compile(r"^-\s+\*\*(\w+):\*\*\s*(.+)$", re.MULTILINE)
 
 @dataclass(frozen=True)
 class StepMeta:
-    """Parsed from a step section in ``extractor.md``.
+    """Parsed from a step section in ``review.md``.
 
     This is the authority for the step's configuration. Python hooks
     provide HOW to prepare and extract; this provides WHAT.
@@ -85,13 +85,14 @@ class StepHooks:
     pure: Any = None
     retry_empty: Any = None
     parallel: bool = False
+    request_limit: int | None = None
 
 
 @dataclass(frozen=True)
 class StepSpec:
     """Declarative step descriptor.
 
-    ``extractor.md`` is the upstream authority for pipeline structure.
+    ``review.md`` is the upstream authority for pipeline structure.
     Each step section declares its metadata: model slot, execution
     mode, which state fields it reads and writes, tools, and guard
     conditions. Python provides the bespoke hooks: how to format
@@ -151,7 +152,7 @@ def build_pipeline(
     sections: dict[str, str],
     hooks: dict[str, StepHooks],
 ) -> list[StepSpec]:
-    """Parse ``extractor.md`` metadata, attach hooks, return ordered specs.
+    """Parse ``review.md`` metadata, attach hooks, return ordered specs.
 
     Steps are sorted by their numeric index (parsed from ``Step N``),
     not by section position in the file.
@@ -173,14 +174,14 @@ def build_pipeline(
     orphan_hooks = hook_names - step_names
     if orphan_hooks:
         raise HookMismatchError(
-            f"Hooks registered for steps not in extractor.md: "
+            f"Hooks registered for steps not in review.md: "
             f"{sorted(orphan_hooks)}"
         )
 
     missing_hooks = step_names - hook_names
     if missing_hooks:
         raise HookMismatchError(
-            f"Steps in extractor.md have no registered hooks: "
+            f"Steps in review.md have no registered hooks: "
             f"{sorted(missing_hooks)}"
         )
 
