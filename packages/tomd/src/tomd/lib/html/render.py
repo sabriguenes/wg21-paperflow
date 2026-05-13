@@ -31,50 +31,58 @@ def _fix_misnested_blocks(soup: BeautifulSoup) -> None:
     html.parser does not auto-close inline-context tags (``<p>``, ``<h3>``,
     ``<em>``, etc.) when it encounters a block element. This pulls block
     children out to siblings, preserving surrounding inline content in
-    wrapper elements of the same type.  Runs iteratively until stable.
+    wrapper elements of the same type.
+
+    Uses a worklist to avoid rescanning the entire DOM on each fix.
     """
-    changed = True
-    while changed:
-        changed = False
-        for parent_tag in list(soup.find_all(_INLINE_PARENT_TAGS)):
+    from collections import deque
+
+    def _has_block_child(tag: Tag) -> bool:
+        return any(isinstance(c, Tag) and c.name in _BLOCK_TAGS for c in tag.children)
+
+    worklist: deque[Tag] = deque(
+        tag for tag in soup.find_all(_INLINE_PARENT_TAGS)
+        if _has_block_child(tag)
+    )
+
+    while worklist:
+        parent_tag = worklist.popleft()
+        if parent_tag.parent is None:
+            continue
+        if not _has_block_child(parent_tag):
+            continue
+
+        tag_name = parent_tag.name
+        tag_attrs = dict(parent_tag.attrs) if parent_tag.attrs else {}
+        collected_inline: list = []
+
+        def _flush_inline():
+            if not collected_inline:
+                return
             if not any(
-                isinstance(c, Tag) and c.name in _BLOCK_TAGS
-                for c in parent_tag.children
+                (isinstance(n, Tag) and n.get_text(strip=True))
+                or (isinstance(n, NavigableString) and str(n).strip())
+                for n in collected_inline
             ):
-                continue
-            outer = parent_tag.parent
-            if outer is None:
-                continue
-            changed = True
-            tag_name = parent_tag.name
-            tag_attrs = dict(parent_tag.attrs) if parent_tag.attrs else {}
-            collected_inline: list = []
-
-            def _flush_inline():
-                if not collected_inline:
-                    return
-                if not any(
-                    (isinstance(n, Tag) and n.get_text(strip=True))
-                    or (isinstance(n, NavigableString) and str(n).strip())
-                    for n in collected_inline
-                ):
-                    collected_inline.clear()
-                    return
-                wrapper = soup.new_tag(tag_name, **tag_attrs)
-                for node in collected_inline:
-                    wrapper.append(node.extract())
-                parent_tag.insert_before(wrapper)
                 collected_inline.clear()
+                return
+            wrapper = soup.new_tag(tag_name, **tag_attrs)
+            for node in collected_inline:
+                wrapper.append(node.extract())
+            parent_tag.insert_before(wrapper)
+            if wrapper.name in _INLINE_PARENT_TAGS and _has_block_child(wrapper):
+                worklist.append(wrapper)
+            collected_inline.clear()
 
-            children = list(parent_tag.children)
-            for child in children:
-                if isinstance(child, Tag) and child.name in _BLOCK_TAGS:
-                    _flush_inline()
-                    parent_tag.insert_before(child.extract())
-                else:
-                    collected_inline.append(child)
-            _flush_inline()
-            parent_tag.decompose()
+        children = list(parent_tag.children)
+        for child in children:
+            if isinstance(child, Tag) and child.name in _BLOCK_TAGS:
+                _flush_inline()
+                parent_tag.insert_before(child.extract())
+            else:
+                collected_inline.append(child)
+        _flush_inline()
+        parent_tag.decompose()
 
 
 
@@ -84,23 +92,36 @@ def _fix_misnested_list_items(soup: BeautifulSoup) -> None:
     html.parser does not auto-close <li> when it encounters a new <li>,
     causing successive list items to nest inside the first one. This walks
     all <li> tags and moves any child <li> to the correct sibling position.
+
+    Uses a worklist to avoid rescanning the entire DOM on each fix.
     """
-    changed = True
-    while changed:
-        changed = False
-        for li in list(soup.find_all("li")):
-            nested = li.find_all("li", recursive=False)
-            if not nested:
-                for child in li.children:
-                    if isinstance(child, Tag) and child.name in ("ul", "ol"):
-                        nested.extend(child.find_all("li", recursive=False))
-                continue
-            parent = li.parent
-            if parent is None:
-                continue
-            for nested_li in nested:
-                changed = True
-                parent.append(nested_li.extract())
+    from collections import deque
+
+    def _get_nested(li: Tag) -> list[Tag]:
+        nested = li.find_all("li", recursive=False)
+        if not nested:
+            for child in li.children:
+                if isinstance(child, Tag) and child.name in ("ul", "ol"):
+                    nested.extend(child.find_all("li", recursive=False))
+        return nested
+
+    worklist: deque[Tag] = deque(
+        li for li in soup.find_all("li")
+        if _get_nested(li)
+    )
+
+    while worklist:
+        li = worklist.popleft()
+        if li.parent is None:
+            continue
+        nested = _get_nested(li)
+        if not nested:
+            continue
+        parent = li.parent
+        for nested_li in nested:
+            parent.append(nested_li.extract())
+            if _get_nested(nested_li):
+                worklist.append(nested_li)
 
 
 def render_body(soup: BeautifulSoup, generator: str) -> str:

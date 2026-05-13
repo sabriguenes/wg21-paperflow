@@ -809,6 +809,13 @@ def _collect_metadata_emails(soup: BeautifulSoup) -> list[str]:
     Returns deduplicated list of bare email strings.  Sources checked
     in confidence order: mailto links, then plain-text EMAIL_RE matches,
     then deobfuscated ``at``/``dot`` patterns (medium confidence, EMAIL_RE gate).
+
+    The metadata region is all elements before the first ``<h2>``. When no
+    ``<h2>`` exists, the entire document is treated as the metadata region.
+    This preserves the original behavior but may produce false positives
+    (e.g. an email in a code example treated as an author). The region is
+    built once via ``soup.descendants`` iteration rather than per-element
+    ``find_previous("h2")`` calls, which were O(n^2) on large papers.
     """
     first_h2 = soup.find("h2")
     emails: list[str] = []
@@ -820,29 +827,43 @@ def _collect_metadata_emails(soup: BeautifulSoup) -> list[str]:
             seen.add(lower)
             emails.append(email)
 
+    # Build a lightweight metadata region to avoid O(n^2) find_previous calls.
+    # Collect all elements that appear before the first <h2> in document order.
+    if first_h2:
+        meta_region = []
+        for el in soup.descendants:
+            if el is first_h2:
+                break
+            if isinstance(el, Tag):
+                meta_region.append(el)
+    else:
+        meta_region = list(soup.find_all(True))
+
+    meta_tags_by_name: dict[str, list] = {}
+    for el in meta_region:
+        meta_tags_by_name.setdefault(el.name, []).append(el)
+
     # Pass 1: mailto links (highest confidence)
-    for a in soup.find_all("a", href=lambda h: h and "mailto:" in h):
-        if first_h2 and a.find_previous("h2"):
-            continue
-        email = _extract_mailto_email(a.get("href", ""))
-        if email:
-            _add(email)
+    for a in meta_tags_by_name.get("a", []):
+        href = a.get("href", "")
+        if href and "mailto:" in href:
+            email = _extract_mailto_email(href)
+            if email:
+                _add(email)
 
     # Pass 2: plain-text emails in metadata containers
     _EMAIL_TAGS = ["td", "dd", "li", "p", "span", "pre", "code"]
-    for tag in soup.find_all(_EMAIL_TAGS):
-        if first_h2 and tag.find_previous("h2"):
-            continue
-        for m in EMAIL_RE.finditer(tag.get_text()):
-            _add(m.group(0))
+    for tag_name in _EMAIL_TAGS:
+        for tag in meta_tags_by_name.get(tag_name, []):
+            for m in EMAIL_RE.finditer(tag.get_text()):
+                _add(m.group(0))
 
     # Pass 3: deobfuscate "name at domain dot com" patterns (medium confidence)
-    for tag in soup.find_all(_EMAIL_TAGS + ["address"]):
-        if first_h2 and tag.find_previous("h2"):
-            continue
-        deob_result = deobfuscate_email(tag.get_text())
-        if deob_result:
-            _add(deob_result[0])
+    for tag_name in _EMAIL_TAGS + ["address"]:
+        for tag in meta_tags_by_name.get(tag_name, []):
+            deob_result = deobfuscate_email(tag.get_text())
+            if deob_result:
+                _add(deob_result[0])
 
     return emails
 
@@ -855,14 +876,33 @@ def _recover_name_from_context(soup: BeautifulSoup, email: str) -> str:
        link text equals the address.
     2. Plain-text pattern: ``Name <email>`` in tags like ``<p>``, ``<span>``,
        ``<td>`` (HackMD, hand-written papers).
+
+    Same metadata-region approach as ``_collect_metadata_emails``: elements
+    before the first ``<h2>`` are collected once. When no ``<h2>`` exists,
+    the entire document is searched. See that function's docstring for the
+    rationale and the no-h2 edge case.
     """
     first_h2 = soup.find("h2")
 
+    # Build metadata region to avoid O(n^2) find_previous calls.
+    if first_h2:
+        meta_elements = []
+        for el in soup.descendants:
+            if el is first_h2:
+                break
+            if isinstance(el, Tag):
+                meta_elements.append(el)
+    else:
+        meta_elements = list(soup.find_all(True))
+
     # Strategy 1: mailto links
-    for a in soup.find_all("a", href=lambda h: h and "mailto:" in h):
-        if first_h2 and a.find_previous("h2"):
+    for a in meta_elements:
+        if a.name != "a":
             continue
-        href_email = _extract_mailto_email(a.get("href", ""))
+        href = a.get("href", "")
+        if not href or "mailto:" not in href:
+            continue
+        href_email = _extract_mailto_email(href)
         if href_email.lower() != email.lower():
             continue
         parent = a.parent
@@ -879,8 +919,9 @@ def _recover_name_from_context(soup: BeautifulSoup, email: str) -> str:
             return last_line
 
     # Strategy 2: plain-text "Name <email>" in metadata-region elements
-    for tag in soup.find_all(["td", "dd", "li", "p", "span", "address"]):
-        if first_h2 and tag.find_previous("h2"):
+    _NAME_TAGS = frozenset({"td", "dd", "li", "p", "span", "address"})
+    for tag in meta_elements:
+        if tag.name not in _NAME_TAGS:
             continue
         text = tag.get_text(separator="\n", strip=True)
         if email not in text:

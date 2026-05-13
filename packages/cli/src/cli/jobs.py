@@ -333,14 +333,20 @@ async def run_convert(
             markdown_path=row.markdown_path,
         )
 
+    in_flight: set[str] = set()
+
     async def _one(paper_row: PaperRow) -> dict:
         pid = paper_row.paper_id
         async with semaphore:
+            in_flight.add(pid)
             try:
                 paper = _make_paper(paper_row)
                 # Worker reads the source but does no backend writes;
                 # the main coroutine persists through the backend below.
-                result = await asyncio.to_thread(convert_one_paper, paper)
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(convert_one_paper, paper),
+                    timeout=120,
+                )
                 return {
                     "paper_id": pid,
                     "markdown": result.markdown,
@@ -356,10 +362,14 @@ async def run_convert(
                     return {"paper_id": pid, "status": "skipped", "reason": "unreadable_source"}
                 logger.exception("Convert failed for %s", pid)
                 return {"paper_id": pid, "status": "error", "error": msg}
-            # Batch robustness: one bad paper must not crash the run
+            except TimeoutError:
+                logger.warning("Skipping %s: conversion timed out (120s)", pid)
+                return {"paper_id": pid, "status": "skipped", "reason": "timeout"}
             except Exception as exc:
                 logger.exception("Convert failed for %s", pid)
                 return {"paper_id": pid, "status": "error", "error": str(exc)}
+            finally:
+                in_flight.discard(pid)
 
     tasks = [asyncio.create_task(_one(p)) for p in to_process]
     succeeded = []
@@ -387,7 +397,8 @@ async def run_convert(
             try:
                 on_progress(ProgressEvent(
                     step=completed, total=total,
-                    name=result["paper_id"], pct=completed / total if total else 1.0,
+                    name=next(iter(in_flight)) if in_flight else result["paper_id"],
+                    pct=completed / total if total else 1.0,
                 ))
             except Exception:
                 logger.warning("on_progress hook raised; disabling", exc_info=True)

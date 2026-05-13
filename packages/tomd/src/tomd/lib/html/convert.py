@@ -61,6 +61,7 @@ def convert_html(path: Path | os.PathLike[str]) -> tuple[str, list[str] | None]:
             metadata["document"] = stem_match.group(1).upper()
     if metadata and "document" in metadata:
         _override_revision_from_filename(metadata, path)
+
     problems = _extract.strip_boilerplate(soup, generator)
     # Suppress the "unknown generator" warning when extraction produced usable
     # metadata - the generic extractor handled it well enough.
