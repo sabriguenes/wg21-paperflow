@@ -248,8 +248,14 @@ class CitationAuditEntry(BaseModel, frozen=True):
     """
 
     paper_id: str = Field(description="Cited paper number, e.g. 'P1928R15'.")
-    resolution_method: str = Field(
-        description="How the citation was resolved: 'wg21_link', 'isocpp', 'not_found'.",
+    resolution_method: Literal[
+        "local_index", "wg21_link", "open_std", "not_found"
+    ] = Field(
+        description=(
+            "How the citation was resolved: 'local_index' (paperstore-known "
+            "URL), 'wg21_link' (wg21.link redirect), 'open_std' "
+            "(open-std.org cascade), or 'not_found'."
+        ),
     )
     resolved: bool = Field(description="True if the cited source was successfully fetched.")
     source_url: str = Field(default="", description="URL where the source was found.")

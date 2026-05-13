@@ -379,11 +379,19 @@ The orchestrator builds each agent's context in Python:
 
 ### Resolution cascade
 
-1. `web_fetch(https://wg21.link/{paper_id})` - preferred
-2. `web_fetch(https://www.open-std.org/jtc1/sc22/wg21/docs/papers/{year}/{paper_id}.html)` - fallback
-3. `web_fetch(https://www.open-std.org/jtc1/sc22/wg21/docs/papers/{year}/{paper_id}.pdf)` - fallback
+**WHEN a `## Known URL` section is present in this message:**
 
-**WHEN the cascade exhausts all URLs without a 200 response** return `resolved: false`. Do not search for alternative URLs.
+1. `web_fetch({known_url})` - preferred. Use the URL exactly as given. Record `resolution_method: "local_index"` on success.
+2. `web_fetch({known_url with the other extension})` - fallback. If `{known_url}` ends in `.html`, try `.pdf`; if it ends in `.pdf`, try `.html`. The canonical URL just 404'd, but open-std.org may have swapped the file's extension. Record `resolution_method: "local_index"` on success.
+3. `web_fetch(https://wg21.link/{paper_id})` - last resort. Only useful if the paper moved entirely (since `wg21.link` typically redirects to the same canonical URL we just tried in step 1). Record `resolution_method: "wg21_link"` on success.
+
+**WHEN no `## Known URL` section is present** (the paper is not in our local index), use the cascade:
+
+1. `web_fetch(https://wg21.link/{paper_id})` - preferred. Record `resolution_method: "wg21_link"` on success.
+2. `web_fetch(https://www.open-std.org/jtc1/sc22/wg21/docs/papers/{year}/{paper_id}.html)` - fallback. Search for the year only if you do not know it. Record `resolution_method: "open_std"` on success.
+3. `web_fetch(https://www.open-std.org/jtc1/sc22/wg21/docs/papers/{year}/{paper_id}.pdf)` - fallback. Record `resolution_method: "open_std"` on success.
+
+**WHEN the cascade exhausts all URLs without a 200 response** return `resolved: false` and `resolution_method: "not_found"`. Do not search for alternative URLs.
 
 ### Verification
 
@@ -395,7 +403,7 @@ Return exactly one `CitationAuditEntry` plus zero or more `ExternalEvidence` ite
 
 **CitationAuditEntry:**
 - `paper_id` - the cited paper number
-- `resolution_method` - "wg21_link", "isocpp", or "not_found"
+- `resolution_method` - "local_index", "wg21_link", "open_std", or "not_found"
 - `resolved` - true if successfully fetched
 - `source_url` - URL where the source was found
 - `quote_match` - "exact", "partial", "mismatch", or "not_checked"

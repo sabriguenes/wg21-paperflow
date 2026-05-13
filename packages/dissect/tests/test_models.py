@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+from pydantic import ValidationError
 
 from dissect.models import (
     CaputCausae,
@@ -217,6 +218,19 @@ def test_citation_audit_entry_defaults():
     assert entry.source_url == ""
     assert entry.quote_match == "not_checked"
     assert entry.discrepancy == ""
+
+
+def test_citation_audit_entry_rejects_unknown_resolution_method():
+    # `resolution_method` accepts only `local_index`, `wg21_link`,
+    # `open_std`, or `not_found`. `"isocpp"` is outside that set, so
+    # construction must fail at validation time rather than persist a
+    # bogus token into the citation_audit table.
+    with pytest.raises(ValidationError):
+        CitationAuditEntry(
+            paper_id="P0001R0",
+            resolution_method="isocpp",
+            resolved=False,
+        )
 
 
 def test_citation_task_output_round_trip():

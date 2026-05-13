@@ -59,6 +59,7 @@ from dissect.harness import (
 from dissect.models import (
     CaputCausaeOutput,
     Chunk,
+    CitationRef,
     CitationTaskOutput,
     DedupGroupingOutput,
     ExtractAllOutput,
@@ -679,6 +680,29 @@ async def _pure_dedup_factual(state: PipelineState, ctx: StepContext) -> None:
     state.claims = normative + factual
 
 
+def _known_paper_urls(
+    citations: list[CitationRef],
+    backend: StorageBackend | None,
+) -> dict[str, str]:
+    """Map citation paper_id -> canonical URL, when paperstore knows it.
+
+    Returns an empty dict when ``backend`` is None or no citation has a
+    matching paperstore row. Missing citations are silently omitted; the
+    agent falls back to the cascade for those.
+    """
+    if backend is None:
+        return {}
+    out: dict[str, str] = {}
+    for cit in citations:
+        result = backend.resolve_year_for_paper(cit.paper_id)
+        if result is None:
+            continue
+        _, row = result
+        if row.url:
+            out[cit.paper_id] = row.url
+    return out
+
+
 async def _pure_verify_citations(state: PipelineState, ctx: StepContext) -> None:
     """Spawn a run_task per citation in parallel to verify and collect evidence."""
     assert state.citations is not None and state.claims is not None
@@ -700,14 +724,25 @@ async def _pure_verify_citations(state: PipelineState, ctx: StepContext) -> None
     alive_claims = [c for c in state.claims if c.merged_into is None]
     alive_evidence = [e for e in (state.evidence or []) if e.merged_into is None]
 
+    known_urls = await asyncio.to_thread(
+        _known_paper_urls, state.citations, ctx.backend,
+    )
+
     async def _one_citation(cit) -> CitationTaskOutput:
         pid_num = cit.paper_id
         primary_claims = [c for c in alive_claims if pid_num in c.text]
         primary_evidence = [e for e in alive_evidence if pid_num in e.text]
         secondary_questions = [c.question for c in alive_claims]
 
+        known_url = known_urls.get(cit.paper_id)
+        known_url_block = (
+            f"## Known URL\n\n{known_url}\n\n"
+            if known_url
+            else ""
+        )
         user_msg = (
             f"## Citation\n\nPaper: {cit.paper_id} (cited {cit.count} times)\n\n"
+            f"{known_url_block}"
             f"## Primary Claims\n\n"
             f"{json.dumps([c.model_dump() for c in primary_claims], ensure_ascii=False)}\n\n"
             f"## Primary Evidence\n\n"

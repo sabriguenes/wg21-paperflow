@@ -13,6 +13,7 @@ structural correctness without hitting the LLM.
 
 from __future__ import annotations
 
+import asyncio
 import pytest
 
 from paperstore.errors import MissingMetaError, MissingPaperMdError
@@ -20,8 +21,10 @@ from paperstore.testing import store  # noqa: F401
 
 from dissect.errors import PaperNotFoundError, PaperNotConvertedError
 from dissect.pipeline import (
+    _known_paper_urls,
     _pure_read,
     _pure_report,
+    _pure_verify_citations,
     _guard_web_search,
     _guard_resolve,
     _guard_verify_citations,
@@ -33,6 +36,8 @@ from dissect.pipeline import (
 from dissect.models import (
     CaputCausae,
     CitationAuditEntry,
+    CitationRef,
+    CitationTaskOutput,
     Claim,
     ExternalEvidence,
     LoadBearingResult,
@@ -40,6 +45,7 @@ from dissect.models import (
     SourceLoc,
     SupportLink,
 )
+from dissect.prompt import StepHooks, StepMeta, StepSpec
 
 
 def test_paper_not_found_raises_specific_error(store):  # noqa: F811
@@ -241,3 +247,116 @@ def test_store_caput_causae_writes_thesis(store):  # noqa: F811
     row = store.get_caput_causae("P1000R0")
     assert row is not None
     assert row.thesis == "The paper argues for X."
+
+
+# -- Known-URL lookup --------------------------------------------------------
+
+
+_P3175_URL = "https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p3175r3.html"
+
+
+def test_known_paper_urls_returns_urls_for_indexed_papers(store):  # noqa: F811
+    store.upsert_year("2024", [{
+        "paper_id": "P3175R3",
+        "title": "X",
+        "url": _P3175_URL,
+    }])
+    citations = [CitationRef(paper_id="P3175R3", count=2)]
+    urls = _known_paper_urls(citations, store)
+    assert urls == {"P3175R3": _P3175_URL}
+
+
+def test_known_paper_urls_skips_unindexed_papers(store):  # noqa: F811
+    citations = [CitationRef(paper_id="P9999R0", count=1)]
+    assert _known_paper_urls(citations, store) == {}
+
+
+def test_known_paper_urls_handles_missing_backend():
+    citations = [CitationRef(paper_id="P3175R3", count=1)]
+    assert _known_paper_urls(citations, None) == {}
+
+
+def test_known_paper_urls_skips_rows_with_empty_url(store):  # noqa: F811
+    store.upsert_year("2024", [{"paper_id": "P3175R3", "title": "X"}])
+    citations = [CitationRef(paper_id="P3175R3", count=1)]
+    assert _known_paper_urls(citations, store) == {}
+
+
+# -- Verify-citations user message assembly ---------------------------------
+
+
+def _verify_citations_spec() -> StepSpec:
+    meta = StepMeta(
+        name="Step 8 - Verify Citations",
+        number=8,
+        model_slot="fast",
+        execution="parallel",
+        reads=["citations", "claims", "evidence"],
+        writes=["citation_audit", "external_evidence"],
+        tools=["web_fetch"],
+        condition="citations is non-empty",
+    )
+    return StepSpec(meta=meta, hooks=StepHooks())
+
+
+def test_pure_verify_citations_injects_known_url_into_user_message(
+    store, monkeypatch,  # noqa: F811
+):
+    store.upsert_year("2024", [{
+        "paper_id": "P3175R3",
+        "title": "X",
+        "url": _P3175_URL,
+    }])
+
+    captured: list[str] = []
+
+    async def fake_run_task(*, system_prompt, user_message, output_type, **kwargs):
+        captured.append(user_message)
+        return CitationTaskOutput(
+            audit=CitationAuditEntry(
+                paper_id="P3175R3",
+                resolution_method="local_index",
+                resolved=True,
+                source_url=_P3175_URL,
+            ),
+            evidence=[],
+        )
+
+    monkeypatch.setattr("dissect.pipeline.run_task", fake_run_task)
+
+    state = PipelineState(
+        citations=[
+            CitationRef(paper_id="P3175R3", count=1),
+            CitationRef(paper_id="P9999R0", count=1),
+        ],
+        claims=[],
+        evidence=[],
+    )
+    ctx = StepContext(
+        sections={"Step 8 - Verify Citations": "INSTRUCTIONS"},
+        model_slots={"fast": "stub-model"},
+        backend=store,
+        tool_registry={"web_fetch": lambda **_: ""},
+    )
+    ctx._current_spec = _verify_citations_spec()
+
+    asyncio.run(_pure_verify_citations(state, ctx))
+
+    by_pid = {msg.split("Paper: ", 1)[1].split(" ", 1)[0]: msg for msg in captured}
+    assert "## Known URL" in by_pid["P3175R3"]
+    assert _P3175_URL in by_pid["P3175R3"]
+    assert "## Known URL" not in by_pid["P9999R0"]
+
+    # The Known URL section sits in the message header, between the
+    # `## Citation` line and the bulk JSON payload (`## Primary Claims`,
+    # `## Primary Evidence`, `## Secondary Questions`), and ahead of
+    # `## Instructions`. LLM attention falls off across long messages,
+    # so the canonical URL must appear before the agent reads the
+    # instructions that tell it which URL to fetch.
+    indexed = by_pid["P3175R3"]
+    assert (
+        indexed.index("## Citation")
+        < indexed.index("## Known URL")
+        < indexed.index("## Primary Claims")
+        < indexed.index("## Instructions")
+    )
