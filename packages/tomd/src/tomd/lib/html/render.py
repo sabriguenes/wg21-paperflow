@@ -87,40 +87,37 @@ def _fix_misnested_blocks(soup: BeautifulSoup) -> None:
 
 
 def _fix_misnested_list_items(soup: BeautifulSoup) -> None:
-    """Promote <li> elements nested inside other <li> to siblings.
+    """Promote <li> elements directly nested inside other <li> to siblings.
 
     html.parser does not auto-close <li> when it encounters a new <li>,
     causing successive list items to nest inside the first one. This walks
-    all <li> tags and moves any child <li> to the correct sibling position.
+    all <li> tags and moves any direct child <li> to the correct sibling
+    position. Properly wrapped sublists (<li><ul><li>...</li></ul></li>)
+    are left alone so the renderer can indent them.
 
     Uses a worklist to avoid rescanning the entire DOM on each fix.
     """
     from collections import deque
 
-    def _get_nested(li: Tag) -> list[Tag]:
-        nested = li.find_all("li", recursive=False)
-        if not nested:
-            for child in li.children:
-                if isinstance(child, Tag) and child.name in ("ul", "ol"):
-                    nested.extend(child.find_all("li", recursive=False))
-        return nested
+    def _direct_li_children(li: Tag) -> list[Tag]:
+        return li.find_all("li", recursive=False)
 
     worklist: deque[Tag] = deque(
         li for li in soup.find_all("li")
-        if _get_nested(li)
+        if _direct_li_children(li)
     )
 
     while worklist:
         li = worklist.popleft()
         if li.parent is None:
             continue
-        nested = _get_nested(li)
+        nested = _direct_li_children(li)
         if not nested:
             continue
         parent = li.parent
         for nested_li in nested:
             parent.append(nested_li.extract())
-            if _get_nested(nested_li):
+            if _direct_li_children(nested_li):
                 worklist.append(nested_li)
 
 
