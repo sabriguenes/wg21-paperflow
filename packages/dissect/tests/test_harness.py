@@ -22,7 +22,7 @@ from dissect.harness import (
     promote_evidence,
     promote_markers,
 )
-from dissect.models import Chunk, Claim, Evidence, RawClaim, RawEvidence, RawMarker, SourceLoc
+from dissect.models import Chunk, Claim, RawClaim, RawEvidence, RawMarker, SourceLoc
 
 
 def test_number_lines():

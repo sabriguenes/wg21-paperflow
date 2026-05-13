@@ -67,9 +67,7 @@ from dissect.models import (
     PatternDetectionOutput,
     PipelineState,
     RawClaim,
-    RawMarker,
     ResolveOutput,
-    RhetoricalMarker,
     VerifyOutput,
     WebSearchOutput,
 )

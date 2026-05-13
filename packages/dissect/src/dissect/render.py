@@ -23,7 +23,7 @@ from typing import Any
 
 from paperstore.backend import PaperRow
 
-from dissect.models import CaputCausae, CitationAuditEntry, PipelineState, SourceLoc
+from dissect.models import PipelineState, SourceLoc
 
 _STATUS_DIRECTLY = "directly_supported"
 _STATUS_TRANSITIVELY = "transitively_supported"

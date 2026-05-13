@@ -13,7 +13,7 @@
 table. ``ConvertResult`` is the output of a single tomd conversion pass.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 __all__ = [
     "Paper",

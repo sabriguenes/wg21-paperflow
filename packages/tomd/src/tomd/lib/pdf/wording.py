@@ -256,7 +256,6 @@ def classify_wording(blocks: list[Block],
 
     ins_count = sum(1 for _, r in candidates if r == "ins")
     confirmed_del = sum(1 for _, r in candidates if r == "del")
-    unconfirmed_del = sum(1 for _, r in candidates if r == "del_unconfirmed")
 
     if ins_count >= _MIN_WORDING_SPANS:
         candidates = [
