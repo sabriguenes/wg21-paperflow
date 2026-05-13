@@ -84,6 +84,9 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
+_TASK_CONCURRENCY = 5
+_task_semaphore = asyncio.Semaphore(_TASK_CONCURRENCY)
+
 
 async def run_task(
     system_prompt: str,
@@ -97,20 +100,24 @@ async def run_task(
 
     Mirrors Cursor's Task tool pattern: focused mission, tight budget,
     one-way data flow. Raw content stays inside the task.
+
+    Concurrency is capped at ``_TASK_CONCURRENCY`` (5) to avoid hitting
+    API rate limits when many tasks are dispatched in parallel.
     """
-    agent: Agent[None, T] = Agent(
-        model or _DEFAULT_MODEL_SLOTS["default"],
-        output_type=output_type,
-        system_prompt=system_prompt,
-    )
-    if tools:
-        for name, fn in tools.items():
-            agent.tool_plain(fn)
-    result = await agent.run(
-        user_message,
-        usage_limits=UsageLimits(request_limit=request_limit),
-    )
-    return result.output
+    async with _task_semaphore:
+        agent: Agent[None, T] = Agent(
+            model or _DEFAULT_MODEL_SLOTS["default"],
+            output_type=output_type,
+            system_prompt=system_prompt,
+        )
+        if tools:
+            for name, fn in tools.items():
+                agent.tool_plain(fn)
+        result = await agent.run(
+            user_message,
+            usage_limits=UsageLimits(request_limit=request_limit),
+        )
+        return result.output
 
 
 _DEFAULT_MODEL_SLOTS = {
