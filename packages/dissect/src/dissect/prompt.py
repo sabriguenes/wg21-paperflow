@@ -5,16 +5,16 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Parse step metadata from ``review.md`` and build the pipeline.
+"""Parse step metadata from ``dissect.md`` and build the pipeline.
 
-``review.md`` is the upstream authority for pipeline structure. Each
+``dissect.md`` is the upstream authority for pipeline structure. Each
 step section declares metadata (model slot, execution mode, reads,
 writes, tools, conditions). This module parses that metadata, validates
 it, and combines it with registered Python hooks to produce an ordered
 list of ``StepSpec`` instances.
 
 Raises ``PromptFileError`` subtypes on any structural mismatch so the
-user knows to go fix ``review.md``.
+user knows to go fix ``dissect.md``.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from review.errors import HookMismatchError, MissingMetadataError
+from dissect.errors import HookMismatchError, MissingMetadataError
 
 _STEP_RE = re.compile(r"^Step\s+(\d+)")
 _META_RE = re.compile(r"^-\s+\*\*(\w+):\*\*\s*(.+)$", re.MULTILINE)
@@ -33,7 +33,7 @@ _META_RE = re.compile(r"^-\s+\*\*(\w+):\*\*\s*(.+)$", re.MULTILINE)
 
 @dataclass(frozen=True)
 class StepMeta:
-    """Parsed from a step section in ``review.md``.
+    """Parsed from a step section in ``dissect.md``.
 
     This is the authority for the step's configuration. Python hooks
     provide HOW to prepare and extract; this provides WHAT.
@@ -92,7 +92,7 @@ class StepHooks:
 class StepSpec:
     """Declarative step descriptor.
 
-    ``review.md`` is the upstream authority for pipeline structure.
+    ``dissect.md`` is the upstream authority for pipeline structure.
     Each step section declares its metadata: model slot, execution
     mode, which state fields it reads and writes, tools, and guard
     conditions. Python provides the bespoke hooks: how to format
@@ -152,7 +152,7 @@ def build_pipeline(
     sections: dict[str, str],
     hooks: dict[str, StepHooks],
 ) -> list[StepSpec]:
-    """Parse ``review.md`` metadata, attach hooks, return ordered specs.
+    """Parse ``dissect.md`` metadata, attach hooks, return ordered specs.
 
     Steps are sorted by their numeric index (parsed from ``Step N``),
     not by section position in the file.
@@ -174,14 +174,14 @@ def build_pipeline(
     orphan_hooks = hook_names - step_names
     if orphan_hooks:
         raise HookMismatchError(
-            f"Hooks registered for steps not in review.md: "
+            f"Hooks registered for steps not in dissect.md: "
             f"{sorted(orphan_hooks)}"
         )
 
     missing_hooks = step_names - hook_names
     if missing_hooks:
         raise HookMismatchError(
-            f"Steps in review.md have no registered hooks: "
+            f"Steps in dissect.md have no registered hooks: "
             f"{sorted(missing_hooks)}"
         )
 

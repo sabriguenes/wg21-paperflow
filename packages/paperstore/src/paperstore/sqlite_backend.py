@@ -42,7 +42,7 @@ from paperstore.errors import (
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
-    MissingReviewError,
+    MissingDissectError,
     MissingSourceError,
 )
 
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS papers (
     mailing_date  TEXT DEFAULT '',
     source_file   TEXT DEFAULT '',
     markdown_path TEXT DEFAULT '',
-    review_path   TEXT DEFAULT '',
+    dissect_path  TEXT DEFAULT '',
     line_count    INTEGER DEFAULT 0
 );
 
@@ -162,8 +162,10 @@ CREATE TABLE IF NOT EXISTS citation_audit (
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add columns introduced after the initial schema."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(papers)").fetchall()}
-    if "review_path" not in cols:
-        conn.execute("ALTER TABLE papers ADD COLUMN review_path TEXT DEFAULT ''")
+    if "review_path" in cols and "dissect_path" not in cols:
+        conn.execute("ALTER TABLE papers RENAME COLUMN review_path TO dissect_path")
+    elif "dissect_path" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN dissect_path TEXT DEFAULT ''")
     if "line_count" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN line_count INTEGER DEFAULT 0")
 
@@ -300,7 +302,7 @@ class SqliteBackend(StorageBackend):
             mailing_date=d.get("mailing_date", ""),
             source_file=d.get("source_file", ""),
             markdown_path=d.get("markdown_path", ""),
-            review_path=d.get("review_path", ""),
+            dissect_path=d.get("dissect_path", ""),
             line_count=d.get("line_count", 0),
         )
 
@@ -411,35 +413,35 @@ class SqliteBackend(StorageBackend):
         self.record_markdown(pid, final_path, line_count=line_count)
         return final_path
 
-    def write_review_md(self, paper_id: str, markdown: str) -> Path:
-        """Write review markdown atomically and record the path in the DB."""
+    def write_dissect_md(self, paper_id: str, markdown: str) -> Path:
+        """Write dissect markdown atomically and record the path in the DB."""
         pid = paper_id.strip().upper()
         final_path = self._atomic_write_text(
-            self._papers_dir / f"{pid.lower()}.review.md", markdown
+            self._papers_dir / f"{pid.lower()}.dissect.md", markdown
         )
         with self._conn:
             self._conn.execute(
                 "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
             )
             self._conn.execute(
-                "UPDATE papers SET review_path = ? WHERE paper_id = ?",
+                "UPDATE papers SET dissect_path = ? WHERE paper_id = ?",
                 (str(final_path), pid),
             )
         return final_path
 
-    def clear_review(self, paper_id: str) -> None:
-        """Delete the review file and clear ``review_path`` in the DB."""
+    def clear_dissect(self, paper_id: str) -> None:
+        """Delete the dissect file and clear ``dissect_path`` in the DB."""
         pid = paper_id.strip().upper()
         row = self._conn.execute(
-            "SELECT review_path FROM papers WHERE paper_id = ?", (pid,)
+            "SELECT dissect_path FROM papers WHERE paper_id = ?", (pid,)
         ).fetchone()
-        if row and row["review_path"]:
-            path = Path(row["review_path"])
+        if row and row["dissect_path"]:
+            path = Path(row["dissect_path"])
             if path.exists():
                 path.unlink()
         with self._conn:
             self._conn.execute(
-                "UPDATE papers SET review_path = '' WHERE paper_id = ?",
+                "UPDATE papers SET dissect_path = '' WHERE paper_id = ?",
                 (pid,),
             )
 
@@ -497,7 +499,7 @@ class SqliteBackend(StorageBackend):
         """Backfill DB rows from on-disk artifacts. See ABC for semantics."""
         sources: list[tuple[str, Path]] = []
         markdowns: list[tuple[str, Path]] = []
-        reviews: list[tuple[str, Path]] = []
+        dissections: list[tuple[str, Path]] = []
 
         for path in sorted(self._papers_dir.iterdir()):
             if not path.is_file():
@@ -507,8 +509,8 @@ class SqliteBackend(StorageBackend):
                 continue
             if name.endswith(".json"):
                 continue
-            if name.endswith(".review.md"):
-                reviews.append((name[: -len(".review.md")].upper(), path))
+            if name.endswith(".dissect.md"):
+                dissections.append((name[: -len(".dissect.md")].upper(), path))
                 continue
             if name.endswith(".md"):
                 markdowns.append((name[: -len(".md")].upper(), path))
@@ -518,7 +520,7 @@ class SqliteBackend(StorageBackend):
                     sources.append((name[: -len(suffix)].upper(), path))
                     break
 
-        counts = {"sources": 0, "markdowns": 0, "reviews": 0, "line_counts": 0}
+        counts = {"sources": 0, "markdowns": 0, "dissections": 0, "line_counts": 0}
         with self._conn:
             for pid, path in sources:
                 self._conn.execute(
@@ -542,17 +544,17 @@ class SqliteBackend(StorageBackend):
                 )
                 if cursor.rowcount > 0:
                     counts["markdowns"] += 1
-            for pid, path in reviews:
+            for pid, path in dissections:
                 self._conn.execute(
                     "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
                 )
                 cursor = self._conn.execute(
-                    "UPDATE papers SET review_path = ? "
-                    "WHERE paper_id = ? AND review_path = ''",
+                    "UPDATE papers SET dissect_path = ? "
+                    "WHERE paper_id = ? AND dissect_path = ''",
                     (str(path), pid),
                 )
                 if cursor.rowcount > 0:
-                    counts["reviews"] += 1
+                    counts["dissections"] += 1
 
             # Backfill line_count for rows with markdown but no count
             rows_needing_count = self._conn.execute(
@@ -624,21 +626,21 @@ class SqliteBackend(StorageBackend):
         pid = paper_id.strip().upper()
         return self._papers_dir / f"{pid.lower()}.md"
 
-    def get_review_path(self, paper_id: str) -> Path:
+    def get_dissect_path(self, paper_id: str) -> Path:
         row = self._conn.execute(
-            "SELECT review_path FROM papers WHERE paper_id = ?",
+            "SELECT dissect_path FROM papers WHERE paper_id = ?",
             (paper_id.strip().upper(),),
         ).fetchone()
-        if row is None or not row["review_path"]:
-            raise MissingReviewError(
-                f"No review for {paper_id!r}. "
-                f"Run 'paperflow review {paper_id}' first."
+        if row is None or not row["dissect_path"]:
+            raise MissingDissectError(
+                f"No dissect for {paper_id!r}. "
+                f"Run 'paperflow dissect {paper_id}' first."
             )
-        path = Path(row["review_path"])
+        path = Path(row["dissect_path"])
         if not path.exists():
-            raise MissingReviewError(
-                f"Review file missing for {paper_id!r}: {path}. "
-                f"Run 'paperflow review {paper_id}' again."
+            raise MissingDissectError(
+                f"Dissect file missing for {paper_id!r}: {path}. "
+                f"Run 'paperflow dissect {paper_id}' again."
             )
         return path
 

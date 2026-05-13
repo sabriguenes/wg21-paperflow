@@ -103,7 +103,7 @@ def _cmd_reconcile(backend: SqliteBackend) -> int:
     print(
         f"Backfilled: {counts['sources']} sources, "
         f"{counts['markdowns']} markdowns, "
-        f"{counts['reviews']} reviews."
+        f"{counts['dissections']} dissections."
     )
     return 0
 

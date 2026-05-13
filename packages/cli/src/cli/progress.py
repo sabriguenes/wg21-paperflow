@@ -31,7 +31,7 @@ def make_progress_handler(
 
         ctx, on_progress = make_progress_handler("Extracting")
         with ctx:
-            asyncio.run(review_paper(pid, backend, on_progress=on_progress))
+            asyncio.run(dissect_paper(pid, backend, on_progress=on_progress))
 
     The rich spinner animates continuously between step events. The
     context manager must stay open for the entire operation.

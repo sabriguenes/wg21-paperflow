@@ -5,7 +5,7 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""CLI command module for 'paperflow review'."""
+"""CLI command module for 'paperflow dissect'."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def _resolve_pid(target: str, backend: StorageBackend) -> str:
 
 
 def command(args: argparse.Namespace, backend: StorageBackend) -> int:
-    from review import ReviewError, review_paper, review_since
+    from dissect import DissectError, dissect_paper, dissect_since
     from cli.progress import make_progress_handler
 
     target = args.targets[0]
@@ -49,10 +49,10 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
     stop_after = args.trace if args.trace is not None and args.trace >= 0 else None
 
     if _MONTH_RE.match(target):
-        progress_ctx, on_progress = make_progress_handler("Batch review")
+        progress_ctx, on_progress = make_progress_handler("Batch dissect")
         with progress_ctx:
             results = asyncio.run(
-                review_since(
+                dissect_since(
                     target, backend,
                     on_progress=on_progress,
                     debug=args.debug,
@@ -62,7 +62,7 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
 
         ok = sum(1 for r in results if r["status"] == "ok")
         failed = sum(1 for r in results if r["status"] == "error")
-        print(f"Batch review: {ok} succeeded, {failed} failed out of {len(results)} papers")
+        print(f"Batch dissect: {ok} succeeded, {failed} failed out of {len(results)} papers")
         for r in results:
             if r["status"] == "error":
                 print(f"  FAILED: {r['paper_id']}: {r['error']}", file=sys.stderr)
@@ -75,7 +75,7 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
     with progress_ctx:
         try:
             report = asyncio.run(
-                review_paper(
+                dissect_paper(
                     pid, backend,
                     on_progress=on_progress,
                     stop_after=stop_after,
@@ -83,14 +83,14 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
                     trace=trace,
                 )
             )
-        except ReviewError as exc:
-            print(f"Review failed: {exc}", file=sys.stderr)
+        except DissectError as exc:
+            print(f"Dissect failed: {exc}", file=sys.stderr)
             return 1
         except pydantic_ai.exceptions.UsageLimitExceeded as exc:
-            print(f"Review aborted: LLM usage limit reached ({exc})", file=sys.stderr)
+            print(f"Dissect aborted: LLM usage limit reached ({exc})", file=sys.stderr)
             return 1
         except Exception as exc:
-            msg = f"Review failed unexpectedly: {type(exc).__name__}: {exc}"
+            msg = f"Dissect failed unexpectedly: {type(exc).__name__}: {exc}"
             cause = exc.__cause__
             while cause:
                 msg += f"\n  Caused by: {type(cause).__name__}: {cause}"
@@ -104,10 +104,10 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
         print(f"Trace written to {trace_path}")
         return 0
 
-    out_path = backend.write_review_md(pid, report)
+    out_path = backend.write_dissect_md(pid, report)
     if not out_path.exists() or out_path.stat().st_size == 0:
-        print(f"Review write failed: {out_path} is empty or missing", file=sys.stderr)
+        print(f"Dissect write failed: {out_path} is empty or missing", file=sys.stderr)
         return 1
 
-    print(f"Review written to {out_path}")
+    print(f"Dissect written to {out_path}")
     return 0

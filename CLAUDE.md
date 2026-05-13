@@ -13,8 +13,8 @@ packages/
   paperstore/   -> storage abstraction (SqliteBackend)
   mailing/      -> scrape open-std.org + download paper sources
   tomd/         -> PDF/HTML to Markdown
-  review/       -> LLM-driven paper review pipeline (Pydantic AI + web search)
-  cli/          -> ingestion + conversion + review CLI
+  dissect/      -> LLM-driven paper dissect pipeline (Pydantic AI + web search)
+  cli/          -> ingestion + conversion + dissect CLI
 tests/          -> cross-package integration test
 ```
 
@@ -41,9 +41,9 @@ paperflow convert  2026-04
 paperflow full     2026-04
 paperflow          2026-04
 
-# Review - single paper or mailing batch
-paperflow review P4003R2
-paperflow review 2026-01
+# Dissect - single paper or mailing batch
+paperflow dissect P4003R2
+paperflow dissect 2026-01
 
 # Idempotent batch - skips papers already at or past the target stage
 paperflow download all
@@ -66,7 +66,7 @@ Each subcommand is implemented in its own module inside `packages/cli/src/cli/`:
 | `mailing` | `mailing.py` |
 | `download` | `download.py` |
 | `convert` | `convert.py` |
-| `review` | `review.py` |
+| `dissect` | `dissect.py` |
 
 The argparse entry point is `__main__.py`.
 
@@ -109,7 +109,7 @@ reply-to:
 - `reply-to`: YAML list of `"Name <email>"` strings. All author-like metadata (Reply-to, Authors, Editors, Co-Authors) is merged into this single field. Field name chosen for consistency with cppalliance/wg21-papers `source/CLAUDE.md` (Mungo/Vinnie decision, April 2026).
 - Body headings start at H2. The front-matter `title` renders as H1; no `# H1` in body.
 
-## On-disk layout (review output)
+## On-disk layout (dissect output)
 
 ```
 WG21_DATA_DIR/
@@ -117,16 +117,16 @@ WG21_DATA_DIR/
                                   #   paper_citations, external_citations,
                                   #   questions, rhetorical_markers
   paperstore/
-    <pid>.review.md               # review report
+    <pid>.dissect.md              # dissect report
 ```
 
 ## Invariants
 
 - **All storage goes through `paperstore.StorageBackend`.** Never write files directly. Never construct paths from `backend.workspace_dir` or from DB column strings. Use backend accessors.
 - **`convert` never re-downloads.** It reads the staged source via the backend.
-- **Public and reproducible.** This repository is designed to be inspectable. Anyone can clone it, run `paperflow review <pid>`, and replicate the same review findings. No external proprietary dependencies. No black boxes. The review pipeline, prompt text, and models are all visible in this repo. The review package must remain self-contained within wg21-paperflow with no dependencies on cppa-forge or other private repos.
+- **Public and reproducible.** This repository is designed to be inspectable. Anyone can clone it, run `paperflow dissect <pid>`, and replicate the same dissect findings. No external proprietary dependencies. No black boxes. The dissect pipeline, prompt text, and models are all visible in this repo. The dissect package must remain self-contained within wg21-paperflow with no dependencies on cppa-forge or other private repos.
 - **Library functions return data. Callers persist.** Never call `write_*` inside a pipeline or conversion function. The CLI module owns persistence.
-- **Review accuracy over availability.** A wrong redteam analysis destroys credibility in a way that cannot be regained. A crashed pipeline that fails to publish preserves reputation. In the review package, prefer crashing on bad data over silently degrading: no `default=str` in JSON serialization, no silent type coercion, no swallowed errors. If the pipeline state is not cleanly serializable, that is a bug to fix, not a condition to mask.
+- **Dissect accuracy over availability.** A wrong redteam analysis destroys credibility in a way that cannot be regained. A crashed pipeline that fails to publish preserves reputation. In the dissect package, prefer crashing on bad data over silently degrading: no `default=str` in JSON serialization, no silent type coercion, no swallowed errors. If the pipeline state is not cleanly serializable, that is a bug to fix, not a condition to mask.
 - **Broad catches must be commented.** `except Exception` in batch workers and callback firewalls is acceptable. Uncommented broad catches are treated as bugs during review.
 - **Tunable thresholds are named constants.** No bare numeric literals for scoring penalties, timeouts, display limits, or heuristic cutoffs. Module-level constant with a descriptive name.
 - **Library code uses `logging`, never `print()`.** No `print(file=sys.stderr)` in any package except `cli`.

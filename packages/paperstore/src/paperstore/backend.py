@@ -87,7 +87,7 @@ class PaperRow:
     mailing_date: str = ""
     source_file: str = ""
     markdown_path: str = ""
-    review_path: str = ""
+    dissect_path: str = ""
     line_count: int = 0
 
 
@@ -155,15 +155,15 @@ class StorageBackend(ABC):
         """Persist the converted markdown. Atomic write. Returns path."""
 
     @abstractmethod
-    def write_review_md(self, paper_id: str, markdown: str) -> Path:
-        """Persist the review markdown. Atomic write. Returns path."""
+    def write_dissect_md(self, paper_id: str, markdown: str) -> Path:
+        """Persist the dissect markdown. Atomic write. Returns path."""
 
     @abstractmethod
-    def clear_review(self, paper_id: str) -> None:
-        """Delete the review file and clear its path in the store.
+    def clear_dissect(self, paper_id: str) -> None:
+        """Delete the dissect file and clear its path in the store.
 
-        Called at the start of a review run so a crash does not leave
-        a stale review from a previous run.
+        Called at the start of a dissect run so a crash does not leave
+        a stale dissect from a previous run.
         """
 
     @abstractmethod
@@ -247,11 +247,11 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
-    def get_review_path(self, paper_id: str) -> Path:
-        """Return the local path to the review file.
+    def get_dissect_path(self, paper_id: str) -> Path:
+        """Return the local path to the dissect file.
 
         Raises:
-            paperstore.MissingReviewError: no review for ``paper_id``.
+            paperstore.MissingDissectError: no dissect for ``paper_id``.
         """
 
     @abstractmethod

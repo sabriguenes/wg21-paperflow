@@ -18,8 +18,8 @@ import pytest
 from paperstore.errors import MissingMetaError, MissingPaperMdError
 from paperstore.testing import store  # noqa: F401
 
-from review.errors import PaperNotFoundError, PaperNotConvertedError
-from review.pipeline import (
+from dissect.errors import PaperNotFoundError, PaperNotConvertedError
+from dissect.pipeline import (
     _pure_read,
     _pure_report,
     _guard_web_search,
@@ -27,10 +27,10 @@ from review.pipeline import (
     _guard_verify_citations,
     _guard_caput_causae,
     load_sections,
-    review_paper,
+    dissect_paper,
     StepContext,
 )
-from review.models import (
+from dissect.models import (
     Claim,
     ExternalEvidence,
     LoadBearingResult,
@@ -44,7 +44,7 @@ def test_paper_not_found_raises_specific_error(store):  # noqa: F811
     import asyncio
 
     with pytest.raises(PaperNotFoundError, match="not found in paperstore") as exc_info:
-        asyncio.run(review_paper("P9999R0", store))
+        asyncio.run(dissect_paper("P9999R0", store))
 
     assert isinstance(exc_info.value.__cause__, MissingMetaError)
 
@@ -55,7 +55,7 @@ def test_paper_no_markdown_raises_specific_error(store):  # noqa: F811
     store.upsert_year("2026", [{"paper_id": "P9999R0", "title": "Test"}])
 
     with pytest.raises(PaperNotConvertedError, match="no converted markdown") as exc_info:
-        asyncio.run(review_paper("P9999R0", store))
+        asyncio.run(dissect_paper("P9999R0", store))
 
     assert isinstance(exc_info.value.__cause__, MissingPaperMdError)
 
@@ -75,11 +75,11 @@ def test_load_sections_returns_system_prompt():
     assert "System Prompt" in secs
 
 
-def test_review_error_message_includes_pid(store):  # noqa: F811
+def test_dissect_error_message_includes_pid(store):  # noqa: F811
     import asyncio
 
     with pytest.raises(PaperNotFoundError, match="P0001R0"):
-        asyncio.run(review_paper("P0001R0", store))
+        asyncio.run(dissect_paper("P0001R0", store))
 
 
 # -- Pure step hooks ---------------------------------------------------------

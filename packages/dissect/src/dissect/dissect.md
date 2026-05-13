@@ -114,6 +114,10 @@ One subagent per chunk, parallel. Each line in the chunk is prefixed with its li
 - `kind` - always `"normative"` for this step
 - `depends_on` - list of quoted `text` of claims this one requires. Empty if self-standing.
 
+### `analysis_complete`
+
+**ALWAYS** set `analysis_complete` to `true` once you have finished analyzing the chunk. Set it even when the chunk contains no claims, no evidence, and no markers. An output with `analysis_complete: false` is treated as a failed extraction and will be retried.
+
 ### Evidence
 
 **WHEN a statement is offered in support of another assertion** extract as evidence.
@@ -228,6 +232,10 @@ Here are the questions this paper's normative claims need answered. Extract any 
 - `question` - single question whose answer would verify or refute this fact
 - `kind` - always `"factual"` for this step
 - `depends_on` - list of quoted normative claim questions this fact supports
+
+### `analysis_complete`
+
+**ALWAYS** set `analysis_complete` to `true` once you have finished analyzing the chunk. Set it even when the chunk contains no factual claims. An output with `analysis_complete: false` is treated as a failed extraction and will be retried.
 
 ---
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -72,6 +73,23 @@ class SearchBackend(ABC):
 
     async def close(self) -> None:
         """Release resources. Default is a no-op."""
+
+
+# open-std.org serves papers with lowercase filenames (e.g. p3175r3.html)
+# on a case-sensitive Linux filesystem.  LLM agents often construct URLs
+# using the uppercase form from bibliographic references (P3175R3.html),
+# which returns a 404.  Lowercase the filename component to fix this.
+_OPEN_STD_PAPER_RE = re.compile(
+    r"^(https?://www\.open-std\.org/jtc1/sc22/wg21/docs/papers/\d{4}/)([^/]+)$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_open_std_url(url: str) -> str:
+    m = _OPEN_STD_PAPER_RE.match(url)
+    if m:
+        return m.group(1) + m.group(2).lower()
+    return url
 
 
 class WebResearcher:
@@ -145,6 +163,8 @@ class WebResearcher:
             raise RuntimeError("Researcher is closed.")
         if not url:
             return FetchResponse(status_code=0, content="Error: Empty URL")
+
+        url = _normalize_open_std_url(url)
 
         try:
             resp = await self._client.get(

@@ -15,7 +15,7 @@ from paperstore.errors import (
     MissingMetaError,
     MissingPaperError,
     MissingPaperMdError,
-    MissingReviewError,
+    MissingDissectError,
     MissingSourceError,
     PaperstoreError,
 )
@@ -46,7 +46,7 @@ __all__ = [
     "MissingMetaError",
     "MissingSourceError",
     "MissingPaperMdError",
-    "MissingReviewError",
+    "MissingDissectError",
     "MissingMailingIndexError",
     "from_uri",
     "default_workspace_dir",

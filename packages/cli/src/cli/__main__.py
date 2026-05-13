@@ -23,18 +23,18 @@ import cli.mailing as _mailing_mod
 import cli.download as _download_mod
 import cli.convert as _convert_mod
 import cli.full as _full_mod
-import cli.review as _review_mod
+import cli.dissect as _dissect_mod
 from cli.logutil import configure_console_logging
 from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
 
-_VERB_NAMES = {"mailing", "download", "convert", "full", "review"}
+_VERB_NAMES = {"mailing", "download", "convert", "full", "dissect"}
 
 _VERB_HELP = {
     "mailing":  "Scrape mailing indexes from open-std.org (no downloads)",
     "download": "Download paper source files (PDF/HTML)",
     "convert":  "Convert staged source files to markdown (no LLM)",
     "full":     "Run all three stages: mailing + download + convert",
-    "review":   "Run an LLM-driven review of a WG21 paper",
+    "dissect":  "Run an LLM-driven dissection of a WG21 paper",
 }
 
 _VERB_DESCRIPTION = {
@@ -54,8 +54,8 @@ _VERB_DESCRIPTION = {
         "Full pipeline: scrape mailing index, download sources, and convert to "
         "markdown. Each stage is idempotent; already-done work is skipped."
     ),
-    "review": (
-        "Review a paper using the multi-step LLM pipeline. "
+    "dissect": (
+        "Dissect a paper using the multi-step LLM pipeline. "
         "Requires the paper to be indexed and converted first."
     ),
 }
@@ -65,7 +65,7 @@ _VERB_TARGETS_HELP = {
     "download": 'Year (2026), paper id(s) (P3642R4 ...), or "all".',
     "convert":  'Year (2026), paper id(s) (P3642R4 ...), or "all".',
     "full":     'Year (2026), paper id(s) (P3642R4 ...), or "all".',
-    "review":   "Paper ID (P4003R2) or year-month (2026-01) for batch review.",
+    "dissect":  "Paper ID (P4003R2) or year-month (2026-01) for batch dissection.",
 }
 
 _COMMANDS = {
@@ -73,7 +73,7 @@ _COMMANDS = {
     "download": _download_mod,
     "convert":  _convert_mod,
     "full":     _full_mod,
-    "review":   _review_mod,
+    "dissect":  _dissect_mod,
 }
 
 _VERB_FLAGS: dict[str, set[str]] = {
@@ -82,7 +82,7 @@ _VERB_FLAGS: dict[str, set[str]] = {
     "convert":  {"force", "concurrency", "no_prompts", "qa", "qa_json",
                  "workers", "timeout"},
     "full":     {"force", "verify", "concurrency"},
-    "review":   {"debug", "trace"},
+    "dissect":  {"debug", "trace"},
 }
 
 _FLAG_DEFS: list[dict] = [
@@ -122,8 +122,8 @@ Examples:
   paperflow download P3642R4       download one paper
   paperflow convert all            convert all staged-but-not-converted
   paperflow full all               full pipeline for all pending work
-  paperflow review P4003R2         LLM-driven paper review
-  paperflow review 2026-01         batch review papers from Jan 2026 onward
+  paperflow dissect P4003R2        LLM-driven paper dissection
+  paperflow dissect 2026-01        batch dissect papers from Jan 2026 onward
 """
 
 
@@ -176,16 +176,16 @@ def _validate_targets(verb: str, targets: list[str]) -> None:
             )
             sys.exit(1)
 
-    if verb == "review":
+    if verb == "dissect":
         if "year" in kinds or "all" in kinds:
             print(
-                "paperflow review: accepts a paper ID or year-month, not years or 'all'.",
+                "paperflow dissect: accepts a paper ID or year-month, not years or 'all'.",
                 file=sys.stderr,
             )
             sys.exit(1)
         if len(targets) != 1:
             print(
-                f"paperflow review: accepts exactly one target, got {len(targets)}.",
+                f"paperflow dissect: accepts exactly one target, got {len(targets)}.",
                 file=sys.stderr,
             )
             sys.exit(1)

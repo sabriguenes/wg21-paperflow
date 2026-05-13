@@ -10,7 +10,7 @@ dependencies = [
     "mailing",
     "tomd",
     "web_tools",
-    "review",
+    "dissect",
     "cli",
     "preview",
 ]
@@ -29,7 +29,7 @@ paperstore   = {workspace = true}
 mailing      = {workspace = true}
 tomd         = {workspace = true}
 web_tools    = {workspace = true}
-review       = {workspace = true}
+dissect      = {workspace = true}
 cli          = {workspace = true}
 preview      = {workspace = true}
 scrivener  = {git = "https://github.com/gregjkal/wg21-scrivener.git"}
@@ -40,7 +40,7 @@ testpaths = [
     "packages/mailing/tests",
     "packages/tomd/tests",
     "packages/web_tools/tests",
-    "packages/review/tests",
+    "packages/dissect/tests",
     "packages/cli/tests",
     "packages/preview/tests",
     "tests",

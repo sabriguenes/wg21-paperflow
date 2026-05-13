@@ -12,7 +12,7 @@ All tests use synthetic data — no LLM, no paperstore, no fixtures.
 
 from __future__ import annotations
 
-from review.harness import (
+from dissect.harness import (
     chunk_paper,
     dedup_tier0,
     dedup_tier1,
@@ -22,7 +22,7 @@ from review.harness import (
     promote_evidence,
     promote_markers,
 )
-from review.models import Chunk, Claim, Evidence, RawClaim, RawEvidence, RawMarker, SourceLoc
+from dissect.models import Chunk, Claim, Evidence, RawClaim, RawEvidence, RawMarker, SourceLoc
 
 
 def test_number_lines():

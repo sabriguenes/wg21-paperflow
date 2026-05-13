@@ -37,8 +37,8 @@ class MissingPaperMdError(MissingPaperError):
     """Raised when no converted markdown is stored for the paper."""
 
 
-class MissingReviewError(MissingPaperError):
-    """Raised when no review file is stored for the paper."""
+class MissingDissectError(MissingPaperError):
+    """Raised when no dissect file is stored for the paper."""
 
 
 class MissingMailingIndexError(PaperstoreError):

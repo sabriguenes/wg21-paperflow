@@ -9,7 +9,7 @@
 
 Produces three output formats from ``PipelineState``:
 
-- ``render_report`` -- the final review markdown (unsupported/supported
+- ``render_report`` -- the final dissection markdown (unsupported/supported
   claims + external resources).
 - ``render_trace`` -- diagnostic trace of pipeline state up to a given step.
 - ``render_debug_md`` -- full LLM interaction transcript for debugging.
@@ -23,7 +23,7 @@ from typing import Any
 
 from paperstore.backend import PaperRow
 
-from review.models import CaputCausae, CitationAuditEntry, PipelineState, SourceLoc
+from dissect.models import CaputCausae, CitationAuditEntry, PipelineState, SourceLoc
 
 _STATUS_DIRECTLY = "directly_supported"
 _STATUS_TRANSITIVELY = "transitively_supported"
@@ -166,7 +166,7 @@ def _build_loc_index(items: list[Any], alive_only: bool = True) -> dict[SourceLo
 
 
 def render_report(state: PipelineState, pid: str, title: str) -> str:
-    """Render the final review as structured markdown."""
+    """Render the final dissection as structured markdown."""
     lines: list[str] = [f"# {pid}: {title}\n"]
 
     if state.caput_causae is not None:

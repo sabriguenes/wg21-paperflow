@@ -62,7 +62,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [paperstore, mailing, tomd, cli, review, web_tools]
+        package: [paperstore, mailing, tomd, cli, dissect, web_tools]
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4

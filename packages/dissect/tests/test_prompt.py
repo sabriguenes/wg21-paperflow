@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from review.errors import HookMismatchError, MissingMetadataError
-from review.prompt import StepHooks, build_pipeline, parse_step_meta
+from dissect.errors import HookMismatchError, MissingMetadataError
+from dissect.prompt import StepHooks, build_pipeline, parse_step_meta
 
 
 def test_parse_step_meta_basic():
@@ -127,7 +127,7 @@ def test_build_pipeline_orphan_hook():
         "Step 1 - A": StepHooks(),
         "Step 99 - Ghost": StepHooks(),
     }
-    with pytest.raises(HookMismatchError, match="not in review.md"):
+    with pytest.raises(HookMismatchError, match="not in dissect.md"):
         build_pipeline(secs, hooks)
 
 
@@ -209,7 +209,7 @@ def test_parse_step_meta_caput_causae():
 
 def test_pipeline_has_14_steps():
     """Verify the full pipeline has steps 0-13."""
-    from review.pipeline import _HOOKS, load_sections
+    from dissect.pipeline import _HOOKS, load_sections
     secs = load_sections()
     specs = build_pipeline(secs, _HOOKS)
     assert len(specs) == 14

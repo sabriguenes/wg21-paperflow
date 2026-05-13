@@ -1,4 +1,4 @@
-# review
+# dissect
 
 LLM-driven paper extraction pipeline for WG21 (ISO C++) papers. Takes a
 paper ID, pulls markdown from paperstore, runs a multi-step extractor
@@ -7,7 +7,7 @@ unsupported claims.
 
 ## The prompt-first model
 
-`review.md` is the upstream authority for pipeline structure. Each
+`dissect.md` is the upstream authority for pipeline structure. Each
 step section declares its metadata (model slot, execution mode, which
 state fields it reads and writes, tools, guard conditions) and its
 LLM-facing instructions. Python conforms to it.
@@ -29,16 +29,16 @@ Step 5  Load-Bearing   graph analysis: which claims matter     (single LLM)
 Step 6  Web Search     search for evidence on critical gaps    (single LLM + tools)
 Step 7  Resolve        integrate external evidence             (single LLM)
 Step 8  Detect Patterns cross-marker pattern analysis          (single LLM)
-Step 9  Report         render final review markdown            (pure Python)
+Step 9  Report         render final dissect markdown           (pure Python)
 ```
 
 ## Architecture
 
 ```
-review.md    upstream authority: step metadata + LLM instructions (10 steps, 0-9)
+dissect.md   upstream authority: step metadata + LLM instructions (10 steps, 0-9)
 prompt.py       parse metadata, validate hooks, build StepSpec list
 pipeline.py     hook registry (_HOOKS), generic runner, dispatch loop,
-                  review_paper() and review_since() entry points
+                  dissect_paper() and dissect_since() entry points
 render.py       output rendering (report, trace, debug transcript)
 models.py       Pydantic domain models (sole schema authority)
 harness.py      pure Python: chunking, SourceLoc, dedup tiers 0-1, citations
@@ -46,7 +46,7 @@ parse.py        domain-free H2 markdown splitter
 errors.py       error hierarchy (PromptFileError, StepError, paper errors)
 ```
 
-The `StepSpec` combines parsed metadata (from `review.md`) with
+The `StepSpec` combines parsed metadata (from `dissect.md`) with
 bespoke Python hooks. Metadata provides WHAT (which model, which fields,
 which tools). Hooks provide HOW (format the user message, store the
 output). The generic runner handles everything common: Agent
@@ -54,7 +54,7 @@ construction, retries, debug logging, tool registration.
 
 ## Adding a step
 
-1. Add a `## Step N` section to `review.md` with the metadata block:
+1. Add a `## Step N` section to `dissect.md` with the metadata block:
 
 ```markdown
 ## Step 10 -- My New Step
@@ -74,7 +74,7 @@ construction, retries, debug logging, tool registration.
 
 | Error | Meaning | Action |
 |---|---|---|
-| `PromptFileError` | `review.md` has a structural problem | Edit `review.md` |
+| `PromptFileError` | `dissect.md` has a structural problem | Edit `dissect.md` |
 | `PaperNotFoundError` | Paper not in paperstore | Run `paperflow mailing` + `download` |
 | `PaperNotConvertedError` | Paper has no markdown | Run `paperflow convert` |
 | `TransientStepError` | API timeout, rate limit | Retry |
@@ -83,17 +83,17 @@ construction, retries, debug logging, tool registration.
 ## Usage
 
 ```python
-from review import review_paper, review_since
+from dissect import dissect_paper, dissect_since
 
 # Single paper
-report = await review_paper("P2300R10", backend)
+report = await dissect_paper("P2300R10", backend)
 
 # All papers from a mailing month onward
-results = await review_since("2025-04", backend)
+results = await dissect_since("2025-04", backend)
 ```
 
 ## Development
 
 ```bash
-uv run pytest packages/review/tests/
+uv run pytest packages/dissect/tests/
 ```

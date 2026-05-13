@@ -5,7 +5,7 @@ dict mapping each header's text to the raw body below it. Horizontal
 rules (``---``) terminate the current section; text between a rule and
 the next H2 is discarded.
 
-This module is domain-free: it knows nothing about review pipelines,
+This module is domain-free: it knows nothing about dissect pipelines,
 LLM prompts, or WG21 papers. Keep it that way.
 """
 

@@ -5,11 +5,11 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Error hierarchy for the review pipeline.
+"""Error hierarchy for the dissect pipeline.
 
 Three categories, each with a different response:
 
-- **User-fixable**: edit ``review.md`` or run a paperflow command.
+- **User-fixable**: edit ``dissect.md`` or run a paperflow command.
   ``PromptFileError`` and its subclasses carry the step name and
   expected format. ``PaperNotFoundError`` and ``PaperNotConvertedError``
   carry the paperflow command to run.
@@ -22,29 +22,29 @@ Three categories, each with a different response:
 from __future__ import annotations
 
 
-class ReviewError(Exception):
-    """Base for all review pipeline errors."""
+class DissectError(Exception):
+    """Base for all dissect pipeline errors."""
 
 
-# -- User-fixable: edit review.md or run a paperflow command ------------------
+# -- User-fixable: edit dissect.md or run a paperflow command -----------------
 
 
-class PaperNotFoundError(ReviewError):
+class PaperNotFoundError(DissectError):
     """Paper not in paperstore.
 
     Message includes the paperflow command to run.
     """
 
 
-class PaperNotConvertedError(ReviewError):
+class PaperNotConvertedError(DissectError):
     """Paper has no converted markdown.
 
     Message includes the paperflow convert command.
     """
 
 
-class PromptFileError(ReviewError):
-    """``review.md`` has a structural problem the user must fix.
+class PromptFileError(DissectError):
+    """``dissect.md`` has a structural problem the user must fix.
 
     Every subclass carries the step name (if applicable) and a
     description of the expected format.
@@ -60,7 +60,7 @@ class MissingMetadataError(PromptFileError):
 
 
 class HookMismatchError(PromptFileError):
-    """A step in ``review.md`` has no registered Python hook,
+    """A step in ``dissect.md`` has no registered Python hook,
     a hook is registered for a step that does not exist,
     or a declared tool has no matching callable in the registry.
     """
@@ -69,7 +69,7 @@ class HookMismatchError(PromptFileError):
 # -- Runtime: pipeline bug or external failure --------------------------------
 
 
-class StepError(ReviewError):
+class StepError(DissectError):
     """A step failed during execution.
 
     Wraps the cause with step index and name for diagnostics.

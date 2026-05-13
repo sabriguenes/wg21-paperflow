@@ -7,9 +7,9 @@
 
 """Async extractor pipeline for WG21 papers.
 
-All LLM-facing text comes from ``review.md`` at runtime. This module
+All LLM-facing text comes from ``dissect.md`` at runtime. This module
 contains only structural orchestration: hook definitions, the generic
-runner, and the dispatch loop. ``review.md`` is the upstream
+runner, and the dispatch loop. ``dissect.md`` is the upstream
 authority for pipeline structure; this module conforms to it.
 """
 
@@ -37,7 +37,7 @@ from paperstore.backend import StorageBackend
 from paperstore.progress import ProgressCallback, ProgressEvent
 from paperstore.errors import MissingMetaError, MissingPaperMdError
 
-from review.errors import (
+from dissect.errors import (
     HookMismatchError,
     PaperNotConvertedError,
     PaperNotFoundError,
@@ -46,7 +46,7 @@ from review.errors import (
     TransientStepError,
     ValidationStepError,
 )
-from review.harness import (
+from dissect.harness import (
     chunk_paper,
     dedup_tier0,
     dedup_tier1,
@@ -56,7 +56,7 @@ from review.harness import (
     promote_evidence,
     promote_markers,
 )
-from review.models import (
+from dissect.models import (
     CaputCausaeOutput,
     Chunk,
     CitationTaskOutput,
@@ -73,9 +73,9 @@ from review.models import (
     VerifyOutput,
     WebSearchOutput,
 )
-from review.parse import sections
-from review.prompt import StepHooks, StepSpec, build_pipeline
-from review.render import render_debug_md, render_report, render_trace
+from dissect.parse import sections
+from dissect.prompt import StepHooks, StepSpec, build_pipeline
+from dissect.render import render_debug_md, render_report, render_trace
 
 if TYPE_CHECKING:
     from web_tools import WebResearcher
@@ -179,13 +179,13 @@ class StepContext:
 
 @functools.cache
 def load_sections() -> dict[str, str]:
-    """Load and parse review.md once per process."""
+    """Load and parse dissect.md once per process."""
     try:
-        resource = importlib.resources.files("review").joinpath("review.md")
+        resource = importlib.resources.files("dissect").joinpath("dissect.md")
         return sections(resource.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError) as exc:
         raise PromptFileError(
-            f"Failed to read review.md: {exc}"
+            f"Failed to read dissect.md: {exc}"
         ) from exc
 
 
@@ -257,8 +257,10 @@ async def _run_agent_with_retry(
     *,
     request_limit: int = _REQUEST_LIMIT,
     retries: int = _RETRIES_SINGLE,
+    chunk_label: str | None = None,
 ) -> Any:
     """Run agent with retry-on-empty logic."""
+    label = f"{spec.meta.name} ({chunk_label})" if chunk_label else spec.meta.name
     for attempt in range(_RETRIES_EMPTY_OUTPUT):
         result = await _run_agent(
             ctx, spec, user_msg,
@@ -268,7 +270,7 @@ async def _run_agent_with_retry(
             return result
         logger.warning(
             "%s: empty output on attempt %d, retrying",
-            spec.meta.name, attempt + 1,
+            label, attempt + 1,
         )
     return result
 
@@ -852,7 +854,7 @@ def _guard_detect_patterns(state: PipelineState) -> bool:
 
 # -- Hook registry ------------------------------------------------------------
 
-# Step names must match exactly the ## headers in review.md.
+# Step names must match exactly the ## headers in dissect.md.
 _HOOKS: dict[str, StepHooks] = {
     _STEP_0_READ: StepHooks(pure=_pure_read),
 
@@ -860,7 +862,7 @@ _HOOKS: dict[str, StepHooks] = {
         output_type=ExtractAllOutput,
         prepare=_prepare_extract_chunk,
         extract=_extract_all,
-        retry_empty=lambda o: not o.claims and not o.evidence,
+        retry_empty=lambda o: not o.analysis_complete,
         parallel=True,
     ),
 
@@ -873,6 +875,7 @@ _HOOKS: dict[str, StepHooks] = {
         output_type=ExtractFactualOutput,
         prepare=_prepare_extract_factual_chunk,
         extract=_extract_factual,
+        retry_empty=lambda o: not o.analysis_complete,
         parallel=True,
     ),
 
@@ -946,13 +949,19 @@ async def _run_parallel_chunks(
     assert state.chunks is not None
     assert spec.hooks.prepare is not None
 
-    async def _one_chunk(chunk: Chunk) -> Any:
+    total = len(state.chunks)
+
+    async def _one_chunk(idx: int, chunk: Chunk) -> Any:
         user_msg = spec.hooks.prepare(state, ctx, chunk)
         return await _run_agent_with_retry(
-            ctx, spec, user_msg, retries=_RETRIES_CHUNK,
+            ctx, spec, user_msg,
+            retries=_RETRIES_CHUNK,
+            chunk_label=f"chunk {idx}/{total}",
         )
 
-    return await asyncio.gather(*[_one_chunk(c) for c in state.chunks])
+    return await asyncio.gather(
+        *[_one_chunk(i + 1, c) for i, c in enumerate(state.chunks)]
+    )
 
 
 async def _dispatch(
@@ -1029,7 +1038,7 @@ async def _dispatch(
 # -- Public API ---------------------------------------------------------------
 
 
-async def review_paper(
+async def dissect_paper(
     pid: str,
     backend: StorageBackend,
     *,
@@ -1053,10 +1062,10 @@ async def review_paper(
     LLM interaction to paperstore as ``<pid>.debug.md``.
 
     Pass ``trace=True`` to write a pipeline state summary to
-    ``<pid>.trace.md`` alongside the review. Shows intermediate state
+    ``<pid>.trace.md`` alongside the dissection. Shows intermediate state
     at every step (claims, evidence, support map, etc.).
 
-    Raises :class:`PromptFileError` if ``review.md`` has structural
+    Raises :class:`PromptFileError` if ``dissect.md`` has structural
     problems. Raises :class:`PaperNotFoundError` or
     :class:`PaperNotConvertedError` if the paper is missing.
     """
@@ -1067,7 +1076,7 @@ async def review_paper(
 
     if _SECTION_SYSTEM_PROMPT not in secs:
         raise PromptFileError(
-            "'System Prompt' section not found in review.md. "
+            "'System Prompt' section not found in dissect.md. "
             f"Available sections: {sorted(secs)}"
         )
 
@@ -1090,7 +1099,7 @@ async def review_paper(
             f"Run 'paperflow convert {pid}' first."
         ) from exc
 
-    backend.clear_review(pid)
+    backend.clear_dissect(pid)
 
     state = PipelineState(paper_source=paper_md)
 
@@ -1144,7 +1153,7 @@ async def review_paper(
     return state.report or ""
 
 
-async def review_since(
+async def dissect_since(
     month: str,
     backend: StorageBackend,
     *,
@@ -1154,9 +1163,9 @@ async def review_since(
     debug: bool = False,
     trace: bool = False,
 ) -> list[dict[str, str | None]]:
-    """Review all papers with mailing_date >= ``month``.
+    """Dissect all papers with mailing_date >= ``month``.
 
-    Iterates sequentially, calling :func:`review_paper` for each.
+    Iterates sequentially, calling :func:`dissect_paper` for each.
     Per-paper errors are caught and logged; the loop continues.
 
     Returns a list of result dicts:
@@ -1168,7 +1177,7 @@ async def review_since(
     for paper in papers:
         pid = paper.paper_id
         try:
-            report = await review_paper(
+            report = await dissect_paper(
                 pid, backend,
                 model_slots=model_slots,
                 on_progress=on_progress,
@@ -1176,11 +1185,11 @@ async def review_since(
                 debug=debug,
                 trace=trace,
             )
-            out_path = backend.write_review_md(pid, report)
-            logger.info("Reviewed %s -> %s", pid, out_path)
+            out_path = backend.write_dissect_md(pid, report)
+            logger.info("Dissected %s -> %s", pid, out_path)
             results.append({"paper_id": pid, "status": "ok", "error": None})
         except Exception as exc:
-            logger.error("Failed to review %s: %s", pid, exc)
+            logger.error("Failed to dissect %s: %s", pid, exc)
             results.append({"paper_id": pid, "status": "error", "error": str(exc)})
 
     return results

@@ -20,7 +20,7 @@ from collections import Counter
 from itertools import chain
 from typing import TypeVar
 
-from review.models import (
+from dissect.models import (
     Chunk,
     CitationRef,
     Claim,

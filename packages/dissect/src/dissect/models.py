@@ -5,9 +5,9 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Pydantic models for the review pipeline.
+"""Pydantic models for the dissect pipeline.
 
-Domain models are the sole schema authority. ``review.md`` provides
+Domain models are the sole schema authority. ``dissect.md`` provides
 LLM instructions; these models enforce the output structure via Pydantic
 AI's ``output_type``. Frozen domain models are updated via
 ``model_copy(update=...)``.
@@ -333,12 +333,22 @@ class ExtractAllOutput(BaseModel, frozen=True):
     claims: list[RawClaim] = []
     evidence: list[RawEvidence] = []
     markers: list[RawMarker] = []
+    analysis_complete: bool = Field(
+        default=False,
+        description="Set to true when the chunk has been fully analyzed, "
+        "even if no claims or evidence were found.",
+    )
 
 
 class ExtractFactualOutput(BaseModel, frozen=True):
     """Extract Factual step output: factual claims from a single chunk."""
 
     claims: list[RawClaim] = []
+    analysis_complete: bool = Field(
+        default=False,
+        description="Set to true when the chunk has been fully analyzed, "
+        "even if no factual claims were found.",
+    )
 
 
 class DedupGroupingOutput(BaseModel, frozen=True):

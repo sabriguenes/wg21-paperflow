@@ -34,7 +34,7 @@ The `papers` table includes `line_count INTEGER DEFAULT 0`, written by `write_pa
 
 ## Extract tables
 
-Six tables in `paperstore.db` store structured results from the review pipeline:
+Six tables in `paperstore.db` store structured results from the dissect pipeline:
 
 - `claims` -- extracted normative assertions (PK: paper_id + loc triple)
 - `evidence` -- supporting facts (PK: paper_id + loc triple)

@@ -7,7 +7,7 @@
 
 """Tests for the general-purpose markdown section splitter.
 
-All tests use synthetic markdown - not tied to review.md content.
+All tests use synthetic markdown - not tied to dissect.md content.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from review.parse import sections
+from dissect.parse import sections
 
 
 def test_basic_h2_split():

@@ -9,23 +9,23 @@
 
 from __future__ import annotations
 
-from review.errors import (
+from dissect.errors import (
     HookMismatchError,
     MissingMetadataError,
     PaperNotConvertedError,
     PaperNotFoundError,
     PromptFileError,
-    ReviewError,
+    DissectError,
     StepError,
     TransientStepError,
     ValidationStepError,
 )
-from review.pipeline import review_paper, review_since
+from dissect.pipeline import dissect_paper, dissect_since
 
 __all__ = [
-    "review_paper",
-    "review_since",
-    "ReviewError",
+    "dissect_paper",
+    "dissect_since",
+    "DissectError",
     "PaperNotFoundError",
     "PaperNotConvertedError",
     "PromptFileError",

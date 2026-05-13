@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from review.models import (
+from dissect.models import (
     Claim,
     Evidence,
     PipelineState,
@@ -17,7 +17,7 @@ from review.models import (
     SupportLink,
 )
 from paperstore.backend import PaperRow
-from review.render import render_report, render_trace, sanitize_md
+from dissect.render import render_report, render_trace, sanitize_md
 
 
 def _loc(line=1, start=0, end=10):

@@ -1,40 +1,40 @@
-# review - Agent Rules
+# dissect - Agent Rules
 
 ## Philosophy
 
-`review.md` is the upstream authority for pipeline structure. It
+`dissect.md` is the upstream authority for pipeline structure. It
 defines the step sequence, step metadata (model slot, execution mode,
 reads, writes, tools, conditions), and all LLM-facing instructions.
 Python conforms to it.
 
 The lifecycle: human authors `extractor.orig.md` once, normalizer
-produces `review.md` once, frontier model generates Python once.
-From there, `review.md` and Python co-evolve. The system validates
+produces `dissect.md` once, frontier model generates Python once.
+From there, `dissect.md` and Python co-evolve. The system validates
 conformance at startup via `build_pipeline()`. When something drifts,
-the human opens `review.md` and fixes it. It is readable markdown.
+the human opens `dissect.md` and fixes it. It is readable markdown.
 
 Claims and evidence are extracted in a single LLM pass per chunk
 (Step 1). The `## Classes` section in `extractor.orig.md` was authored
 for the frontier model that generated the initial Python. It is removed
-from `review.md` because the Pydantic models in `models.py` are the
+from `dissect.md` because the Pydantic models in `models.py` are the
 sole schema authority at runtime (enforced via `output_type`).
 
 ## Layout
 
-- `review.md` - prompt document and pipeline authority. Step metadata
+- `dissect.md` - prompt document and pipeline authority. Step metadata
   (Model, Execution, Reads, Writes, Tools, Condition) is parsed by
   `prompt.py` at startup. LLM-facing instructions are loaded as section
   text. Editing this file changes prompts and pipeline config without
   touching Python.
-- `prompt.py` - parses step metadata from `review.md` sections,
+- `prompt.py` - parses step metadata from `dissect.md` sections,
   validates against registered hooks (bidirectional completeness),
   builds the ordered `StepSpec` list. Raises `PromptFileError` subtypes
   on structural mismatches.
 - `pipeline.py` - async orchestration: `StepContext`, hook registry
   (`_HOOKS`), generic runner (`_run_agent`), dispatch loop, and the
-  public `review_paper()` / `review_since()` entry points. Hooks are
+  public `dissect_paper()` / `dissect_since()` entry points. Hooks are
   small prepare/extract functions (~10-20 lines each).
-- `render.py` - rendering functions: `render_report` (final review),
+- `render.py` - rendering functions: `render_report` (final dissect),
   `render_trace` (diagnostic trace), `render_debug_md` (LLM transcript).
 - `parse.py` - **domain-free** H2 markdown section splitter. No imports
   from this package. No knowledge of steps, prompts, or pipelines.
@@ -45,7 +45,7 @@ sole schema authority at runtime (enforced via `output_type`).
   per-step outputs, and pipeline state. Sole schema authority.
   `Field(description=...)` documents non-obvious semantics.
 - `errors.py` - error hierarchy. `PromptFileError` (user-fixable: edit
-  `review.md`), `StepError` (runtime: transient or validation).
+  `dissect.md`), `StepError` (runtime: transient or validation).
 
 ## Pipeline architecture
 
@@ -61,10 +61,10 @@ Step 5  Load-Bearing   graph analysis: which claims matter     (single LLM)
 Step 6  Web Search     search for evidence on critical gaps    (single LLM + tools)
 Step 7  Resolve        integrate external evidence             (single LLM)
 Step 8  Detect Patterns cross-marker pattern analysis          (single LLM)
-Step 9  Report         render final review markdown            (pure Python)
+Step 9  Report         render final dissect markdown           (pure Python)
 ```
 
-Each step section in `review.md` declares structured metadata:
+Each step section in `dissect.md` declares structured metadata:
 
 ```
 ## Step 4 -- Verify + Deps + Map + Contradict
@@ -92,7 +92,7 @@ prompt file provides WHAT: which model, which fields, which tools.
 ## Error philosophy
 
 - `PromptFileError` (and subclasses `MissingMetadataError`,
-  `HookMismatchError`): user-fixable. Go edit `review.md`. The error
+  `HookMismatchError`): user-fixable. Go edit `dissect.md`. The error
   message names the step and the expected format.
 - `PaperNotFoundError`, `PaperNotConvertedError`: user-fixable. Run the
   paperflow command in the error message.
@@ -101,7 +101,7 @@ prompt file provides WHAT: which model, which fields, which tools.
 
 ## Adding a step
 
-1. Add a `## Step N` section to `review.md` with the metadata block
+1. Add a `## Step N` section to `dissect.md` with the metadata block
    (Model, Execution, Reads, Writes, and optionally Tools, Condition).
 2. Define a Pydantic output model in `models.py`.
 3. Write `_prepare_<name>` and `_extract_<name>` hooks in `pipeline.py`.
@@ -110,11 +110,11 @@ prompt file provides WHAT: which model, which fields, which tools.
 
 ## Invariants
 
-- **`review.md` is the authority.** Step metadata in `review.md`
+- **`dissect.md` is the authority.** Step metadata in `dissect.md`
   drives model slot, execution mode, reads/writes, and tool
   registration. Python conforms. `build_pipeline()` validates at startup.
 - **No hardcoded prompt strings.** All LLM-facing text comes from
-  `review.md` at runtime.
+  `dissect.md` at runtime.
 - **`parse.py` is domain-free.** No imports from this package or
   paperstore.
 - **`harness.py` is pure Python.** No LLM calls, no paperstore imports,
@@ -125,7 +125,7 @@ prompt file provides WHAT: which model, which fields, which tools.
 - **Fully batch.** No interactive steps. No user identity.
 - **Paperstore is the only storage interface.** Never construct paths
   or write files directly.
-- **Three-way sync.** `review.md` (metadata + instructions),
+- **Three-way sync.** `dissect.md` (metadata + instructions),
   `models.py` (schema), and `pipeline.py` (hooks) form a contract.
   When any one changes, the other two must be checked.
 - **No `default=str` in JSON serialization.** If pipeline state is not
