@@ -14,6 +14,7 @@ packages/
   mailing/      -> scrape open-std.org + download paper sources
   tomd/         -> PDF/HTML to Markdown
   dissect/      -> LLM-driven paper dissect pipeline (Pydantic AI + web search)
+  advocatus/    -> LLM-driven paper examination pipeline (Advocatus Diaboli / Defensor Causae)
   cli/          -> ingestion + conversion + dissect CLI
 tests/          -> cross-package integration test
 ```
@@ -45,6 +46,10 @@ paperflow          2026-04
 paperflow dissect P4003R2
 paperflow dissect 2026-01
 
+# Advocatus - examine a dissected paper through the two-office tribunal
+paperflow advocatus P4003R2
+paperflow advocatus 2026-01
+
 # Idempotent batch - skips papers already at or past the target stage
 paperflow download all
 paperflow convert  all
@@ -67,6 +72,7 @@ Each subcommand is implemented in its own module inside `packages/cli/src/cli/`:
 | `download` | `download.py` |
 | `convert` | `convert.py` |
 | `dissect` | `dissect.py` |
+| `advocatus` | `advocatus.py` |
 
 The argparse entry point is `__main__.py`.
 
@@ -115,10 +121,16 @@ reply-to:
 WG21_DATA_DIR/
   paperstore.db                   # extract tables: claims, evidence,
                                   #   paper_citations, external_citations,
-                                  #   questions, rhetorical_markers
+                                  #   questions, rhetorical_markers,
+                                  #   caput_causae, citation_audit
   paperstore/
     <pid>.dissect.md              # dissect report
+    <pid>.advocatus.md            # advocatus Relatio
+    <pid>.<tool>.debug.md         # per-tool LLM debug transcript (--debug)
+    <pid>.<tool>.trace.md         # per-tool pipeline state trace (--trace)
 ```
+
+Pipeline debug/trace artifacts are namespaced per tool (e.g. `<pid>.dissect.debug.md`, `<pid>.advocatus.trace.md`) so multiple pipelines coexist without filename collisions. Every consumer routes through `backend.get_debug_md_path(pid, tool)` and `backend.get_trace_md_path(pid, tool)`; no tool reinvents path construction.
 
 ## Invariants
 

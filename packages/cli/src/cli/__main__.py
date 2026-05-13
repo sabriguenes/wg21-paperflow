@@ -24,17 +24,21 @@ import cli.download as _download_mod
 import cli.convert as _convert_mod
 import cli.full as _full_mod
 import cli.dissect as _dissect_mod
+import cli.advocatus as _advocatus_mod
 from cli.logutil import configure_console_logging
 from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
 
-_VERB_NAMES = {"mailing", "download", "convert", "full", "dissect"}
+_VERB_NAMES = {
+    "mailing", "download", "convert", "full", "dissect", "advocatus",
+}
 
 _VERB_HELP = {
-    "mailing":  "Scrape mailing indexes from open-std.org (no downloads)",
-    "download": "Download paper source files (PDF/HTML)",
-    "convert":  "Convert staged source files to markdown (no LLM)",
-    "full":     "Run all three stages: mailing + download + convert",
-    "dissect":  "Run an LLM-driven dissection of a WG21 paper",
+    "mailing":   "Scrape mailing indexes from open-std.org (no downloads)",
+    "download":  "Download paper source files (PDF/HTML)",
+    "convert":   "Convert staged source files to markdown (no LLM)",
+    "full":      "Run all three stages: mailing + download + convert",
+    "dissect":   "Run an LLM-driven dissection of a WG21 paper",
+    "advocatus": "Examine a dissected paper through the Advocatus / Defensor tribunal",
 }
 
 _VERB_DESCRIPTION = {
@@ -58,31 +62,39 @@ _VERB_DESCRIPTION = {
         "Dissect a paper using the multi-step LLM pipeline. "
         "Requires the paper to be indexed and converted first."
     ),
+    "advocatus": (
+        "Examine a dissected paper through the two-office tribunal: "
+        "Advocatus Diaboli drafts charges, Defensor Causae cross-examines them. "
+        "Requires the paper to be dissected first."
+    ),
 }
 
 _VERB_TARGETS_HELP = {
-    "mailing":  'Year(s) to scrape (e.g. 2026 2025), or "all".',
-    "download": 'Year (2026), paper id(s) (P3642R4 ...), or "all".',
-    "convert":  'Year (2026), paper id(s) (P3642R4 ...), or "all".',
-    "full":     'Year (2026), paper id(s) (P3642R4 ...), or "all".',
-    "dissect":  "Paper ID (P4003R2) or year-month (2026-01) for batch dissection.",
+    "mailing":   'Year(s) to scrape (e.g. 2026 2025), or "all".',
+    "download":  'Year (2026), paper id(s) (P3642R4 ...), or "all".',
+    "convert":   'Year (2026), paper id(s) (P3642R4 ...), or "all".',
+    "full":      'Year (2026), paper id(s) (P3642R4 ...), or "all".',
+    "dissect":   "Paper ID (P4003R2) or year-month (2026-01) for batch dissection.",
+    "advocatus": "Paper ID (P4003R2) or year-month (2026-01) for batch examination.",
 }
 
 _COMMANDS = {
-    "mailing":  _mailing_mod,
-    "download": _download_mod,
-    "convert":  _convert_mod,
-    "full":     _full_mod,
-    "dissect":  _dissect_mod,
+    "mailing":   _mailing_mod,
+    "download":  _download_mod,
+    "convert":   _convert_mod,
+    "full":      _full_mod,
+    "dissect":   _dissect_mod,
+    "advocatus": _advocatus_mod,
 }
 
 _VERB_FLAGS: dict[str, set[str]] = {
-    "mailing":  {"force"},
-    "download": {"force", "verify", "concurrency"},
-    "convert":  {"force", "concurrency", "no_prompts", "qa", "qa_json",
-                 "workers", "timeout"},
-    "full":     {"force", "verify", "concurrency"},
-    "dissect":  {"debug", "trace"},
+    "mailing":   {"force"},
+    "download":  {"force", "verify", "concurrency"},
+    "convert":   {"force", "concurrency", "no_prompts", "qa", "qa_json",
+                  "workers", "timeout"},
+    "full":      {"force", "verify", "concurrency"},
+    "dissect":   {"debug", "trace"},
+    "advocatus": {"debug", "trace"},
 }
 
 _FLAG_DEFS: list[dict] = [
@@ -124,6 +136,8 @@ Examples:
   paperflow full all               full pipeline for all pending work
   paperflow dissect P4003R2        LLM-driven paper dissection
   paperflow dissect 2026-01        batch dissect papers from Jan 2026 onward
+  paperflow advocatus P4003R2      examine a dissected paper through the tribunal
+  paperflow advocatus 2026-01      batch advocatus for a month
 """
 
 
@@ -186,6 +200,20 @@ def _validate_targets(verb: str, targets: list[str]) -> None:
         if len(targets) != 1:
             print(
                 f"paperflow dissect: accepts exactly one target, got {len(targets)}.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    if verb == "advocatus":
+        if "year" in kinds or "all" in kinds:
+            print(
+                "paperflow advocatus: accepts a paper ID or year-month, not years or 'all'.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if len(targets) != 1:
+            print(
+                f"paperflow advocatus: accepts exactly one target, got {len(targets)}.",
                 file=sys.stderr,
             )
             sys.exit(1)

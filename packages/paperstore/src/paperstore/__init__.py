@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from paperstore.backend import PaperRow, StorageBackend, parse_authors_raw
 from paperstore.errors import (
+    MissingAdvocatusError,
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperError,
@@ -30,6 +31,7 @@ from paperstore.extract_rows import (
     QuestionRow,
 )
 from paperstore.factory import WORKSPACE_ENV_VAR, default_workspace_dir, from_uri
+from paperstore.locs import SourceLoc, loc_from_row, merged_into_loc
 from paperstore.progress import ProgressCallback as ProgressCallback
 from paperstore.progress import ProgressEvent as ProgressEvent
 from paperstore.sqlite_backend import SqliteBackend
@@ -47,12 +49,16 @@ __all__ = [
     "MissingSourceError",
     "MissingPaperMdError",
     "MissingDissectError",
+    "MissingAdvocatusError",
     "MissingMailingIndexError",
     "from_uri",
     "default_workspace_dir",
     "WORKSPACE_ENV_VAR",
     "ProgressCallback",
     "ProgressEvent",
+    "SourceLoc",
+    "loc_from_row",
+    "merged_into_loc",
     "CaputCausaeRow",
     "CitationAuditRow",
     "ClaimRow",

@@ -15,7 +15,13 @@ WG21_DATA_DIR/
     <pid>.pdf | <pid>.html         # mailing.download
     <pid>.md                       # tomd
     <pid>.prompts.json             # tomd, only on uncertain regions; JSON array of LLM reconcile prompts
+    <pid>.dissect.md               # dissect (paperflow dissect)
+    <pid>.advocatus.md             # advocatus Relatio (paperflow advocatus)
+    <pid>.<tool>.debug.md          # per-tool debug transcript (--debug)
+    <pid>.<tool>.trace.md          # per-tool pipeline trace (--trace)
 ```
+
+Per-tool debug/trace artifacts are namespaced by `<tool>` (e.g. `dissect`, `advocatus`, future `agora`, `herald`) so multiple pipelines coexist without filename collisions. Every consumer routes through `backend.get_debug_md_path(pid, tool)` and `backend.get_trace_md_path(pid, tool)`; no tool reinvents path construction.
 
 ## Module layout
 

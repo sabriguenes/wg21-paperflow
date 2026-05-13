@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from dissect.models import (
@@ -38,7 +40,7 @@ def _loc(line=1, start=0, end=10):
 
 def test_source_loc_round_trip():
     loc = _loc(5, 10, 20)
-    assert SourceLoc.model_validate(loc.model_dump()) == loc
+    assert SourceLoc(**dataclasses.asdict(loc)) == loc
 
 
 def test_chunk_round_trip():

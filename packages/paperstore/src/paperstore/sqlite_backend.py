@@ -39,6 +39,7 @@ from paperstore.extract_rows import (
     QuestionRow,
 )
 from paperstore.errors import (
+    MissingAdvocatusError,
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
@@ -57,10 +58,11 @@ CREATE TABLE IF NOT EXISTS papers (
     url           TEXT DEFAULT '',
     document_date TEXT DEFAULT '',
     mailing_date  TEXT DEFAULT '',
-    source_file   TEXT DEFAULT '',
-    markdown_path TEXT DEFAULT '',
-    dissect_path  TEXT DEFAULT '',
-    line_count    INTEGER DEFAULT 0
+    source_file    TEXT DEFAULT '',
+    markdown_path  TEXT DEFAULT '',
+    dissect_path   TEXT DEFAULT '',
+    advocatus_path TEXT DEFAULT '',
+    line_count     INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS years (
@@ -120,11 +122,14 @@ CREATE TABLE IF NOT EXISTS external_citations (
 
 CREATE TABLE IF NOT EXISTS questions (
     paper_id         TEXT NOT NULL,
+    loc_line         INTEGER NOT NULL,
+    loc_start        INTEGER NOT NULL,
+    loc_end          INTEGER NOT NULL,
     claim_text       TEXT NOT NULL,
     section          TEXT DEFAULT '',
     question         TEXT NOT NULL,
     kind             TEXT DEFAULT 'normative',
-    PRIMARY KEY (paper_id, claim_text, kind)
+    PRIMARY KEY (paper_id, loc_line, loc_start, loc_end)
 );
 
 CREATE TABLE IF NOT EXISTS rhetorical_markers (
@@ -166,12 +171,37 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE papers RENAME COLUMN review_path TO dissect_path")
     elif "dissect_path" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN dissect_path TEXT DEFAULT ''")
+    if "advocatus_path" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN advocatus_path TEXT DEFAULT ''")
     if "line_count" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN line_count INTEGER DEFAULT 0")
 
     claim_cols = {r[1] for r in conn.execute("PRAGMA table_info(claims)").fetchall()}
     if "kind" not in claim_cols:
         conn.execute("ALTER TABLE claims ADD COLUMN kind TEXT DEFAULT 'normative'")
+
+    # questions: re-keyed from (paper_id, claim_text, kind) to the loc
+    # triple to match the other extract tables. Drop and recreate -
+    # the data is rebuilt by the next dissect run, so no migration is
+    # needed beyond that.
+    question_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(questions)").fetchall()
+    }
+    if question_cols and "loc_line" not in question_cols:
+        conn.execute("DROP TABLE questions")
+        conn.execute("""
+            CREATE TABLE questions (
+                paper_id         TEXT NOT NULL,
+                loc_line         INTEGER NOT NULL,
+                loc_start        INTEGER NOT NULL,
+                loc_end          INTEGER NOT NULL,
+                claim_text       TEXT NOT NULL,
+                section          TEXT DEFAULT '',
+                question         TEXT NOT NULL,
+                kind             TEXT DEFAULT 'normative',
+                PRIMARY KEY (paper_id, loc_line, loc_start, loc_end)
+            )
+        """)
 
 
 def _atomic_replace(src: Path, dst: Path) -> None:
@@ -303,6 +333,7 @@ class SqliteBackend(StorageBackend):
             source_file=d.get("source_file", ""),
             markdown_path=d.get("markdown_path", ""),
             dissect_path=d.get("dissect_path", ""),
+            advocatus_path=d.get("advocatus_path", ""),
             line_count=d.get("line_count", 0),
         )
 
@@ -445,6 +476,38 @@ class SqliteBackend(StorageBackend):
                 (pid,),
             )
 
+    def write_advocatus_md(self, paper_id: str, markdown: str) -> Path:
+        """Write advocatus markdown (Relatio) atomically and record the path."""
+        pid = paper_id.strip().upper()
+        final_path = self._atomic_write_text(
+            self._papers_dir / f"{pid.lower()}.advocatus.md", markdown
+        )
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
+            )
+            self._conn.execute(
+                "UPDATE papers SET advocatus_path = ? WHERE paper_id = ?",
+                (str(final_path), pid),
+            )
+        return final_path
+
+    def clear_advocatus(self, paper_id: str) -> None:
+        """Delete the advocatus file and clear ``advocatus_path`` in the DB."""
+        pid = paper_id.strip().upper()
+        row = self._conn.execute(
+            "SELECT advocatus_path FROM papers WHERE paper_id = ?", (pid,)
+        ).fetchone()
+        if row and row["advocatus_path"]:
+            path = Path(row["advocatus_path"])
+            if path.exists():
+                path.unlink()
+        with self._conn:
+            self._conn.execute(
+                "UPDATE papers SET advocatus_path = '' WHERE paper_id = ?",
+                (pid,),
+            )
+
     def write_intermediate(self, paper_id: str, name: str, payload: Any) -> Path:
         """Write an intermediate artifact JSON to disk atomically."""
         pid = paper_id.strip().upper()
@@ -500,6 +563,7 @@ class SqliteBackend(StorageBackend):
         sources: list[tuple[str, Path]] = []
         markdowns: list[tuple[str, Path]] = []
         dissections: list[tuple[str, Path]] = []
+        advocati: list[tuple[str, Path]] = []
 
         for path in sorted(self._papers_dir.iterdir()):
             if not path.is_file():
@@ -509,8 +573,17 @@ class SqliteBackend(StorageBackend):
                 continue
             if name.endswith(".json"):
                 continue
+            # Per-tool debug/trace artifacts are scratch outputs; never
+            # reconcile them as paper-level artifacts. This must come
+            # before the .md branches below or e.g. ``<pid>.dissect.debug.md``
+            # would be mis-classified as markdown.
+            if name.endswith(".debug.md") or name.endswith(".trace.md"):
+                continue
             if name.endswith(".dissect.md"):
                 dissections.append((name[: -len(".dissect.md")].upper(), path))
+                continue
+            if name.endswith(".advocatus.md"):
+                advocati.append((name[: -len(".advocatus.md")].upper(), path))
                 continue
             if name.endswith(".md"):
                 markdowns.append((name[: -len(".md")].upper(), path))
@@ -520,7 +593,13 @@ class SqliteBackend(StorageBackend):
                     sources.append((name[: -len(suffix)].upper(), path))
                     break
 
-        counts = {"sources": 0, "markdowns": 0, "dissections": 0, "line_counts": 0}
+        counts = {
+            "sources": 0,
+            "markdowns": 0,
+            "dissections": 0,
+            "advocati": 0,
+            "line_counts": 0,
+        }
         with self._conn:
             for pid, path in sources:
                 self._conn.execute(
@@ -555,6 +634,17 @@ class SqliteBackend(StorageBackend):
                 )
                 if cursor.rowcount > 0:
                     counts["dissections"] += 1
+            for pid, path in advocati:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
+                )
+                cursor = self._conn.execute(
+                    "UPDATE papers SET advocatus_path = ? "
+                    "WHERE paper_id = ? AND advocatus_path = ''",
+                    (str(path), pid),
+                )
+                if cursor.rowcount > 0:
+                    counts["advocati"] += 1
 
             # Backfill line_count for rows with markdown but no count
             rows_needing_count = self._conn.execute(
@@ -643,6 +733,43 @@ class SqliteBackend(StorageBackend):
                 f"Run 'paperflow dissect {paper_id}' again."
             )
         return path
+
+    def get_advocatus_path(self, paper_id: str) -> Path:
+        row = self._conn.execute(
+            "SELECT advocatus_path FROM papers WHERE paper_id = ?",
+            (paper_id.strip().upper(),),
+        ).fetchone()
+        if row is None or not row["advocatus_path"]:
+            raise MissingAdvocatusError(
+                f"No advocatus for {paper_id!r}. "
+                f"Run 'paperflow advocatus {paper_id}' first."
+            )
+        path = Path(row["advocatus_path"])
+        if not path.exists():
+            raise MissingAdvocatusError(
+                f"Advocatus file missing for {paper_id!r}: {path}. "
+                f"Run 'paperflow advocatus {paper_id}' again."
+            )
+        return path
+
+    def get_debug_md_path(self, paper_id: str, tool: str) -> Path:
+        return self._tool_artifact_path(paper_id, tool, ".debug.md")
+
+    def get_trace_md_path(self, paper_id: str, tool: str) -> Path:
+        return self._tool_artifact_path(paper_id, tool, ".trace.md")
+
+    def _tool_artifact_path(self, paper_id: str, tool: str, suffix: str) -> Path:
+        """Compose ``paperstore/<pid>.<tool><suffix>``.
+
+        ``tool`` is normalized to lowercase. Empty / whitespace-only ``tool``
+        raises ``ValueError`` to keep the convention enforceable across
+        every consuming pipeline.
+        """
+        normalized_tool = tool.strip().lower()
+        if not normalized_tool:
+            raise ValueError("tool must be a non-empty identifier")
+        pid = paper_id.strip().upper().lower()
+        return self._papers_dir / f"{pid}.{normalized_tool}{suffix}"
 
     def list_years(self) -> list[tuple[str, int]]:
         """Return ``[(year, paper_count)]`` sorted by year."""
@@ -734,15 +861,21 @@ class SqliteBackend(StorageBackend):
             s.claim_loc for s in support_map if s.status == "unsupported"
         }
         rows = [
-            (pid, c.text, c.section, c.question, getattr(c, "kind", "normative"))
+            (
+                pid,
+                c.loc.line, c.loc.start_char, c.loc.end_char,
+                c.text, c.section, c.question,
+                getattr(c, "kind", "normative"),
+            )
             for c in claims
             if c.merged_into is None and c.loc in unsupported_locs
         ]
         with self._conn:
             self._conn.execute("DELETE FROM questions WHERE paper_id = ?", (pid,))
             self._conn.executemany(
-                "INSERT INTO questions (paper_id, claim_text, section, question, kind) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO questions (paper_id, loc_line, loc_start, loc_end, "
+                "claim_text, section, question, kind) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
 
@@ -847,7 +980,11 @@ class SqliteBackend(StorageBackend):
             "SELECT * FROM questions WHERE paper_id = ?", (pid,)
         ).fetchall()
         return [QuestionRow(
-            paper_id=r["paper_id"], claim_text=r["claim_text"],
+            paper_id=r["paper_id"],
+            loc_line=r["loc_line"],
+            loc_start=r["loc_start"],
+            loc_end=r["loc_end"],
+            claim_text=r["claim_text"],
             section=r["section"], question=r["question"],
             kind=r["kind"],
         ) for r in rows]

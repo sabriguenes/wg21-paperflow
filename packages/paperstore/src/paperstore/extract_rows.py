@@ -69,6 +69,9 @@ class ExternalCitationRow:
 @dataclass(frozen=True)
 class QuestionRow:
     paper_id: str
+    loc_line: int
+    loc_start: int
+    loc_end: int
     claim_text: str
     section: str
     question: str

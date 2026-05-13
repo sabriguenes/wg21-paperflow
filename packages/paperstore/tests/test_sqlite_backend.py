@@ -17,6 +17,7 @@ import pytest
 
 from paperstore import SqliteBackend
 from paperstore.errors import (
+    MissingAdvocatusError,
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
@@ -221,7 +222,13 @@ def test_write_paper_md_rolls_back_on_sql_failure(
 
 def test_reconcile_empty_workspace(store: SqliteBackend):
     """Empty workspace is a clean no-op."""
-    assert store.reconcile() == {"sources": 0, "markdowns": 0, "dissections": 0, "line_counts": 0}
+    assert store.reconcile() == {
+        "sources": 0,
+        "markdowns": 0,
+        "dissections": 0,
+        "advocati": 0,
+        "line_counts": 0,
+    }
 
 
 def test_reconcile_backfills_orphan_artifacts(
@@ -234,7 +241,13 @@ def test_reconcile_backfills_orphan_artifacts(
     (papers_dir / "p3.md").write_text("# body\n")
 
     counts = store.reconcile()
-    assert counts == {"sources": 2, "markdowns": 1, "dissections": 0, "line_counts": 1}
+    assert counts == {
+        "sources": 2,
+        "markdowns": 1,
+        "dissections": 0,
+        "advocati": 0,
+        "line_counts": 1,
+    }
     assert store.get_source_path("P1") == papers_dir / "p1.pdf"
     assert store.get_source_path("P2") == papers_dir / "p2.html"
     assert store.get_paper_md("P3") == "# body\n"
@@ -259,7 +272,13 @@ def test_reconcile_skips_intermediates_partials_and_db(
     (papers_dir / "p1.prompts.json").write_text("[]")
     (papers_dir / "p1.pdf.partial").write_bytes(b"in-flight")
     counts = store.reconcile()
-    assert counts == {"sources": 0, "markdowns": 0, "dissections": 0, "line_counts": 0}
+    assert counts == {
+        "sources": 0,
+        "markdowns": 0,
+        "dissections": 0,
+        "advocati": 0,
+        "line_counts": 0,
+    }
     assert store.list_all_paper_ids() == []
 
 
@@ -267,8 +286,20 @@ def test_reconcile_is_idempotent(store: SqliteBackend, tmp_path: Path):
     (tmp_path / "paperstore" / "p1.pdf").write_bytes(b"x")
     first = store.reconcile()
     second = store.reconcile()
-    assert first == {"sources": 1, "markdowns": 0, "dissections": 0, "line_counts": 0}
-    assert second == {"sources": 0, "markdowns": 0, "dissections": 0, "line_counts": 0}
+    assert first == {
+        "sources": 1,
+        "markdowns": 0,
+        "dissections": 0,
+        "advocati": 0,
+        "line_counts": 0,
+    }
+    assert second == {
+        "sources": 0,
+        "markdowns": 0,
+        "dissections": 0,
+        "advocati": 0,
+        "line_counts": 0,
+    }
 
 
 def test_list_papers_for_year_missing_raises(store: SqliteBackend):
@@ -391,6 +422,129 @@ def test_reconcile_finds_dissect_files(store: SqliteBackend):
     assert meta.dissect_path == str(dissect_path)
 
 
+def test_reconcile_skips_per_tool_debug_and_trace_artifacts(store: SqliteBackend):
+    """Per-tool .debug.md / .trace.md files are scratch outputs; reconcile
+    must not classify them as paper markdown, dissect, or advocatus."""
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    for name in (
+        "p1000r0.dissect.debug.md",
+        "p1000r0.dissect.trace.md",
+        "p1000r0.advocatus.debug.md",
+        "p1000r0.advocatus.trace.md",
+    ):
+        (store._papers_dir / name).write_text("scratch", encoding="utf-8")
+    counts = store.reconcile()
+    assert counts["markdowns"] == 0
+    assert counts["dissections"] == 0
+    assert counts["advocati"] == 0
+    meta = store.get_meta("P1000R0")
+    assert meta.markdown_path == ""
+    assert meta.dissect_path == ""
+    assert meta.advocatus_path == ""
+
+
+# ---- advocatus lifecycle --------------------------------------------------
+
+
+def test_write_advocatus_md(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    path = store.write_advocatus_md("P1000R0", "# Relatio\n\nContent.")
+    assert path.exists()
+    assert path.name == "p1000r0.advocatus.md"
+    assert path.read_text(encoding="utf-8") == "# Relatio\n\nContent."
+    meta = store.get_meta("P1000R0")
+    assert meta.advocatus_path == str(path)
+
+
+def test_get_advocatus_path(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    store.write_advocatus_md("P1000R0", "# Relatio")
+    assert store.get_advocatus_path("P1000R0").exists()
+
+
+def test_get_advocatus_path_missing_raises(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    with pytest.raises(MissingAdvocatusError):
+        store.get_advocatus_path("P1000R0")
+
+
+def test_get_advocatus_path_no_paper_raises(store: SqliteBackend):
+    with pytest.raises(MissingAdvocatusError):
+        store.get_advocatus_path("NOPE")
+
+
+def test_clear_advocatus_deletes_file(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    path = store.write_advocatus_md("P1000R0", "# Relatio")
+    assert path.exists()
+    store.clear_advocatus("P1000R0")
+    assert not path.exists()
+    with pytest.raises(MissingAdvocatusError):
+        store.get_advocatus_path("P1000R0")
+
+
+def test_clear_advocatus_idempotent(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    store.clear_advocatus("P1000R0")
+    store.clear_advocatus("P1000R0")
+
+
+def test_write_advocatus_md_overwrites(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    store.write_advocatus_md("P1000R0", "# Old")
+    store.write_advocatus_md("P1000R0", "# New")
+    path = store.get_advocatus_path("P1000R0")
+    assert path.read_text(encoding="utf-8") == "# New"
+
+
+def test_reconcile_finds_advocatus_files(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    advocatus_path = store._papers_dir / "p1000r0.advocatus.md"
+    advocatus_path.write_text("# Relatio", encoding="utf-8")
+    counts = store.reconcile()
+    assert counts["advocati"] == 1
+    meta = store.get_meta("P1000R0")
+    assert meta.advocatus_path == str(advocatus_path)
+
+
+# ---- per-tool debug/trace path helpers ------------------------------------
+
+
+def test_get_debug_md_path_dissect(store: SqliteBackend):
+    p = store.get_debug_md_path("P1234R0", "dissect")
+    assert p.name == "p1234r0.dissect.debug.md"
+    assert p.parent == store._papers_dir
+    # Path is returned regardless of file existence.
+    assert not p.exists()
+
+
+def test_get_debug_md_path_advocatus(store: SqliteBackend):
+    p = store.get_debug_md_path("P1234R0", "advocatus")
+    assert p.name == "p1234r0.advocatus.debug.md"
+
+
+def test_get_trace_md_path_dissect(store: SqliteBackend):
+    p = store.get_trace_md_path("P1234R0", "dissect")
+    assert p.name == "p1234r0.dissect.trace.md"
+
+
+def test_get_trace_md_path_advocatus(store: SqliteBackend):
+    p = store.get_trace_md_path("P1234R0", "advocatus")
+    assert p.name == "p1234r0.advocatus.trace.md"
+
+
+def test_tool_artifact_path_normalizes_tool_to_lowercase(store: SqliteBackend):
+    p = store.get_debug_md_path("p1234r0", "Dissect")
+    assert p.name == "p1234r0.dissect.debug.md"
+
+
+def test_tool_artifact_path_rejects_empty_tool(store: SqliteBackend):
+    with pytest.raises(ValueError):
+        store.get_debug_md_path("P1234R0", "")
+    with pytest.raises(ValueError):
+        store.get_trace_md_path("P1234R0", "   ")
+
+
 # ---- extract store/get round-trips ----------------------------------------
 
 
@@ -488,6 +642,62 @@ def test_store_replaces_previous(store: SqliteBackend):
     assert len(rows) == 2
     texts = {r.text for r in rows}
     assert texts == {"new A", "new B"}
+
+
+def _make_claim_real_loc(text="x", section="s", question="q", line=1, kind="normative"):
+    """Variant of _make_claim that uses the real SourceLoc (hashable)
+    so it can flow through store_questions, which builds a set of locs."""
+    from paperstore import SourceLoc
+    return SimpleNamespace(
+        loc=SourceLoc(line=line, start_char=0, end_char=10),
+        text=text, section=section, question=question, kind=kind,
+        merged_into=None, original_quotes=[text], depends_on=[],
+    )
+
+
+def _make_support_link(claim_loc, status="unsupported"):
+    return SimpleNamespace(claim_loc=claim_loc, evidence_locs=[], status=status)
+
+
+def test_store_questions_keeps_distinct_locs_with_identical_text(store: SqliteBackend):
+    """Two unsupported claims at different locs with identical text+kind
+    both persist; identity is the loc triple, not the text."""
+    a = _make_claim_real_loc(text="X is fast", section="intro", question="why X?", line=1)
+    b = _make_claim_real_loc(text="X is fast", section="design", question="why X?", line=42)
+    store.store_questions(
+        "P1", [a, b],
+        [_make_support_link(a.loc), _make_support_link(b.loc)],
+    )
+    rows = store.get_questions("P1")
+    assert len(rows) == 2
+    assert {(r.loc_line, r.claim_text) for r in rows} == {
+        (1, "X is fast"), (42, "X is fast"),
+    }
+
+
+def test_store_questions_keeps_distinct_text(store: SqliteBackend):
+    a = _make_claim_real_loc(text="X is fast", section="intro", question="why X?", line=1)
+    b = _make_claim_real_loc(text="Y is slow", section="design", question="why Y?", line=10)
+    store.store_questions(
+        "P1", [a, b],
+        [_make_support_link(a.loc), _make_support_link(b.loc)],
+    )
+    rows = store.get_questions("P1")
+    assert {r.claim_text for r in rows} == {"X is fast", "Y is slow"}
+
+
+def test_store_questions_replaces_previous(store: SqliteBackend):
+    """A re-run replaces all rows for the paper; no leftovers from prior runs."""
+    a = _make_claim_real_loc(text="old", section="intro", question="old?", line=1)
+    store.store_questions("P1", [a], [_make_support_link(a.loc)])
+    assert len(store.get_questions("P1")) == 1
+
+    b = _make_claim_real_loc(text="new", section="design", question="new?", line=5)
+    store.store_questions("P1", [b], [_make_support_link(b.loc)])
+    rows = store.get_questions("P1")
+    assert len(rows) == 1
+    assert rows[0].claim_text == "new"
+    assert rows[0].loc_line == 5
 
 
 def test_list_papers_since(store: SqliteBackend):

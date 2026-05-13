@@ -4,6 +4,7 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
+    "advocatus",
     "cli",
     "dissect",
     "mailing",
@@ -12,6 +13,25 @@ members = [
     "tomd",
     "web-tools",
     "wg21-paperflow",
+]
+
+[[package]]
+name = "advocatus"
+version = "0.1.0"
+source = { editable = "packages/advocatus" }
+dependencies = [
+    { name = "paperstore" },
+    { name = "pydantic" },
+    { name = "pydantic-ai" },
+    { name = "web-tools" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "paperstore", editable = "packages/paperstore" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic-ai" },
+    { name = "web-tools", editable = "packages/web_tools" },
 ]
 
 [[package]]
@@ -468,6 +488,7 @@ name = "cli"
 version = "0.3.0"
 source = { editable = "packages/cli" }
 dependencies = [
+    { name = "advocatus" },
     { name = "dissect" },
     { name = "mailing" },
     { name = "paperstore" },
@@ -477,6 +498,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "advocatus", editable = "packages/advocatus" },
     { name = "dissect", editable = "packages/dissect" },
     { name = "mailing", editable = "packages/mailing" },
     { name = "paperstore", editable = "packages/paperstore" },
@@ -3555,6 +3577,7 @@ name = "wg21-paperflow"
 version = "0.3.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "advocatus" },
     { name = "cli" },
     { name = "dissect" },
     { name = "mailing" },
@@ -3573,6 +3596,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "advocatus", editable = "packages/advocatus" },
     { name = "cli", editable = "packages/cli" },
     { name = "dissect", editable = "packages/dissect" },
     { name = "mailing", editable = "packages/mailing" },

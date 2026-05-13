@@ -31,6 +31,8 @@ from dissect.pipeline import (
     StepContext,
 )
 from dissect.models import (
+    CaputCausae,
+    CitationAuditEntry,
     Claim,
     ExternalEvidence,
     LoadBearingResult,
@@ -190,3 +192,52 @@ def test_guard_caput_causae_fires_when_anchored():
 def test_guard_resolve_skips_when_no_external():
     state = PipelineState()
     assert _guard_resolve(state) is False
+
+
+# -- Persistence dispatch ---------------------------------------------------
+
+
+def test_store_citation_audit_adapts_field_name(store):  # noqa: F811
+    """Regression: CitationAuditEntry uses `paper_id`, but the storage
+    schema uses `cited_paper_id`. The persist path must adapt the
+    duck-typed object before handing it to store_citation_audit.
+    """
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    entries = [
+        CitationAuditEntry(
+            paper_id="P9999R0",
+            resolution_method="wg21_link",
+            resolved=True,
+            source_url="https://wg21.link/p9999r0",
+            quote_match="exact",
+        ),
+    ]
+    # Mirror the adapter used in _dispatch.
+    from types import SimpleNamespace
+    store.store_citation_audit("P1000R0", [
+        SimpleNamespace(
+            cited_paper_id=e.paper_id,
+            resolution_method=e.resolution_method,
+            resolved=e.resolved,
+            source_url=e.source_url,
+            quote_match=e.quote_match,
+            discrepancy=e.discrepancy,
+        )
+        for e in entries
+    ])
+    rows = store.get_citation_audit("P1000R0")
+    assert len(rows) == 1
+    assert rows[0].cited_paper_id == "P9999R0"
+    assert rows[0].resolution_method == "wg21_link"
+    assert rows[0].resolved is True
+
+
+def test_store_caput_causae_writes_thesis(store):  # noqa: F811
+    """Regression: dispatch persists state.caput_causae.thesis via
+    store_caput_causae(pid, thesis_string)."""
+    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
+    cc = CaputCausae(thesis="The paper argues for X.")
+    store.store_caput_causae("P1000R0", cc.thesis)
+    row = store.get_caput_causae("P1000R0")
+    assert row is not None
+    assert row.thesis == "The paper argues for X."
