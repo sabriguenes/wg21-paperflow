@@ -674,6 +674,7 @@ dependencies = [
     { name = "pipeline" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
+    { name = "pymupdf" },
 ]
 
 [package.metadata]
@@ -682,6 +683,7 @@ requires-dist = [
     { name = "pipeline", editable = "packages/pipeline" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-ai" },
+    { name = "pymupdf", specifier = "~=1.27.0" },
 ]
 
 [[package]]

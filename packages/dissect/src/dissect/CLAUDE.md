@@ -136,6 +136,19 @@ prompt file provides WHAT: which model, which fields, which tools.
   cleanly serializable, that is a bug to fix, not a condition to mask.
 - **Library code uses `logging`, never `print()`.** No
   `print(file=sys.stderr)` in any package except `cli`.
+- **PDF extraction lives in `pdf_extract.py`.** Registered into
+  `WebResearcher.binary_extractors` by `pipeline.py` at construction
+  time so the `pipeline` package itself stays free of pymupdf (AGPL).
+  Any future binary extractors (Word docs, etc.) follow the same
+  pattern.
+- **`fitz.open()` is paired with `doc.close()` in a `finally` block.**
+  Never rely on GC: pymupdf holds C-level resources, and orphaned
+  documents accumulate FDs and memory under sustained load.
+- **`pymupdf` pins in `dissect/pyproject.toml` and
+  `tomd/pyproject.toml` move in lockstep.** Mismatched pins between
+  sibling editable installs in the same venv let `uv` resolve one
+  version while partial rebuilds drift. `tests/test_pin_lockstep.py`
+  enforces this mechanically.
 
 ## Fidelity invariant
 

@@ -183,3 +183,4 @@ These extend general rules in the root CLAUDE.md with project-specific instances
 - The four spatial threshold branches (PARA_SPACING, LINE_SPACING, WORD_GAP for dy, WORD_GAP for dx) are the foundation of `extract_spatial`. Changes to these constants affect everything downstream. Test thoroughly.
 - Regex patterns for section numbers, known section names, list markers, and metadata fields must be precompiled at module level and defined in one place.
 - Runtime dependencies are `pymupdf`, `beautifulsoup4`, `mistune`, and `ftfy`. All four must be declared in `pyproject.toml`.
+- The `pymupdf` pin must stay in lockstep with the pin in `packages/dissect/pyproject.toml` (both packages import `fitz` and share one resolved version in the workspace venv). `tests/test_pin_lockstep.py` enforces this mechanically; bump both pins in the same PR.

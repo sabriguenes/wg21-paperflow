@@ -900,6 +900,8 @@ async def dissect_paper(
     problems. Raises :class:`PaperNotFoundError` or
     :class:`PaperNotConvertedError` if the paper is missing.
     """
+    from dissect.pdf_extract import extract_pdf_text
+
     slots = {**DEFAULT_MODEL_SLOTS, **(model_slots or {})}
     secs = load_sections("dissect", "dissect.md")
 
@@ -932,7 +934,9 @@ async def dissect_paper(
 
     state = PipelineState(paper_source=paper_md)
 
-    async with WebResearcher() as researcher:
+    async with WebResearcher(
+        binary_extractors={"application/pdf": extract_pdf_text},
+    ) as researcher:
         tool_reg: dict[str, Callable[..., Any]] = {}
 
         from paperstore.tools import PaperstoreTools
