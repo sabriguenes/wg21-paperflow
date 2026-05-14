@@ -37,14 +37,14 @@ def _loc(line=1):
 
 def _articulus(line=1):
     return Articulus(
-        loc=_loc(line), text="X should be Y", section="2.1",
+        uid=line, loc=_loc(line), text="X should be Y", section="2.1",
         kind="normative", question="Q?",
     )
 
 
 def _charge(line=1):
     return CandidateCharge(
-        articulus_loc=_loc(line),
+        articulus_uid=line,
         quoted_text="X is the best approach",
         failed_test="auctoritas",
         contradicting_evidence="P1234R3 reaches the opposite conclusion.",
@@ -90,7 +90,7 @@ def test_render_nihil_obstat_no_objections():
 def test_render_cum_objectionibus_full():
     charge = _charge(10)
     surviving = SurvivingCharge(
-        articulus_loc=charge.articulus_loc, charge=charge, defensor_chain=[],
+        articulus_uid=charge.articulus_uid, charge=charge, defensor_chain=[],
     )
     motivatio = Motivatio(
         adversary="UK NB", forum="nb_comment",
@@ -98,23 +98,23 @@ def test_render_cum_objectionibus_full():
         explanation="UK has flagged X-related concerns previously.",
     )
     obj_high = Objection(
-        articulus_loc=charge.articulus_loc, charge=surviving,
+        articulus_uid=charge.articulus_uid, charge=surviving,
         motivatio=motivatio, severity="high",
     )
     obj_low = Objection(
-        articulus_loc=charge.articulus_loc, charge=surviving,
+        articulus_uid=charge.articulus_uid, charge=surviving,
         motivatio=motivatio, severity="low",
     )
 
     killed = _charge(20)
     p = Probatio(
-        articulus_loc=killed.articulus_loc,
+        articulus_uid=killed.articulus_uid,
         killed_charge=killed,
         killing_challenge="prudentia",
         explanation="No rational opponent would volunteer this.",
     )
 
-    nota = NotaMinor(loc=_loc(99), text="formatting inconsistency in section 3")
+    nota = NotaMinor(uid=99, text="formatting inconsistency in section 3")
 
     tabula = TabulaFontiumEntry(
         paper_id="P1234R3", resolution_method="wg21_link",
@@ -123,7 +123,7 @@ def test_render_cum_objectionibus_full():
     )
 
     defensor = DefensorChargeOutput(
-        charge_loc=killed.articulus_loc,
+        charge_uid=killed.articulus_uid,
         challenges=[
             DefensorChallenge(challenge="confessio", verdict="survived",
                               reasoning="not conceded", confidence=0.8),
@@ -171,9 +171,9 @@ def test_render_cum_objectionibus_full():
     assert "## Notae Minores" in out
     assert "formatting inconsistency" in out
 
-    # Loc references appear
-    assert "line 10" in out
-    assert "line 20" in out
+    # uid references appear
+    assert "uid 10" in out
+    assert "uid 20" in out
 
 
 def test_render_omits_empty_optional_sections():
@@ -218,7 +218,7 @@ def _full_state_for_trace() -> PipelineState:
         ],
         central_thesis_recap="X holds.",
         articuli=[a, a2],
-        boundaries=[Boundary(loc=_loc(7), text="we do not propose Y", kind="disclaim")],
+        boundaries=[Boundary(uid=7, loc=_loc(7), text="we do not propose Y", kind="disclaim")],
         dossier=[DossierEntry(label="public_record", text="public finding")],
         stakeholders=[Stakeholder(name="UK NB", position="opposes Y", stance="opponent")],
         tabula_fontium=[
@@ -227,7 +227,7 @@ def _full_state_for_trace() -> PipelineState:
         ],
         exams=[
             ArticulusExam(
-                articulus_loc=a.loc,
+                articulus_uid=a.uid,
                 veritas=ExamOutcome(passed=True, reasoning="ok"),
                 ratio=ExamOutcome(passed=False, reasoning="gap"),
                 auctoritas=ExamOutcome(passed=True, reasoning="ok"),
@@ -237,7 +237,7 @@ def _full_state_for_trace() -> PipelineState:
         candidate_charges=[_charge(5)],
         defensor_results=[
             DefensorChargeOutput(
-                charge_loc=_loc(5),
+                charge_uid=5,
                 challenges=[
                     DefensorChallenge(challenge="prudentia", verdict="killed",
                                       reasoning="self-defeating", confidence=0.8),
@@ -247,7 +247,7 @@ def _full_state_for_trace() -> PipelineState:
         ],
         surviving_charges=[],
         probationes=[
-            Probatio(articulus_loc=_loc(5), killed_charge=_charge(5),
+            Probatio(articulus_uid=5, killed_charge=_charge(5),
                      killing_challenge="prudentia",
                      explanation="rational opponent would not press"),
         ],

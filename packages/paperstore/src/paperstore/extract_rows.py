@@ -19,6 +19,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class ClaimRow:
     paper_id: str
+    uid: int
     loc_line: int
     loc_start: int
     loc_end: int
@@ -26,14 +27,13 @@ class ClaimRow:
     section: str
     question: str
     kind: str = "normative"
-    merged_into_line: int | None = None
-    merged_into_start: int | None = None
-    merged_into_end: int | None = None
+    merged_into: int | None = None
 
 
 @dataclass(frozen=True)
 class EvidenceRow:
     paper_id: str
+    uid: int
     loc_line: int
     loc_start: int
     loc_end: int
@@ -44,9 +44,7 @@ class EvidenceRow:
     cited: bool
     verifiable: bool
     normative: bool
-    merged_into_line: int | None = None
-    merged_into_start: int | None = None
-    merged_into_end: int | None = None
+    merged_into: int | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +67,7 @@ class ExternalCitationRow:
 @dataclass(frozen=True)
 class QuestionRow:
     paper_id: str
+    uid: int
     loc_line: int
     loc_start: int
     loc_end: int
@@ -96,8 +95,9 @@ class CitationAuditRow:
 
 
 @dataclass(frozen=True)
-class MarkerRow:
+class RhetoricRow:
     paper_id: str
+    uid: int
     loc_line: int
     loc_start: int
     loc_end: int

@@ -87,11 +87,11 @@ authority for tone, calibration tiers, and structural rules.
 - **Model:** none
 - **Execution:** main
 - **Reads:** paper_id
-- **Writes:** paper_source, paper_title, paper_authors, paper_audience, paper_date, paper_url, paper_number, paper_revision, subreddit, prior_revision, revision_case, dissect_claims, dissect_evidence, dissect_markers, dissect_caput_causae, dissect_citation_audit, dissect_external_citations
+- **Writes:** paper_source, paper_title, paper_authors, paper_audience, paper_date, paper_url, paper_number, paper_revision, subreddit, prior_revision, revision_case, dissect_claims, dissect_evidence, dissect_rhetoric, dissect_caput_causae, dissect_citation_audit, dissect_external_citations
 
 Pure-Python load step. Reads paper metadata and converted markdown
 from paperstore. Loads every dissect artifact (claims, evidence,
-markers, caput causae, citation audit, external citations) as raw
+rhetoric, caput causae, citation audit, external citations) as raw
 row dicts; later steps convert what they need into typed models.
 
 Routes the paper to a subreddit by first target group: ``EWG`` /
@@ -112,7 +112,7 @@ can call out the delta.
 
 - **Model:** default
 - **Execution:** main
-- **Reads:** paper_source, paper_title, paper_authors, paper_audience, paper_date, dissect_claims, dissect_evidence, dissect_markers, dissect_caput_causae
+- **Reads:** paper_source, paper_title, paper_authors, paper_audience, paper_date, dissect_claims, dissect_evidence, dissect_rhetoric, dissect_caput_causae
 - **Writes:** paper_type, technical_anchors, hot_takes, tangent_magnets, misconception_traps, design_tensions
 
 Read the dissected paper end to end. Decide what makes this paper

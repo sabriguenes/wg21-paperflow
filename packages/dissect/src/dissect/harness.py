@@ -11,6 +11,8 @@ Handles line-numbered chunk formatting, SourceLoc computation from
 LLM-reported start_line, paper chunking, deterministic dedup (tiers 0
 and 1), and WG21 citation extraction. No LLM calls, no paperstore
 imports, no network I/O.
+
+All helper functions are module-private (underscore-prefixed).
 """
 
 from __future__ import annotations
@@ -27,8 +29,8 @@ from dissect.models import (
     Evidence,
     RawClaim,
     RawEvidence,
-    RawMarker,
-    RhetoricalMarker,
+    RawRhetoric,
+    Rhetoric,
     SourceLoc,
 )
 
@@ -43,7 +45,7 @@ def _strip_line_prefix(text: str) -> str:
     return _LINE_PREFIX_RE.sub("", text)
 
 
-def number_lines(chunk: Chunk) -> str:
+def _number_lines(chunk: Chunk) -> str:
     """Prepend absolute line numbers to each line of a chunk."""
     lines = chunk.text.splitlines()
     return "\n".join(
@@ -51,7 +53,7 @@ def number_lines(chunk: Chunk) -> str:
     )
 
 
-def chunk_paper(source: str, max_chars: int = 40_000) -> list[Chunk]:
+def _chunk_paper(source: str, max_chars: int = 40_000) -> list[Chunk]:
     """Split paper into chunks of <= max_chars at markdown heading boundaries.
 
     Adjacent chunks overlap by 5 lines: the next chunk starts 5 lines
@@ -93,28 +95,31 @@ def chunk_paper(source: str, max_chars: int = 40_000) -> list[Chunk]:
     return chunks
 
 
-def promote_claims(raws: list[RawClaim], source: str) -> list[Claim]:
+def _promote_claims(
+    raws: list[RawClaim], source: str, start_uid: int = 1,
+) -> tuple[list[Claim], int]:
     """Convert RawClaims to Claims using start_line for location.
 
-    Uses the LLM-reported start_line to compute SourceLoc. No items
-    are dropped — every raw claim becomes a Claim. Multiple claims on
-    the same line are disambiguated via start_char as an ordinal.
+    Assigns sequential uids starting from start_uid. Returns
+    (claims, next_uid).
     """
     lines = source.splitlines()
     claims: list[Claim] = []
-    text_to_loc: dict[str, SourceLoc] = {}
-    line_counts: dict[int, int] = {}
+    text_to_uid: dict[str, int] = {}
+    uid = start_uid
 
     for raw in raws:
         line = raw.start_line if raw.start_line > 0 else 1
         line_text = lines[line - 1] if line <= len(lines) else ""
-        ordinal = line_counts.get(line, 0)
-        line_counts[line] = ordinal + 1
-        loc = SourceLoc(line=line, start_char=ordinal, end_char=len(line_text))
         text = _strip_line_prefix(raw.text)
-        text_to_loc[text] = loc
+        pos = line_text.find(text)
+        if pos < 0:
+            pos = 0
+        loc = SourceLoc(line=line, start_char=pos, end_char=pos + len(text))
+        text_to_uid[text] = uid
         quotes = raw.original_quotes if raw.original_quotes else [text]
         claims.append(Claim(
+            uid=uid,
             loc=loc,
             text=text,
             original_quotes=quotes,
@@ -124,39 +129,43 @@ def promote_claims(raws: list[RawClaim], source: str) -> list[Claim]:
             depends_on=[],
             merged_into=None,
         ))
+        uid += 1
 
     for i, raw in enumerate(raws):
-        resolved_deps: list[SourceLoc] = []
+        resolved_deps: list[int] = []
         for dep_text in raw.depends_on:
-            dep_loc = text_to_loc.get(dep_text)
-            if dep_loc is not None:
-                resolved_deps.append(dep_loc)
+            dep_uid = text_to_uid.get(dep_text)
+            if dep_uid is not None:
+                resolved_deps.append(dep_uid)
         if resolved_deps:
             claims[i] = claims[i].model_copy(update={"depends_on": resolved_deps})
 
-    return claims
+    return (claims, start_uid + len(raws))
 
 
-def promote_evidence(raws: list[RawEvidence], source: str) -> list[Evidence]:
+def _promote_evidence(
+    raws: list[RawEvidence], source: str, start_uid: int = 1,
+) -> tuple[list[Evidence], int]:
     """Convert RawEvidence to Evidence using start_line for location.
 
-    Uses the LLM-reported start_line to compute SourceLoc. No items
-    are dropped — every raw evidence becomes an Evidence. Multiple items
-    on the same line are disambiguated via start_char as an ordinal.
+    Assigns sequential uids starting from start_uid. Returns
+    (evidence, next_uid).
     """
     lines = source.splitlines()
     evidence: list[Evidence] = []
-    line_counts: dict[int, int] = {}
+    uid = start_uid
 
     for raw in raws:
         line = raw.start_line if raw.start_line > 0 else 1
         line_text = lines[line - 1] if line <= len(lines) else ""
-        ordinal = line_counts.get(line, 0)
-        line_counts[line] = ordinal + 1
-        loc = SourceLoc(line=line, start_char=ordinal, end_char=len(line_text))
         text = _strip_line_prefix(raw.text)
+        pos = line_text.find(text)
+        if pos < 0:
+            pos = 0
+        loc = SourceLoc(line=line, start_char=pos, end_char=pos + len(text))
         quotes = raw.original_quotes if raw.original_quotes else [text]
         evidence.append(Evidence(
+            uid=uid,
             loc=loc,
             text=text,
             original_quotes=quotes,
@@ -168,27 +177,33 @@ def promote_evidence(raws: list[RawEvidence], source: str) -> list[Evidence]:
             normative=raw.normative,
             merged_into=None,
         ))
+        uid += 1
 
-    return evidence
+    return (evidence, start_uid + len(raws))
 
 
-def promote_markers(raws: list[RawMarker], source: str) -> list[RhetoricalMarker]:
-    """Convert RawMarkers to RhetoricalMarkers using start_line for location.
+def _promote_rhetoric(
+    raws: list[RawRhetoric], source: str, start_uid: int = 1,
+) -> tuple[list[Rhetoric], int]:
+    """Convert RawRhetoric to Rhetoric using start_line for location.
 
-    Same pattern as promote_claims/promote_evidence. No items dropped.
+    Assigns sequential uids starting from start_uid. Returns
+    (items, next_uid).
     """
     lines = source.splitlines()
-    markers: list[RhetoricalMarker] = []
-    line_counts: dict[int, int] = {}
+    items: list[Rhetoric] = []
+    uid = start_uid
 
     for raw in raws:
         line = raw.start_line if raw.start_line > 0 else 1
         line_text = lines[line - 1] if line <= len(lines) else ""
-        ordinal = line_counts.get(line, 0)
-        line_counts[line] = ordinal + 1
-        loc = SourceLoc(line=line, start_char=ordinal, end_char=len(line_text))
         text = _strip_line_prefix(raw.text)
-        markers.append(RhetoricalMarker(
+        pos = line_text.find(text)
+        if pos < 0:
+            pos = 0
+        loc = SourceLoc(line=line, start_char=pos, end_char=pos + len(text))
+        items.append(Rhetoric(
+            uid=uid,
             loc=loc,
             text=text,
             section=raw.section,
@@ -196,15 +211,16 @@ def promote_markers(raws: list[RawMarker], source: str) -> list[RhetoricalMarker
             target=raw.target,
             intensity=raw.intensity,
         ))
+        uid += 1
 
-    return markers
+    return (items, start_uid + len(raws))
 
 
-def dedup_tier0(items: list[T]) -> list[T]:
+def _dedup_tier0(items: list[T]) -> list[T]:
     """Tier 0: tombstone exact SourceLoc duplicates.
 
     When two items have identical loc, the second becomes a tombstone
-    (merged_into points to the first). Returns a new list.
+    (merged_into points to the survivor's uid). Returns a new list.
     """
     seen: dict[SourceLoc, int] = {}
     result: list[T] = []
@@ -215,7 +231,7 @@ def dedup_tier0(items: list[T]) -> list[T]:
             continue
         if item.loc in seen:
             survivor_idx = seen[item.loc]
-            result.append(item.model_copy(update={"merged_into": items[survivor_idx].loc}))
+            result.append(item.model_copy(update={"merged_into": items[survivor_idx].uid}))
         else:
             seen[item.loc] = len(result)
             result.append(item)
@@ -223,7 +239,7 @@ def dedup_tier0(items: list[T]) -> list[T]:
     return result
 
 
-def dedup_tier1(items: list[T]) -> list[T]:
+def _dedup_tier1(items: list[T]) -> list[T]:
     """Tier 1: tombstone substring matches, absorb original_quotes.
 
     For survivors of tier 0: when one item's text is a substring of
@@ -243,13 +259,13 @@ def dedup_tier1(items: list[T]) -> list[T]:
                 cur_b = result[idx_b]
                 merged_quotes = list(cur_b.original_quotes) + list(a.original_quotes)
                 result[idx_b] = cur_b.model_copy(update={"original_quotes": merged_quotes})
-                result[idx_a] = a.model_copy(update={"merged_into": cur_b.loc})
+                result[idx_a] = a.model_copy(update={"merged_into": cur_b.uid})
                 break
             elif b.text in a.text and a.text != b.text:
                 cur_a = result[idx_a]
                 merged_quotes = list(cur_a.original_quotes) + list(b.original_quotes)
                 result[idx_a] = cur_a.model_copy(update={"original_quotes": merged_quotes})
-                result[idx_b] = b.model_copy(update={"merged_into": cur_a.loc})
+                result[idx_b] = b.model_copy(update={"merged_into": cur_a.uid})
 
     return result
 
@@ -259,7 +275,7 @@ _CITATION_N_RE = re.compile(r"\b(N\d{4,5})\b", re.IGNORECASE)
 _LINK_URL_RE = re.compile(r"\]\([^)]*\)")
 
 
-def extract_citations(paper_source: str) -> list[CitationRef]:
+def _extract_citations(paper_source: str) -> list[CitationRef]:
     """Extract and deduplicate WG21 paper number citations from markdown.
 
     Returns a list sorted by citation count descending. Pure Python,

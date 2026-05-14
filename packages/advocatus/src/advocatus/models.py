@@ -13,9 +13,10 @@ AI's ``output_type``. Frozen domain models are updated via
 ``model_copy(update=...)``.
 
 ``SourceLoc`` is imported from ``paperstore`` (the canonical home for
-the loc type at the storage layer). Every charge / objection / probatio
-/ nota minor carries one or more ``SourceLoc`` fields - provenance is
-bound at generation time, not reconstructed at report time.
+the loc type at the storage layer). ``Articulus`` and ``Boundary``
+retain a ``SourceLoc`` field for provenance; all other models
+reference articuli by ``uid`` (an integer assigned at the storage
+layer).
 """
 
 from __future__ import annotations
@@ -61,6 +62,7 @@ class Articulus(BaseModel, frozen=True):
     the articuli may be examined.
     """
 
+    uid: int
     loc: SourceLoc
     text: str = Field(description="Exact quote from the paper.")
     section: str = Field(description="Section header where the claim appears.")
@@ -78,6 +80,7 @@ class Boundary(BaseModel, frozen=True):
     in evidence.
     """
 
+    uid: int
     loc: SourceLoc
     text: str = Field(description="Exact quote from the paper.")
     kind: Literal["disclaim", "concede", "defer"] = Field(
@@ -133,7 +136,7 @@ class ExamOutcome(BaseModel, frozen=True):
 class ArticulusExam(BaseModel, frozen=True):
     """Three test results plus a confidence signal for one articulus."""
 
-    articulus_loc: SourceLoc
+    articulus_uid: int
     veritas: ExamOutcome
     ratio: ExamOutcome
     auctoritas: ExamOutcome
@@ -150,12 +153,12 @@ class CandidateCharge(BaseModel, frozen=True):
     any element is noise, not prosecution.
     """
 
-    articulus_loc: SourceLoc
+    articulus_uid: int
     quoted_text: str = Field(description="Exact quote from the paper being challenged.")
     failed_test: Literal["veritas", "ratio", "auctoritas"]
-    contradicting_loc: Optional[SourceLoc] = Field(
+    contradicting_uid: Optional[int] = Field(
         default=None,
-        description="Location of contradicting evidence in the paper, if any.",
+        description="UID of contradicting evidence in the paper, if any.",
     )
     contradicting_evidence: str = Field(
         description="The specific source, testimony, or logical gap that "
@@ -196,7 +199,7 @@ class DefensorChargeOutput(BaseModel, frozen=True):
     ``survived`` for all six.
     """
 
-    charge_loc: SourceLoc
+    charge_uid: int
     challenges: list[DefensorChallenge]
     final: ChallengeVerdict = Field(
         description="The disposition of the charge: killed / relegated / survived.",
@@ -206,7 +209,7 @@ class DefensorChargeOutput(BaseModel, frozen=True):
 class SurvivingCharge(BaseModel, frozen=True):
     """A candidate charge that passed all six Defensor challenges."""
 
-    articulus_loc: SourceLoc
+    articulus_uid: int
     charge: CandidateCharge
     defensor_chain: list[DefensorChallenge] = Field(
         description="The six DefensorChallenge results that cleared this charge.",
@@ -220,7 +223,7 @@ class Probatio(BaseModel, frozen=True):
     battle-hardened.
     """
 
-    articulus_loc: SourceLoc
+    articulus_uid: int
     killed_charge: CandidateCharge
     killing_challenge: ChallengeName
     explanation: str = Field(
@@ -245,7 +248,7 @@ class Motivatio(BaseModel, frozen=True):
 class Objection(BaseModel, frozen=True):
     """A surviving charge with motivatio attached, ready for the Relatio."""
 
-    articulus_loc: SourceLoc
+    articulus_uid: int
     charge: SurvivingCharge
     motivatio: Motivatio
     severity: SeverityKind = Field(
@@ -260,7 +263,7 @@ class NotaMinor(BaseModel, frozen=True):
     housekeeping, not charges.
     """
 
-    loc: Optional[SourceLoc] = Field(default=None)
+    uid: Optional[int] = Field(default=None)
     text: str = Field(description="The observation, in one short sentence.")
 
 

@@ -103,6 +103,7 @@ def test_loc_from_row_round_trip_with_paperstore():
 
     row = ClaimRow(
         paper_id="P1000R0",
+        uid=1,
         loc_line=42,
         loc_start=0,
         loc_end=80,

@@ -56,6 +56,7 @@ class Claim(BaseModel, frozen=True):
     The ``kind`` field distinguishes the two.
     """
 
+    uid: int
     loc: SourceLoc
     text: str = Field(description="Exact quote from the paper.")
     original_quotes: list[str] = Field(
@@ -70,13 +71,13 @@ class Claim(BaseModel, frozen=True):
         description="'normative': argues something ought to be true. "
         "'factual': asserts a verifiable property the argument depends on.",
     )
-    depends_on: list[SourceLoc] = Field(
-        description="Claims whose truth this claim requires. "
+    depends_on: list[int] = Field(
+        description="Uids of claims whose truth this claim requires. "
         "Resolved from text references in RawClaim.depends_on.",
     )
-    merged_into: SourceLoc | None = Field(
+    merged_into: int | None = Field(
         default=None,
-        description="Tombstone: points to the survivor that absorbed this claim. "
+        description="Tombstone: uid of the survivor that absorbed this claim. "
         "None if this claim is alive.",
     )
 
@@ -84,6 +85,7 @@ class Claim(BaseModel, frozen=True):
 class Evidence(BaseModel, frozen=True):
     """A statement offered in support of one or more claims."""
 
+    uid: int
     loc: SourceLoc
     text: str = Field(description="Exact quote from the paper.")
     original_quotes: list[str] = Field(
@@ -108,9 +110,9 @@ class Evidence(BaseModel, frozen=True):
         description="True if the evidence states a requirement or obligation, "
         "not merely an observation.",
     )
-    merged_into: SourceLoc | None = Field(
+    merged_into: int | None = Field(
         default=None,
-        description="Tombstone: points to the survivor that absorbed this evidence. "
+        description="Tombstone: uid of the survivor that absorbed this evidence. "
         "None if alive.",
     )
 
@@ -118,8 +120,8 @@ class Evidence(BaseModel, frozen=True):
 class SupportLink(BaseModel, frozen=True):
     """Maps a claim to the evidence that supports or fails to support it."""
 
-    claim_loc: SourceLoc
-    evidence_locs: list[SourceLoc]
+    claim_uid: int
+    evidence_uids: list[int]
     status: Literal["directly_supported", "transitively_supported", "unsupported"] = Field(
         description="'directly_supported': evidence explicitly addresses the claim. "
         "'transitively_supported': evidence supports a dependency of the claim. "
@@ -135,12 +137,12 @@ class InternalContradiction(BaseModel, frozen=True):
     incompatible things about the same or analogous subjects.
     """
 
-    source_loc: SourceLoc = Field(
-        description="Location of the contradicting item. "
-        "An evidence loc when kind is evidence_vs_claim, "
-        "a claim loc when kind is claim_vs_claim.",
+    source_uid: int = Field(
+        description="Uid of the contradicting item. "
+        "An evidence uid when kind is evidence_vs_claim, "
+        "a claim uid when kind is claim_vs_claim.",
     )
-    claim_loc: SourceLoc
+    claim_uid: int
     kind: ContradictionKind = Field(
         default="evidence_vs_claim",
         description="'evidence_vs_claim': evidence undermines a claim. "
@@ -151,9 +153,9 @@ class InternalContradiction(BaseModel, frozen=True):
 class LoadBearingResult(BaseModel, frozen=True):
     """Load-Bearing step output: how critical a claim is to the paper's argument."""
 
-    claim_loc: SourceLoc
-    dependents: list[SourceLoc] = Field(
-        description="Claims that depend on this one (directly or transitively).",
+    claim_uid: int
+    dependents: list[int] = Field(
+        description="Uids of claims that depend on this one (directly or transitively).",
     )
     classification: Literal[
         "internally_contested",
@@ -177,7 +179,7 @@ class LoadBearingResult(BaseModel, frozen=True):
 class ExternalEvidence(BaseModel, frozen=True):
     """Evidence found via citation verification or web search."""
 
-    claim_loc: SourceLoc
+    claim_uid: int
     source_url: str
     source_title: str
     text: str = Field(description="Extracted passage from the source.")
@@ -198,9 +200,10 @@ MarkerType = Literal[
 ]
 
 
-class RhetoricalMarker(BaseModel, frozen=True):
+class Rhetoric(BaseModel, frozen=True):
     """A rhetorical signal extracted from the paper."""
 
+    uid: int
     loc: SourceLoc
     text: str = Field(description="Exact quote from the paper.")
     section: str = Field(description="Section header where the marker appears.")
@@ -212,12 +215,12 @@ class RhetoricalMarker(BaseModel, frozen=True):
 class WebResolution(BaseModel, frozen=True):
     """Result of resolving external evidence against load-bearing claims."""
 
-    external_loc: SourceLoc
+    external_uid: int
     source_url: str
     stance: Stance
     finding: str
-    resolved_claims: list[SourceLoc] = Field(
-        description="Chain of claims resolved by this external evidence.",
+    resolved_claims: list[int] = Field(
+        description="Uids of claims resolved by this external evidence.",
     )
 
 
@@ -230,13 +233,13 @@ class CaputCausae(BaseModel, frozen=True):
     """
 
     thesis: str = Field(description="One sentence stating what the paper's argument asserts.")
-    anchored_claim_locs: list[SourceLoc] = Field(
+    anchored_claim_uids: list[int] = Field(
         default=[],
-        description="Anchored claims the thesis was derived from.",
+        description="Uids of anchored claims the thesis was derived from.",
     )
-    evidence_root_locs: list[SourceLoc] = Field(
+    evidence_root_uids: list[int] = Field(
         default=[],
-        description="Evidence items supporting multiple anchored claims.",
+        description="Uids of evidence items supporting multiple anchored claims.",
     )
 
 
@@ -312,7 +315,7 @@ class RawEvidence(BaseModel, frozen=True):
     normative: bool = False
 
 
-class RawMarker(BaseModel, frozen=True):
+class RawRhetoric(BaseModel, frozen=True):
     """LLM extraction output before the harness computes SourceLoc."""
 
     text: str
@@ -334,7 +337,7 @@ class ExtractAllOutput(BaseModel, frozen=True):
 
     claims: list[RawClaim] = []
     evidence: list[RawEvidence] = []
-    markers: list[RawMarker] = []
+    markers: list[RawRhetoric] = []
     analysis_complete: bool = Field(
         default=False,
         description="Set to true when the chunk has been fully analyzed, "
@@ -401,8 +404,8 @@ class ResolveOutput(BaseModel, frozen=True):
 class AsymmetryPattern(BaseModel, frozen=True):
     """A dismissal whose target appears as an unqualified positive claim elsewhere."""
 
-    marker_loc: SourceLoc
-    claim_loc: SourceLoc
+    marker_uid: int
+    claim_uid: int
     description: str
 
 
@@ -410,14 +413,14 @@ class ConcessionCluster(BaseModel, frozen=True):
     """Multiple concession markers targeting the same topic."""
 
     topic: str
-    marker_locs: list[SourceLoc]
+    marker_uids: list[int]
 
 
 class ScopeChain(BaseModel, frozen=True):
     """Scope deflection markers naming companion papers."""
 
     paper_id: str
-    marker_locs: list[SourceLoc]
+    marker_uids: list[int]
 
 
 class PatternDetectionOutput(BaseModel, frozen=True):
@@ -441,6 +444,7 @@ class PipelineState(BaseModel):
     """Mutable accumulator threaded through every pipeline step."""
 
     paper_source: Optional[str] = None
+    next_uid: int = 1
 
     # Read
     chunks: Optional[list[Chunk]] = None
@@ -449,8 +453,8 @@ class PipelineState(BaseModel):
     # Extract Normative
     raw_claims: Optional[list[RawClaim]] = None
     raw_evidence: Optional[list[RawEvidence]] = None
-    raw_markers: Optional[list[RawMarker]] = None
-    markers: Optional[list[RhetoricalMarker]] = None
+    raw_rhetoric: Optional[list[RawRhetoric]] = None
+    rhetoric: Optional[list[Rhetoric]] = None
 
     # Dedup Claims
     claims: Optional[list[Claim]] = None

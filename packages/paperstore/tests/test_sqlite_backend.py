@@ -557,8 +557,9 @@ def _make_loc(line=1, start_char=0, end_char=10):
     return SimpleNamespace(line=line, start_char=start_char, end_char=end_char)
 
 
-def _make_claim(text="test claim", section="intro", question="why?", line=1):
+def _make_claim(text="test claim", section="intro", question="why?", line=1, uid=1):
     return SimpleNamespace(
+        uid=uid,
         loc=_make_loc(line=line),
         text=text,
         section=section,
@@ -570,8 +571,9 @@ def _make_claim(text="test claim", section="intro", question="why?", line=1):
 
 
 def _make_marker(text="however", section="intro", marker_type="hedge",
-                 target="claim", intensity="low", line=5):
+                 target="claim", intensity="low", line=5, uid=1):
     return SimpleNamespace(
+        uid=uid,
         loc=_make_loc(line=line),
         text=text,
         section=section,
@@ -587,8 +589,8 @@ def _make_paper_citation(paper_id="P2000R0", count=3):
 
 def test_store_and_get_claims(store: SqliteBackend):
     claims = [
-        _make_claim(text="claim A", section="intro", question="why A?", line=1),
-        _make_claim(text="claim B", section="design", question="why B?", line=10),
+        _make_claim(text="claim A", section="intro", question="why A?", line=1, uid=1),
+        _make_claim(text="claim B", section="design", question="why B?", line=10, uid=2),
     ]
     store.store_claims("P1", claims)
     rows = store.get_claims("P1")
@@ -599,20 +601,20 @@ def test_store_and_get_claims(store: SqliteBackend):
     assert rows[0].loc_line == 1
     assert rows[0].loc_start == 0
     assert rows[0].loc_end == 10
-    assert rows[0].merged_into_line is None
+    assert rows[0].merged_into is None
     assert rows[1].text == "claim B"
     assert rows[1].section == "design"
 
 
-def test_store_and_get_markers(store: SqliteBackend):
+def test_store_and_get_rhetoric(store: SqliteBackend):
     markers = [
         _make_marker(text="however", marker_type="hedge", target="claim",
-                     intensity="low", line=5),
+                     intensity="low", line=5, uid=1),
         _make_marker(text="clearly", marker_type="booster", target="evidence",
-                     intensity="high", line=12),
+                     intensity="high", line=12, uid=2),
     ]
-    store.store_markers("P1", markers)
-    rows = store.get_markers("P1")
+    store.store_rhetoric("P1", markers)
+    rows = store.get_rhetoric("P1")
     assert len(rows) == 2
     assert rows[0].text == "however"
     assert rows[0].marker_type == "hedge"
@@ -639,39 +641,40 @@ def test_store_and_get_paper_citations(store: SqliteBackend):
 
 
 def test_store_replaces_previous(store: SqliteBackend):
-    store.store_claims("P1", [_make_claim(text="old")])
+    store.store_claims("P1", [_make_claim(text="old", uid=1)])
     assert len(store.get_claims("P1")) == 1
 
-    store.store_claims("P1", [_make_claim(text="new A", line=2), _make_claim(text="new B", line=3)])
+    store.store_claims("P1", [_make_claim(text="new A", line=2, uid=1), _make_claim(text="new B", line=3, uid=2)])
     rows = store.get_claims("P1")
     assert len(rows) == 2
     texts = {r.text for r in rows}
     assert texts == {"new A", "new B"}
 
 
-def _make_claim_real_loc(text="x", section="s", question="q", line=1, kind="normative"):
+def _make_claim_real_loc(text="x", section="s", question="q", line=1, kind="normative", uid=1):
     """Variant of _make_claim that uses the real SourceLoc (hashable)
-    so it can flow through store_questions, which builds a set of locs."""
+    so it can flow through store_questions, which builds a set of uids."""
     from paperstore import SourceLoc
     return SimpleNamespace(
+        uid=uid,
         loc=SourceLoc(line=line, start_char=0, end_char=10),
         text=text, section=section, question=question, kind=kind,
         merged_into=None, original_quotes=[text], depends_on=[],
     )
 
 
-def _make_support_link(claim_loc, status="unsupported"):
-    return SimpleNamespace(claim_loc=claim_loc, evidence_locs=[], status=status)
+def _make_support_link(claim_uid, status="unsupported"):
+    return SimpleNamespace(claim_uid=claim_uid, evidence_uids=[], status=status)
 
 
-def test_store_questions_keeps_distinct_locs_with_identical_text(store: SqliteBackend):
-    """Two unsupported claims at different locs with identical text+kind
-    both persist; identity is the loc triple, not the text."""
-    a = _make_claim_real_loc(text="X is fast", section="intro", question="why X?", line=1)
-    b = _make_claim_real_loc(text="X is fast", section="design", question="why X?", line=42)
+def test_store_questions_keeps_distinct_uids_with_identical_text(store: SqliteBackend):
+    """Two unsupported claims at different uids with identical text+kind
+    both persist; identity is the uid, not the text."""
+    a = _make_claim_real_loc(text="X is fast", section="intro", question="why X?", line=1, uid=1)
+    b = _make_claim_real_loc(text="X is fast", section="design", question="why X?", line=42, uid=2)
     store.store_questions(
         "P1", [a, b],
-        [_make_support_link(a.loc), _make_support_link(b.loc)],
+        [_make_support_link(a.uid), _make_support_link(b.uid)],
     )
     rows = store.get_questions("P1")
     assert len(rows) == 2
@@ -681,11 +684,11 @@ def test_store_questions_keeps_distinct_locs_with_identical_text(store: SqliteBa
 
 
 def test_store_questions_keeps_distinct_text(store: SqliteBackend):
-    a = _make_claim_real_loc(text="X is fast", section="intro", question="why X?", line=1)
-    b = _make_claim_real_loc(text="Y is slow", section="design", question="why Y?", line=10)
+    a = _make_claim_real_loc(text="X is fast", section="intro", question="why X?", line=1, uid=1)
+    b = _make_claim_real_loc(text="Y is slow", section="design", question="why Y?", line=10, uid=2)
     store.store_questions(
         "P1", [a, b],
-        [_make_support_link(a.loc), _make_support_link(b.loc)],
+        [_make_support_link(a.uid), _make_support_link(b.uid)],
     )
     rows = store.get_questions("P1")
     assert {r.claim_text for r in rows} == {"X is fast", "Y is slow"}
@@ -693,12 +696,12 @@ def test_store_questions_keeps_distinct_text(store: SqliteBackend):
 
 def test_store_questions_replaces_previous(store: SqliteBackend):
     """A re-run replaces all rows for the paper; no leftovers from prior runs."""
-    a = _make_claim_real_loc(text="old", section="intro", question="old?", line=1)
-    store.store_questions("P1", [a], [_make_support_link(a.loc)])
+    a = _make_claim_real_loc(text="old", section="intro", question="old?", line=1, uid=1)
+    store.store_questions("P1", [a], [_make_support_link(a.uid)])
     assert len(store.get_questions("P1")) == 1
 
-    b = _make_claim_real_loc(text="new", section="design", question="new?", line=5)
-    store.store_questions("P1", [b], [_make_support_link(b.loc)])
+    b = _make_claim_real_loc(text="new", section="design", question="new?", line=5, uid=2)
+    store.store_questions("P1", [b], [_make_support_link(b.uid)])
     rows = store.get_questions("P1")
     assert len(rows) == 1
     assert rows[0].claim_text == "new"

@@ -34,8 +34,8 @@ You are a structural analyst of WG21 papers. You extract exact quotes from the p
 - **Visibility:** Steps 0-12 produce structured data internally. Only Step 13 is visible output.
 - **Context isolation:** Raw HTML and fetched content **NEVER** enter the main agent context. The web search subagent consumes raw content and returns only structured `external_evidence[]` items.
 - **Evidence immutability:** Internal evidence (`evidence[]`) is immutable after Step 5. Web search produces a separate `external_evidence[]` list. **NEVER** modify `evidence[]` after Step 5.
-- **SourceLoc protocol:** The LLM reports `start_line` for each extracted item (the line number visible in the numbered chunk). The code harness computes the full `SourceLoc(line, start_char, end_char)` from the reported line number. The LLM does **NOT** compute `start_char` or `end_char`. Cross-references between items use `SourceLoc`. Ordering: `line` first, then `start_char`.
-- **Tombstone protocol:** No items are removed from arrays during dedup. Tombstones remain in place. **ALWAYS** skip items where `merged_into is not None`. **WHEN** any `depends_on` or `evidence_locs` entry points to a tombstone, follow `merged_into` to the survivor.
+- **SourceLoc protocol:** The LLM reports `start_line` for each extracted item (the line number visible in the numbered chunk). The code harness computes the full `SourceLoc(line, start_char, end_char)` from the reported line number, where `start_char` is a 0-based character offset and `end_char = start_char + len(text)`. The LLM does **NOT** compute `start_char` or `end_char`. Each item gets a `uid: int` assigned by the harness (primary key, paired with `paper_id`). Cross-references between items use `uid`. Ordering of SourceLoc: `line` first, then `start_char`.
+- **Tombstone protocol:** No items are removed from arrays during dedup. Tombstones remain in place. **ALWAYS** skip items where `merged_into is not None`. `merged_into` is an int (`uid` of the survivor). **WHEN** any `depends_on` or `evidence_uids` entry points to a tombstone, follow `merged_into` to the survivor.
 - **Kind isolation:** Claims with `kind: normative` and `kind: factual` are never merged during dedup. They enter the same claim list after their respective dedup steps but maintain distinct `kind` values.
 
 ---
@@ -61,9 +61,9 @@ Read the entire paper. Measure character count.
 - **Model:** fast
 - **Execution:** parallel
 - **Reads:** chunks
-- **Writes:** raw_claims, raw_evidence, raw_markers
+- **Writes:** raw_claims, raw_evidence, raw_rhetoric
 
-One subagent per chunk, parallel. Each line in the chunk is prefixed with its line number (`N| text`). For each substantive statement in the chunk, classify into one of three categories: claim, evidence, or rhetorical marker.
+One subagent per chunk, parallel. Each line in the chunk is prefixed with its line number (`N| text`). For each substantive statement in the chunk, classify into one of three categories: claim, evidence, or rhetoric.
 
 **WHEN extracting `text`** copy the quote without the line number prefix. The `text` field must contain only the paper's words.
 
@@ -116,7 +116,7 @@ One subagent per chunk, parallel. Each line in the chunk is prefixed with its li
 
 ### `analysis_complete`
 
-**ALWAYS** set `analysis_complete` to `true` once you have finished analyzing the chunk. Set it even when the chunk contains no claims, no evidence, and no markers. An output with `analysis_complete: false` is treated as a failed extraction and will be retried.
+**ALWAYS** set `analysis_complete` to `true` once you have finished analyzing the chunk. Set it even when the chunk contains no claims, no evidence, and no rhetoric. An output with `analysis_complete: false` is treated as a failed extraction and will be retried.
 
 ### Evidence
 
@@ -157,9 +157,9 @@ Four boolean flags per evidence item. Multiple can be true simultaneously.
 - `supports` - `[phrase]` (single-element list. A complete assertion this evidence advances: subject, verb, stance. **NOT** a topic label.)
 - `quantitative`, `cited`, `verifiable`, `normative` - boolean flags
 
-### Rhetorical Markers
+### Rhetoric
 
-**WHEN a statement dismisses, concedes, provokes, deflects scope, or signals committee politics** extract as a rhetorical marker.
+**WHEN a statement dismisses, concedes, provokes, deflects scope, or signals committee politics** extract as rhetoric.
 
 | Type | Signal | Examples |
 |------|--------|----------|
@@ -169,7 +169,7 @@ Four boolean flags per evidence item. Multiple can be true simultaneously.
 | `scope_deflection` | Paper shifts responsibility elsewhere | "as per LEWG direction", "omitted", "left to companion paper" |
 | `political_signal` | Committee votes, SG references | "SG1 concerns", "committee approved", "per SG direction" |
 
-#### Output per marker
+#### Output per rhetoric item
 
 - `text` - exact quote from the paper
 - `start_line` - the line number where this statement begins
@@ -191,9 +191,9 @@ Four boolean flags per evidence item. Multiple can be true simultaneously.
 
 Apply three dedup tiers in order. No items are removed. Tombstones remain in place.
 
-**Tier 0 - WHEN two claims have identical `SourceLoc`** the second becomes a tombstone. `merged_into` points to the first.
+**Tier 0 - WHEN two claims have identical `SourceLoc`** the second becomes a tombstone. `merged_into` is set to the first's `uid`.
 
-**Tier 1 - FOR survivors of Tier 0** (items where `merged_into is None`): **WHEN** one claim's `text` is a substring of another's, the shorter becomes a tombstone. `merged_into` points to the longer. The longer absorbs the shorter's `original_quotes`.
+**Tier 1 - FOR survivors of Tier 0** (items where `merged_into is None`): **WHEN** one claim's `text` is a substring of another's, the shorter becomes a tombstone. `merged_into` is set to the longer's `uid`. The longer absorbs the shorter's `original_quotes`.
 
 **Tier 2 - FOR survivors of Tiers 0 and 1** (items where `merged_into is None`): group by semantic equivalence of `question`. For each group, the claim with the longest `text` survives. All others become tombstones. Survivor absorbs all `original_quotes` and keeps its own `question`. **NEVER** synthesize a new sentence.
 
@@ -261,9 +261,9 @@ Same three-tier dedup logic as Step 2, applied to factual claims only. After ded
 
 Apply three dedup tiers in order. No items are removed. Tombstones remain in place.
 
-**Tier 0 - WHEN two evidence items have identical `SourceLoc`** the second becomes a tombstone. `merged_into` points to the first.
+**Tier 0 - WHEN two evidence items have identical `SourceLoc`** the second becomes a tombstone. `merged_into` is set to the first's `uid`.
 
-**Tier 1 - FOR survivors of Tier 0** (items where `merged_into is None`): **WHEN** one evidence item's `text` is a substring of another's, the shorter becomes a tombstone. `merged_into` points to the longer. The longer absorbs the shorter's `original_quotes`.
+**Tier 1 - FOR survivors of Tier 0** (items where `merged_into is None`): **WHEN** one evidence item's `text` is a substring of another's, the shorter becomes a tombstone. `merged_into` is set to the longer's `uid`. The longer absorbs the shorter's `original_quotes`.
 
 **Tier 2 - FOR survivors of Tiers 0 and 1** (items where `merged_into is None`): group by semantic equivalence of `supports` (one LLM call: "which of these evidence items are supporting the same assertion?"). For each group, produce one synthesis sentence. The synthesis sentence becomes `text` on the lowest-`SourceLoc` item. All others become tombstones. Survivor absorbs all `original_quotes`, unions all flags, and preserves all distinct `supports` values.
 
@@ -290,13 +290,13 @@ Claims are excluded - their survivors are original quotes, not syntheses.
 
 ### Job 2 - Resolve Cross-Chunk Dependencies
 
-**FOR EACH pair of claims** (where `merged_into is None`): does B's truth require A to hold first? If yes, add A's `SourceLoc` to B's `depends_on`.
+**FOR EACH pair of claims** (where `merged_into is None`): does B's truth require A to hold first? If yes, add A's `uid` to B's `depends_on`.
 
 **WHEN in doubt about a dependency** do not record it. False edges are worse than missing edges.
 
 ### Job 3 - Map Support
 
-**FOR EACH claim** (where `merged_into is None`) scan `evidence[]` for items (where `merged_into is None`) whose `supports` field references the same subject as the claim's `text` or `question`. Record matching evidence `SourceLoc`s.
+**FOR EACH claim** (where `merged_into is None`) scan `evidence[]` for items (where `merged_into is None`) whose `supports` field references the same subject as the claim's `text` or `question`. Record matching evidence `uid`s.
 
 Use semantic overlap, not string identity. Match evidence `supports` against both the claim's `text` and `question`. A match on **ANY** value in the evidence's `supports` list counts.
 
@@ -314,7 +314,7 @@ Two-pass internal contradiction detection.
 
 **Pass 2 (confirmation):** For each candidate pair (E, C), binary judgment: "Does evidence E undermine claim C?" Only pairs that clear this gate are recorded.
 
-**WHEN evidence E supports an assertion incompatible with claim C's assertion** record `InternalContradiction(source_loc=E.loc, claim_loc=C.loc, kind="evidence_vs_claim")`.
+**WHEN evidence E supports an assertion incompatible with claim C's assertion** record `InternalContradiction(source_uid=E.uid, claim_uid=C.uid, kind="evidence_vs_claim")`.
 
 **WHEN a charitable reading resolves the apparent tension** (different scopes, opt-in vs. mandatory, basis vs. user-facing layer) do **NOT** record. Err on the side of not recording.
 
@@ -332,7 +332,7 @@ Two-pass internal contradiction detection.
 
 **WHEN a charitable reading resolves the tension** (different scopes, different contexts, one qualifies the other) do **NOT** record. Err on the side of not recording.
 
-Record as `InternalContradiction(source_loc=A.loc, claim_loc=B.loc, kind="claim_vs_claim")`.
+Record as `InternalContradiction(source_uid=A.uid, claim_uid=B.uid, kind="claim_vs_claim")`.
 
 ---
 
@@ -447,7 +447,7 @@ Find one relevant external source for this claim. Use the claim's `question` as 
 
 Return exactly one `ExternalEvidence` item or nothing. Do not return prose, summaries, or commentary.
 
-- `claim_loc` - `SourceLoc` of the claim this evidence addresses
+- `claim_uid` - `uid` of the claim this evidence addresses
 - `source_url` - exact hyperlink
 - `source_title` - name of the page, paper, or document
 - `text` - extracted passage from the source (full, for report rendering)
@@ -468,7 +468,7 @@ Resolves external evidence from both Step 8 (citation-sourced) and Step 9 (web-s
 
 ### Supporting evidence
 
-**FOR EACH `external_evidence` item where `stance == supports`** match against the claim at `claim_loc`. If `finding` answers the claim's `question` in the affirmative, mark the claim as `externally_anchored`.
+**FOR EACH `external_evidence` item where `stance == supports`** match against the claim at `claim_uid`. If `finding` answers the claim's `question` in the affirmative, mark the claim as `externally_anchored`.
 
 **FOR EACH claim newly marked `externally_anchored`** walk dependents in `load_bearing_claims[]`. Any dependent whose **ONLY** unsupported root was this claim is now `transitively_supported`. Repeat until no more promotions.
 
@@ -476,7 +476,7 @@ Produce a `WebResolution` entry listing the URL and the full chain of claims res
 
 ### Contradicting evidence
 
-**FOR EACH `external_evidence` item where `stance == contradicts`** match against the claim at `claim_loc`. If `finding` contradicts the claim's assertion, mark as `externally_contested`.
+**FOR EACH `external_evidence` item where `stance == contradicts`** match against the claim at `claim_uid`. If `finding` contradicts the claim's assertion, mark as `externally_contested`.
 
 **FOR EACH claim that depends_on an `externally_contested` claim** (directly or transitively) mark as `depends_on_contested`.
 
@@ -505,8 +505,8 @@ The caput causae is one sentence stating what the paper's argument ultimately as
 ### Output
 
 - `thesis` - one sentence
-- `anchored_claim_locs` - the claims it was derived from
-- `evidence_root_locs` - shared evidence roots
+- `anchored_claim_uids` - the claims it was derived from
+- `evidence_root_uids` - shared evidence roots
 
 ---
 
@@ -514,31 +514,31 @@ The caput causae is one sentence stating what the paper's argument ultimately as
 
 - **Model:** default
 - **Execution:** main
-- **Reads:** markers, claims, caput_causae
+- **Reads:** rhetoric, claims, caput_causae
 - **Writes:** marker_patterns
-- **Condition:** markers is non-empty
+- **Condition:** rhetoric is non-empty
 
 The caput causae thesis from Step 11 is available as context for pattern significance assessment.
 
-Single model call on the full marker and claim lists. Identify cross-section patterns.
+Single model call on the full rhetoric and claim lists. Identify cross-section patterns.
 
 ### Asymmetries
 
-**FOR EACH dismissal marker** check whether the dismissed subject appears as a positive claim elsewhere in the paper. **WHEN the paper asserts X is good in one section and dismisses X in another,** record as `AsymmetryPattern`.
+**FOR EACH dismissal rhetoric item** check whether the dismissed subject appears as a positive claim elsewhere in the paper. **WHEN the paper asserts X is good in one section and dismisses X in another,** record as `AsymmetryPattern`.
 
 ### Concession Clusters
 
-**WHEN multiple concession markers target the same topic** group them into a `ConcessionCluster`. Three or more concessions on the same subject signals an acknowledged weak area.
+**WHEN multiple concession rhetoric items target the same topic** group them into a `ConcessionCluster`. Three or more concessions on the same subject signals an acknowledged weak area.
 
 ### Scope Chains
 
-**WHEN scope_deflection markers name companion papers** collect them into `ScopeChain` entries. Each chain names the deflection target paper and lists all marker locations.
+**WHEN scope_deflection rhetoric items name companion papers** collect them into `ScopeChain` entries. Each chain names the deflection target paper and lists all rhetoric item uids.
 
 ### Output
 
-- `asymmetries` - list of `AsymmetryPattern(marker_loc, claim_loc, description)`
-- `concession_clusters` - list of `ConcessionCluster(topic, marker_locs)`
-- `scope_chains` - list of `ScopeChain(paper_id, marker_locs)`
+- `asymmetries` - list of `AsymmetryPattern(rhetoric_uid, claim_uid, description)`
+- `concession_clusters` - list of `ConcessionCluster(topic, rhetoric_uids)`
+- `scope_chains` - list of `ScopeChain(paper_id, rhetoric_uids)`
 
 ---
 

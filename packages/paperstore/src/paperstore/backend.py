@@ -33,7 +33,7 @@ from paperstore.extract_rows import (
     ClaimRow,
     EvidenceRow,
     ExternalCitationRow,
-    MarkerRow,
+    RhetoricRow,
     PaperCitationRow,
     QuestionRow,
 )
@@ -359,8 +359,8 @@ class StorageBackend(ABC):
         """Store questions for unsupported claims of ``paper_id``."""
 
     @abstractmethod
-    def store_markers(self, paper_id: str, markers) -> None:
-        """Replace rhetorical markers for ``paper_id``."""
+    def store_rhetoric(self, paper_id: str, rhetoric) -> None:
+        """Replace rhetoric items for ``paper_id``."""
 
     @abstractmethod
     def store_caput_causae(self, paper_id: str, thesis: str) -> None:
@@ -393,8 +393,8 @@ class StorageBackend(ABC):
         """Return all questions for ``paper_id``."""
 
     @abstractmethod
-    def get_markers(self, paper_id: str) -> list[MarkerRow]:
-        """Return all rhetorical markers for ``paper_id``."""
+    def get_rhetoric(self, paper_id: str) -> list[RhetoricRow]:
+        """Return all rhetoric items for ``paper_id``."""
 
     @abstractmethod
     def get_caput_causae(self, paper_id: str) -> CaputCausaeRow | None:

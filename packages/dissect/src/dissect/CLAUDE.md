@@ -53,7 +53,7 @@ sole schema authority at runtime (enforced via `output_type`).
 
 ```
 Step 0   Read              chunk paper, extract citations          (pure Python)
-Step 1   Extract Normative normative claims + evidence + markers   (parallel LLM)
+Step 1   Extract Normative normative claims + evidence + rhetoric  (parallel LLM)
 Step 2   Dedup Claims      deterministic tiers 0-1 + LLM tier 2    (hybrid)
 Step 3   Extract Factual   factual claims per chunk                (parallel LLM)
 Step 4   Dedup Factual     deterministic tiers 0-1 + LLM tier 2    (hybrid)
@@ -64,7 +64,7 @@ Step 8   Verify Citations  fetch and verify each cited paper       (parallel LLM
 Step 9   Web Search        search for evidence on critical gaps    (parallel LLM + web_search/fetch)
 Step 10  Resolve External  integrate external evidence             (single LLM)
 Step 11  Caput Causae      identify the load-bearing root cause    (single LLM)
-Step 12  Detect Patterns   cross-marker pattern analysis           (single LLM)
+Step 12  Detect Patterns   cross-rhetoric pattern analysis          (single LLM)
 Step 13  Report            render final dissect markdown           (pure Python)
 ```
 

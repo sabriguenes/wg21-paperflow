@@ -50,7 +50,7 @@ You serve the tribunal of the *Advocatus Diaboli* examining a WG21 paper. Your o
 - **Model:** none
 - **Execution:** main
 - **Reads:** paper_id
-- **Writes:** paper_source, paper_title, paper_audience, paper_authors, dissect_articuli_seed, dissect_evidence, dissect_markers, dissect_caput_causae, dissect_citation_audit, dissect_external_evidence
+- **Writes:** paper_source, paper_title, paper_audience, paper_authors, dissect_articuli_seed, dissect_evidence, dissect_rhetoric, dissect_caput_causae, dissect_citation_audit, dissect_external_evidence
 
 Pure-Python load step. Reads the paper's source markdown and all dissect output from paperstore. Reconstructs `SourceLoc` from row columns. If no claims are found, the pipeline jumps directly to Step 10 with seal = `sine_causa` (the tribunal does not convene for administrative papers).
 
@@ -163,7 +163,7 @@ A charge missing any element is noise. Do not file it.
 
 - **Model:** default
 - **Execution:** parallel
-- **Reads:** candidate_charges, articuli, dossier, boundaries, dissect_markers
+- **Reads:** candidate_charges, articuli, dossier, boundaries, dissect_rhetoric
 - **Writes:** defensor_results, surviving_charges, probationes, notae_minores
 
 For each candidate charge, spawn an isolated sub-agent (parallel, capped by the pipeline-wide semaphore). The sub-agent receives only:
@@ -171,7 +171,7 @@ For each candidate charge, spawn an isolated sub-agent (parallel, capped by the 
 - The candidate charge text and its quoted paper passage (with `SourceLoc`)
 - The relevant dossier slice (entries that touch the same topic)
 - The boundaries from Step 1
-- The markers from dissect (concession markers, scope deflections)
+- The rhetoric from dissect (concession rhetoric, scope deflections)
 - The six-challenge rubric below
 
 The sub-agent does **not** receive the prosecution's drafting context, sibling charges, or the rest of the articuli. This is the structural adversarial separation.

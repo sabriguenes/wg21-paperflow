@@ -47,14 +47,14 @@ from dissect.errors import (
     ValidationStepError,
 )
 from dissect.harness import (
-    chunk_paper,
-    dedup_tier0,
-    dedup_tier1,
-    extract_citations,
-    number_lines,
-    promote_claims,
-    promote_evidence,
-    promote_markers,
+    _chunk_paper,
+    _dedup_tier0,
+    _dedup_tier1,
+    _extract_citations,
+    _number_lines,
+    _promote_claims,
+    _promote_evidence,
+    _promote_rhetoric,
 )
 from dissect.models import (
     CaputCausaeOutput,
@@ -305,7 +305,7 @@ def _classify_and_raise(exc: Exception, spec: StepSpec) -> None:
 def _prepare_extract_chunk(state: PipelineState, ctx: StepContext, chunk: Chunk) -> str:
     prompt_body = ctx.sections.get(_STEP_1_EXTRACT, "")
     return (
-        f"## Chunk\n\n{number_lines(chunk)}\n\n"
+        f"## Chunk\n\n{_number_lines(chunk)}\n\n"
         f"## Instructions\n\n{prompt_body}"
     )
 
@@ -320,7 +320,7 @@ def _prepare_extract_factual_chunk(state: PipelineState, ctx: StepContext, chunk
     questions_text = "\n".join(f"{i + 1}. {q}" for i, q in enumerate(normative_questions))
     return (
         f"## Normative Claim Questions\n\n{questions_text}\n\n"
-        f"## Chunk\n\n{number_lines(chunk)}\n\n"
+        f"## Chunk\n\n{_number_lines(chunk)}\n\n"
         f"## Instructions\n\n{prompt_body}"
     )
 
@@ -421,11 +421,11 @@ def _extract_all(state: PipelineState, results: list[Any]) -> None:
         all_raw_markers.extend(r.output.markers)
     state.raw_claims = all_raw_claims
     state.raw_evidence = all_raw_evidence
-    state.raw_markers = all_raw_markers
+    state.raw_rhetoric = all_raw_markers
     assert state.paper_source is not None
-    state.claims = promote_claims(all_raw_claims, state.paper_source)
-    state.evidence = promote_evidence(all_raw_evidence, state.paper_source)
-    state.markers = promote_markers(all_raw_markers, state.paper_source)
+    state.claims, state.next_uid = _promote_claims(all_raw_claims, state.paper_source, state.next_uid)
+    state.evidence, state.next_uid = _promote_evidence(all_raw_evidence, state.paper_source, state.next_uid)
+    state.rhetoric, state.next_uid = _promote_rhetoric(all_raw_markers, state.paper_source, state.next_uid)
 
 
 def _extract_factual(state: PipelineState, results: list[Any]) -> None:
@@ -434,7 +434,7 @@ def _extract_factual(state: PipelineState, results: list[Any]) -> None:
         all_raw.extend(r.output.claims)
     state.raw_factual_claims = all_raw
     assert state.paper_source is not None
-    factual_claims = promote_claims(all_raw, state.paper_source)
+    factual_claims, state.next_uid = _promote_claims(all_raw, state.paper_source, state.next_uid)
     factual_claims = [
         c.model_copy(update={"kind": "factual"}) if c.kind != "factual" else c
         for c in factual_claims
@@ -461,11 +461,11 @@ def _extract_dedup_claims(state: PipelineState, output: DedupGroupingOutput) -> 
                 s = survivors[i]
                 survivor_obj = survivors[longest_idx]
                 idx_in_claims = next(
-                    j for j, c in enumerate(claims) if c.loc == s.loc
+                    j for j, c in enumerate(claims) if c.uid == s.uid
                 )
-                claims[idx_in_claims] = s.model_copy(update={"merged_into": survivor_obj.loc})
+                claims[idx_in_claims] = s.model_copy(update={"merged_into": survivor_obj.uid})
                 absorber_idx = next(
-                    j for j, c in enumerate(claims) if c.loc == survivor_obj.loc
+                    j for j, c in enumerate(claims) if c.uid == survivor_obj.uid
                 )
                 merged_quotes = list(claims[absorber_idx].original_quotes) + list(s.original_quotes)
                 claims[absorber_idx] = claims[absorber_idx].model_copy(
@@ -484,17 +484,17 @@ def _extract_dedup_evidence(state: PipelineState, output: DedupGroupingOutput) -
         valid = [i for i in group if 0 <= i < len(survivors)]
         if len(valid) < 2:
             continue
-        lowest_idx = min(valid, key=lambda i: (survivors[i].loc.line, survivors[i].loc.start_char))
+        lowest_idx = min(valid, key=lambda i: survivors[i].uid)
         for i in valid:
             if i != lowest_idx:
                 s = survivors[i]
                 survivor_obj = survivors[lowest_idx]
                 idx_in_evidence = next(
-                    j for j, e in enumerate(evidence) if e.loc == s.loc
+                    j for j, e in enumerate(evidence) if e.uid == s.uid
                 )
-                evidence[idx_in_evidence] = s.model_copy(update={"merged_into": survivor_obj.loc})
+                evidence[idx_in_evidence] = s.model_copy(update={"merged_into": survivor_obj.uid})
                 absorber_idx = next(
-                    j for j, e in enumerate(evidence) if e.loc == survivor_obj.loc
+                    j for j, e in enumerate(evidence) if e.uid == survivor_obj.uid
                 )
                 merged_quotes = list(evidence[absorber_idx].original_quotes) + list(s.original_quotes)
                 all_supports = list(evidence[absorber_idx].supports)
@@ -517,12 +517,12 @@ def _extract_dedup_evidence(state: PipelineState, output: DedupGroupingOutput) -
 def _extract_verify(state: PipelineState, output: VerifyOutput) -> None:
     state.support_map = [
         s for s in output.support_map
-        if not any(eloc == s.claim_loc for eloc in s.evidence_locs)
+        if not any(euid == s.claim_uid for euid in s.evidence_uids)
     ]
-    claim_locs = {c.loc for c in state.claims if c.merged_into is None} if state.claims else set()
+    claim_uids = {c.uid for c in state.claims if c.merged_into is None} if state.claims else set()
     state.internal_contradictions = [
         ic.model_copy(update={
-            "kind": "claim_vs_claim" if ic.source_loc in claim_locs else "evidence_vs_claim",
+            "kind": "claim_vs_claim" if ic.source_uid in claim_uids else "evidence_vs_claim",
         })
         for ic in output.internal_contradictions
     ]
@@ -540,24 +540,24 @@ def _extract_resolve(state: PipelineState, output: ResolveOutput) -> None:
 def _prepare_caput_causae(state: PipelineState, ctx: StepContext) -> str:
     assert state.load_bearing_claims is not None and state.claims is not None
     prompt_body = ctx.sections.get(_STEP_11_CAPUT_CAUSAE, "")
-    anchored_locs = {
-        lb.claim_loc for lb in state.load_bearing_claims
+    anchored_uids = {
+        lb.claim_uid for lb in state.load_bearing_claims
         if lb.classification in ("anchored", "externally_anchored")
     }
     anchored_claims = [
         c for c in state.claims
-        if c.loc in anchored_locs and c.merged_into is None
+        if c.uid in anchored_uids and c.merged_into is None
     ]
-    evidence_root_locs: set = set()
+    evidence_root_uids: set = set()
     if state.support_map:
         for s in state.support_map:
-            if s.claim_loc in anchored_locs:
-                evidence_root_locs.update(s.evidence_locs)
+            if s.claim_uid in anchored_uids:
+                evidence_root_uids.update(s.evidence_uids)
     evidence_items = []
     if state.evidence:
         evidence_items = [
             e for e in state.evidence
-            if e.loc in evidence_root_locs and e.merged_into is None
+            if e.uid in evidence_root_uids and e.merged_into is None
         ]
     return (
         f"## Anchored Claims\n\n"
@@ -573,10 +573,10 @@ def _extract_caput_causae(state: PipelineState, output: CaputCausaeOutput) -> No
 
 
 def _prepare_detect_patterns(state: PipelineState, ctx: StepContext) -> str:
-    assert state.markers is not None and state.claims is not None
+    assert state.rhetoric is not None and state.claims is not None
     prompt_body = ctx.sections.get(_STEP_12_DETECT_PATTERNS, "")
     markers_json = json.dumps(
-        [m.model_dump() for m in state.markers],
+        [m.model_dump() for m in state.rhetoric],
         ensure_ascii=False,
     )
     claims_json = json.dumps(
@@ -603,15 +603,15 @@ def _extract_detect_patterns(state: PipelineState, output: PatternDetectionOutpu
 
 async def _pure_read(state: PipelineState, ctx: StepContext) -> None:
     assert state.paper_source is not None
-    state.chunks = chunk_paper(state.paper_source)
-    state.citations = extract_citations(state.paper_source)
+    state.chunks = _chunk_paper(state.paper_source)
+    state.citations = _extract_citations(state.paper_source)
 
 
 async def _pure_dedup_claims(state: PipelineState, ctx: StepContext) -> None:
     """Deterministic tiers 0-1 + one LLM call for tier 2 semantic grouping."""
     assert state.claims is not None
-    claims = dedup_tier0(state.claims)
-    claims = dedup_tier1(claims)
+    claims = _dedup_tier0(state.claims)
+    claims = _dedup_tier1(claims)
     state.claims = claims
 
     survivors = [c for c in claims if c.merged_into is None]
@@ -630,8 +630,8 @@ async def _pure_dedup_claims(state: PipelineState, ctx: StepContext) -> None:
 async def _pure_dedup_evidence(state: PipelineState, ctx: StepContext) -> None:
     """Deterministic tiers 0-1 + one LLM call for tier 2 semantic grouping."""
     assert state.evidence is not None
-    evidence = dedup_tier0(state.evidence)
-    evidence = dedup_tier1(evidence)
+    evidence = _dedup_tier0(state.evidence)
+    evidence = _dedup_tier1(evidence)
     state.evidence = evidence
 
     survivors = [e for e in evidence if e.merged_into is None]
@@ -655,8 +655,8 @@ async def _pure_dedup_factual(state: PipelineState, ctx: StepContext) -> None:
     if not factual:
         return
 
-    factual = dedup_tier0(factual)
-    factual = dedup_tier1(factual)
+    factual = _dedup_tier0(factual)
+    factual = _dedup_tier1(factual)
 
     survivors = [c for c in factual if c.merged_into is None]
     if len(survivors) > 1:
@@ -780,17 +780,17 @@ async def _pure_web_search(state: PipelineState, ctx: StepContext) -> None:
         lb for lb in state.load_bearing_claims
         if lb.classification == _CLASSIFICATION_CRITICAL_GAP
     ]
-    covered_locs = set()
+    covered_uids = set()
     if state.external_evidence:
         for ee in state.external_evidence:
             if ee.stance == "supports":
-                covered_locs.add(ee.claim_loc)
-    triggered = [lb for lb in triggered if lb.claim_loc not in covered_locs]
+                covered_uids.add(ee.claim_uid)
+    triggered = [lb for lb in triggered if lb.claim_uid not in covered_uids]
 
     claims_for_search = []
     for lb in triggered:
         claim = next(
-            (c for c in state.claims if c.loc == lb.claim_loc and c.merged_into is None),
+            (c for c in state.claims if c.uid == lb.claim_uid and c.merged_into is None),
             None,
         )
         if claim:
@@ -825,7 +825,7 @@ async def _pure_web_search(state: PipelineState, ctx: StepContext) -> None:
             request_limit=_REQUEST_LIMIT_PER_CLAIM,
         )
         return [
-            ee.model_copy(update={"claim_loc": claim.loc})
+            ee.model_copy(update={"claim_uid": claim.uid})
             for ee in result.external_evidence
         ]
 
@@ -860,12 +860,12 @@ def _guard_web_search(state: PipelineState) -> bool:
     ]
     if not triggered:
         return False
-    covered_locs = set()
+    covered_uids = set()
     if state.external_evidence:
         for ee in state.external_evidence:
             if ee.stance == "supports":
-                covered_locs.add(ee.claim_loc)
-    return any(lb.claim_loc not in covered_locs for lb in triggered)
+                covered_uids.add(ee.claim_uid)
+    return any(lb.claim_uid not in covered_uids for lb in triggered)
 
 
 def _guard_resolve(state: PipelineState) -> bool:
@@ -882,7 +882,7 @@ def _guard_caput_causae(state: PipelineState) -> bool:
 
 
 def _guard_detect_patterns(state: PipelineState) -> bool:
-    return bool(state.markers)
+    return bool(state.rhetoric)
 
 
 # -- Hook registry ------------------------------------------------------------
@@ -1051,8 +1051,8 @@ async def _dispatch(
             step_name = spec.meta.name
             if step_name == _STEP_0_READ and state.citations:
                 ctx.backend.store_paper_citations(ctx.pid, state.citations)
-            elif step_name == _STEP_1_EXTRACT and state.markers:
-                ctx.backend.store_markers(ctx.pid, state.markers)
+            elif step_name == _STEP_1_EXTRACT and state.rhetoric:
+                ctx.backend.store_rhetoric(ctx.pid, state.rhetoric)
             elif step_name == _STEP_2_DEDUP_CLAIMS and state.claims:
                 ctx.backend.store_claims(ctx.pid, state.claims)
             elif step_name == _STEP_5_DEDUP_EVIDENCE and state.evidence:

@@ -29,7 +29,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from paperstore import (
-    SourceLoc,
     StorageBackend,
     loc_from_row,
 )
@@ -363,7 +362,7 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
 
     claim_rows = await asyncio.to_thread(ctx.backend.get_claims, pid)
     evidence_rows = await asyncio.to_thread(ctx.backend.get_evidence, pid)
-    marker_rows = await asyncio.to_thread(ctx.backend.get_markers, pid)
+    marker_rows = await asyncio.to_thread(ctx.backend.get_rhetoric, pid)
     citation_audit_rows = await asyncio.to_thread(ctx.backend.get_citation_audit, pid)
     external_rows = await asyncio.to_thread(ctx.backend.get_external_citations, pid)
     caput = await asyncio.to_thread(ctx.backend.get_caput_causae, pid)
@@ -374,6 +373,7 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
         if row.merged_into_line is not None:
             continue
         articuli_seed.append(Articulus(
+            uid=row.uid,
             loc=loc_from_row(row),
             text=row.text,
             section=row.section,
@@ -401,6 +401,7 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
     dissect_markers: list[Articulus] = []
     for row in marker_rows:
         dissect_markers.append(Articulus(
+            uid=row.uid,
             loc=loc_from_row(row),
             text=row.text,
             section=row.section,
@@ -663,7 +664,7 @@ async def _pure_examine(state: PipelineState, ctx: StepContext) -> None:
             system_prompt=system,
             user_message=user_msg,
             output_type=ExamenOutput,
-            label=f"Step 5 - Examine Articuli (line {articulus.loc.line})",
+            label=f"Step 5 - Examine Articuli (uid {articulus.uid})",
             debug_log=ctx.debug_log if ctx.debug else None,
             model=model,
         )
@@ -676,11 +677,11 @@ async def _pure_examine(state: PipelineState, ctx: StepContext) -> None:
     exams: list[ArticulusExam] = []
     for a, r in zip(articuli, results):
         if isinstance(r, Exception):
-            logger.warning("Examen failed for articulus at line %d: %s", a.loc.line, r)
+            logger.warning("Examen failed for articulus uid %d: %s", a.uid, r)
             continue
-        # Force the loc to the articulus's loc (defensive: the LLM might echo
+        # Force the uid to the articulus's uid (defensive: the LLM might echo
         # something different).
-        exam = r.exam.model_copy(update={"articulus_loc": a.loc})
+        exam = r.exam.model_copy(update={"articulus_uid": a.uid})
         exams.append(exam)
     state.exams = exams
 
@@ -692,17 +693,17 @@ def _prepare_file_charges(state: PipelineState, ctx: StepContext) -> str:
     body = ctx.sections.get(_STEP_6_FILE_CHARGES, "")
     articuli = state.articuli or []
     exams = state.exams or []
-    failed_locs = {
-        e.articulus_loc for e in exams
+    failed_uids = {
+        e.articulus_uid for e in exams
         if not (e.veritas.passed and e.ratio.passed and e.auctoritas.passed)
     }
-    failed = [a for a in articuli if a.loc in failed_locs]
+    failed = [a for a in articuli if a.uid in failed_uids]
     failed_json = json.dumps(
         [a.model_dump(mode="json") for a in failed],
         ensure_ascii=False, default=str,
     )
     exams_json = json.dumps(
-        [e.model_dump(mode="json") for e in exams if e.articulus_loc in failed_locs],
+        [e.model_dump(mode="json") for e in exams if e.articulus_uid in failed_uids],
         ensure_ascii=False, default=str,
     )
     dossier_json = json.dumps(
@@ -783,7 +784,7 @@ async def _pure_defensor(state: PipelineState, ctx: StepContext) -> None:
             system_prompt=system,
             user_message=user_msg,
             output_type=DefensorChargeOutput,
-            label=f"Step 7 - Defensor (charge at line {charge.articulus_loc.line})",
+            label=f"Step 7 - Defensor (charge uid {charge.articulus_uid})",
             debug_log=ctx.debug_log if ctx.debug else None,
             model=model,
         )
@@ -800,16 +801,16 @@ async def _pure_defensor(state: PipelineState, ctx: StepContext) -> None:
 
     for charge, r in zip(charges, results):
         if isinstance(r, Exception):
-            logger.warning("Defensor sub-agent failed for charge at line %d: %s",
-                           charge.articulus_loc.line, r)
+            logger.warning("Defensor sub-agent failed for charge uid %d: %s",
+                           charge.articulus_uid, r)
             continue
-        # Force charge_loc to the articulus loc.
-        result = r.model_copy(update={"charge_loc": charge.articulus_loc})
+        # Force charge_uid to the articulus uid.
+        result = r.model_copy(update={"charge_uid": charge.articulus_uid})
         defensor_results.append(result)
 
         if result.final == "survived":
             surviving.append(SurvivingCharge(
-                articulus_loc=charge.articulus_loc,
+                articulus_uid=charge.articulus_uid,
                 charge=charge,
                 defensor_chain=list(result.challenges),
             ))
@@ -817,14 +818,14 @@ async def _pure_defensor(state: PipelineState, ctx: StepContext) -> None:
             killing_challenge = result.challenges[-1].challenge if result.challenges else "humanitas"
             killing_reasoning = result.challenges[-1].reasoning if result.challenges else ""
             probationes.append(Probatio(
-                articulus_loc=charge.articulus_loc,
+                articulus_uid=charge.articulus_uid,
                 killed_charge=charge,
                 killing_challenge=killing_challenge,
                 explanation=killing_reasoning,
             ))
         elif result.final == "relegated":
             notae.append(NotaMinor(
-                loc=charge.articulus_loc,
+                uid=charge.articulus_uid,
                 text=charge.gravamen,
             ))
 

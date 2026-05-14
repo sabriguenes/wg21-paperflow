@@ -15,8 +15,9 @@ vote counts) stay ``None`` until a future generation phase fills
 them in.
 
 ``SourceLoc`` is imported from ``paperstore`` (the canonical home for
-the loc type at the storage layer). Every ``TechnicalAnchor`` carries
-a ``SourceLoc`` pointing back into the dissected paper.
+the loc type at the storage layer). Each ``TechnicalAnchor`` carries
+a ``claim_uid`` (the paperstore integer key) and an optional
+``SourceLoc`` for display.
 """
 
 from __future__ import annotations
@@ -71,7 +72,11 @@ class TechnicalAnchor(BaseModel, frozen=True):
     claim_text: str = Field(
         description="Exact quote from the paper that the anchor crystallises.",
     )
-    claim_loc: SourceLoc
+    claim_uid: int
+    claim_loc: SourceLoc | None = Field(
+        default=None,
+        description="Source location for display. Not used for identity.",
+    )
     supports: list[str] = Field(
         default_factory=list,
         description="Optional list of evidence ids or external references"

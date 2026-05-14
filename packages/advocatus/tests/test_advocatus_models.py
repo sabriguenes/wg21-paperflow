@@ -38,6 +38,7 @@ def _loc(line=1, start=0, end=10):
 
 def test_articulus_round_trip():
     a = Articulus(
+        uid=1,
         loc=_loc(),
         text="X should be Y",
         section="2.1",
@@ -48,13 +49,13 @@ def test_articulus_round_trip():
 
 
 def test_boundary_round_trip():
-    b = Boundary(loc=_loc(7), text="we do not propose changes to std::variant", kind="disclaim")
+    b = Boundary(uid=1, loc=_loc(7), text="we do not propose changes to std::variant", kind="disclaim")
     assert Boundary.model_validate(b.model_dump()) == b
 
 
 def test_articulus_exam_with_confidence():
     e = ArticulusExam(
-        articulus_loc=_loc(),
+        articulus_uid=1,
         veritas=ExamOutcome(passed=True, reasoning="dossier confirms"),
         ratio=ExamOutcome(passed=False, reasoning="logical gap at step 2"),
         auctoritas=ExamOutcome(passed=True, reasoning="citation supports"),
@@ -64,7 +65,7 @@ def test_articulus_exam_with_confidence():
     # Confidence bounds
     with pytest.raises(Exception):
         ArticulusExam(
-            articulus_loc=_loc(),
+            articulus_uid=1,
             veritas=ExamOutcome(passed=True, reasoning=""),
             ratio=ExamOutcome(passed=True, reasoning=""),
             auctoritas=ExamOutcome(passed=True, reasoning=""),
@@ -74,10 +75,10 @@ def test_articulus_exam_with_confidence():
 
 def test_candidate_charge_with_all_elements():
     c = CandidateCharge(
-        articulus_loc=_loc(5),
+        articulus_uid=5,
         quoted_text="X is the best approach",
         failed_test="auctoritas",
-        contradicting_loc=_loc(12),
+        contradicting_uid=12,
         contradicting_evidence="P1234R3 section 4 reaches the opposite conclusion.",
         gravamen="The cited source contradicts the inference being drawn.",
     )
@@ -91,26 +92,26 @@ def test_defensor_challenge_chain():
         DefensorChallenge(challenge="articulus", verdict="killed",
                           reasoning="paper does not claim this", confidence=0.9),
     ]
-    out = DefensorChargeOutput(charge_loc=_loc(5), challenges=chain, final="killed")
+    out = DefensorChargeOutput(charge_uid=5, challenges=chain, final="killed")
     assert DefensorChargeOutput.model_validate(out.model_dump()) == out
 
 
 def test_objection_with_motivatio():
     charge = CandidateCharge(
-        articulus_loc=_loc(5),
+        articulus_uid=5,
         quoted_text="Y", failed_test="ratio",
         contradicting_evidence="z",
         gravamen="g",
     )
     surviving = SurvivingCharge(
-        articulus_loc=_loc(5), charge=charge, defensor_chain=[],
+        articulus_uid=5, charge=charge, defensor_chain=[],
     )
     motivatio = Motivatio(
         adversary="UK NB", forum="nb_comment",
         damage="revision_forcing", explanation="UK has flagged X-related concerns previously",
     )
     obj = Objection(
-        articulus_loc=_loc(5), charge=surviving,
+        articulus_uid=5, charge=surviving,
         motivatio=motivatio, severity="medium",
     )
     assert Objection.model_validate(obj.model_dump()) == obj
@@ -118,11 +119,11 @@ def test_objection_with_motivatio():
 
 def test_probatio_round_trip():
     charge = CandidateCharge(
-        articulus_loc=_loc(5), quoted_text="Y", failed_test="ratio",
+        articulus_uid=5, quoted_text="Y", failed_test="ratio",
         contradicting_evidence="z", gravamen="g",
     )
     p = Probatio(
-        articulus_loc=_loc(5),
+        articulus_uid=5,
         killed_charge=charge,
         killing_challenge="humanitas",
         explanation="No human committee member would press this",
@@ -130,11 +131,11 @@ def test_probatio_round_trip():
     assert Probatio.model_validate(p.model_dump()) == p
 
 
-def test_nota_minor_optional_loc():
-    n = NotaMinor(loc=None, text="formatting inconsistency in section 3")
-    assert n.loc is None
-    n2 = NotaMinor(loc=_loc(3), text="typo")
-    assert n2.loc == _loc(3)
+def test_nota_minor_optional_uid():
+    n = NotaMinor(uid=None, text="formatting inconsistency in section 3")
+    assert n.uid is None
+    n2 = NotaMinor(uid=3, text="typo")
+    assert n2.uid == 3
 
 
 def test_weigh_cause_output():
@@ -184,7 +185,7 @@ def test_stakeholder_round_trip():
 
 
 def test_sourceloc_round_trips_through_pydantic_field():
-    a = Articulus(loc=_loc(7, 0, 50), text="x", section="s", kind="normative", question="q?")
+    a = Articulus(uid=7, loc=_loc(7, 0, 50), text="x", section="s", kind="normative", question="q?")
     a2 = Articulus.model_validate(a.model_dump())
     assert a2.loc == _loc(7, 0, 50)
     assert isinstance(a2.loc, SourceLoc)

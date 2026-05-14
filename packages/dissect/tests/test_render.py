@@ -57,11 +57,11 @@ def test_sanitize_md_mixed_code_span_and_prose():
 def test_render_report_unsupported():
     state = PipelineState(
         claims=[
-            Claim(loc=_loc(1), text="X is fast", original_quotes=["X is fast"],
+            Claim(uid=1, loc=_loc(1), text="X is fast", original_quotes=["X is fast"],
                   section="3", question="How fast?", depends_on=[]),
         ],
         support_map=[
-            SupportLink(claim_loc=_loc(1), evidence_locs=[], status="unsupported"),
+            SupportLink(claim_uid=1, evidence_uids=[], status="unsupported"),
         ],
     )
     report = render_report(state, "P0001R0", "Test Paper")
@@ -72,16 +72,16 @@ def test_render_report_unsupported():
 def test_render_report_supported():
     state = PipelineState(
         claims=[
-            Claim(loc=_loc(1), text="X is fast", original_quotes=["X is fast"],
+            Claim(uid=1, loc=_loc(1), text="X is fast", original_quotes=["X is fast"],
                   section="3", question="How fast?", depends_on=[]),
         ],
         evidence=[
-            Evidence(loc=_loc(2), text="measured 5ns", original_quotes=["measured 5ns"],
+            Evidence(uid=2, loc=_loc(2), text="measured 5ns", original_quotes=["measured 5ns"],
                      section="4", supports=["X is fast"], quantitative=True,
                      cited=False, verifiable=True, normative=False),
         ],
         support_map=[
-            SupportLink(claim_loc=_loc(1), evidence_locs=[_loc(2)],
+            SupportLink(claim_uid=1, evidence_uids=[2],
                         status="directly_supported"),
         ],
     )

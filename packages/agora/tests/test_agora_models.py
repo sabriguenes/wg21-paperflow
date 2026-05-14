@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import pytest
-from paperstore import SourceLoc
 from pydantic import ValidationError
 
 from agora.models import (
@@ -29,17 +28,13 @@ from agora.models import (
 )
 
 
-def _loc(line=1):
-    return SourceLoc(line=line, start_char=0, end_char=10)
-
-
 def _anchor(id_="a01"):
     return TechnicalAnchor(
         id=id_,
         kind="load_bearing",
         summary="X is the central claim.",
         claim_text="X is the central claim.",
-        claim_loc=_loc(),
+        claim_uid=1,
     )
 
 
@@ -61,7 +56,7 @@ def _research():
 def test_technical_anchor_round_trip():
     a = _anchor()
     assert TechnicalAnchor.model_validate(a.model_dump()) == a
-    assert a.claim_loc.line == 1
+    assert a.claim_uid == 1
 
 
 def test_design_tension_optional_anchor():

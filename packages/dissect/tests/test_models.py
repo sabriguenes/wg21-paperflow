@@ -29,6 +29,7 @@ from dissect.models import (
     PipelineState,
     RawClaim,
     RawEvidence,
+    RawRhetoric,
     SourceLoc,
     SupportLink,
     WebResolution,
@@ -51,7 +52,7 @@ def test_chunk_round_trip():
 
 def test_claim_round_trip():
     c = Claim(
-        loc=_loc(), text="X is fast", original_quotes=["X is fast"],
+        uid=1, loc=_loc(), text="X is fast", original_quotes=["X is fast"],
         section="3.1", question="Is X fast?", depends_on=[], merged_into=None,
     )
     assert Claim.model_validate(c.model_dump()) == c
@@ -59,18 +60,17 @@ def test_claim_round_trip():
 
 def test_claim_model_copy_merged_into():
     c = Claim(
-        loc=_loc(1), text="A", original_quotes=["A"],
+        uid=1, loc=_loc(1), text="A", original_quotes=["A"],
         section="1", question="Q?", depends_on=[], merged_into=None,
     )
-    target = _loc(2)
-    updated = c.model_copy(update={"merged_into": target})
-    assert updated.merged_into == target
+    updated = c.model_copy(update={"merged_into": 2})
+    assert updated.merged_into == 2
     assert c.merged_into is None
 
 
 def test_evidence_round_trip():
     e = Evidence(
-        loc=_loc(), text="measured 5ns", original_quotes=["measured 5ns"],
+        uid=1, loc=_loc(), text="measured 5ns", original_quotes=["measured 5ns"],
         section="2", supports=["X is fast"], quantitative=True,
         cited=False, verifiable=True, normative=False, merged_into=None,
     )
@@ -78,31 +78,31 @@ def test_evidence_round_trip():
 
 
 def test_support_link_round_trip():
-    sl = SupportLink(claim_loc=_loc(1), evidence_locs=[_loc(2)], status="directly_supported")
+    sl = SupportLink(claim_uid=1, evidence_uids=[2], status="directly_supported")
     assert SupportLink.model_validate(sl.model_dump()) == sl
 
 
 def test_internal_contradiction_round_trip():
-    ic = InternalContradiction(source_loc=_loc(1), claim_loc=_loc(2), kind="evidence_vs_claim")
+    ic = InternalContradiction(source_uid=1, claim_uid=2, kind="evidence_vs_claim")
     assert InternalContradiction.model_validate(ic.model_dump()) == ic
 
 
 def test_internal_contradiction_claim_vs_claim():
-    ic = InternalContradiction(source_loc=_loc(3), claim_loc=_loc(4), kind="claim_vs_claim")
+    ic = InternalContradiction(source_uid=3, claim_uid=4, kind="claim_vs_claim")
     assert ic.kind == "claim_vs_claim"
-    assert ic.source_loc.line == 3
+    assert ic.source_uid == 3
 
 
 def test_load_bearing_result_round_trip():
     lb = LoadBearingResult(
-        claim_loc=_loc(), dependents=[_loc(2)], classification="critical_gap",
+        claim_uid=1, dependents=[2], classification="critical_gap",
     )
     assert LoadBearingResult.model_validate(lb.model_dump()) == lb
 
 
 def test_external_evidence_round_trip():
     ee = ExternalEvidence(
-        claim_loc=_loc(), source_url="https://example.com", source_title="Example",
+        claim_uid=1, source_url="https://example.com", source_title="Example",
         text="passage", finding="it works", stance="supports",
         quantitative=False, cited=True, verifiable=True, normative=False,
     )
@@ -111,8 +111,8 @@ def test_external_evidence_round_trip():
 
 def test_web_resolution_round_trip():
     wr = WebResolution(
-        external_loc=_loc(), source_url="https://x.com", stance="supports",
-        finding="confirmed", resolved_claims=[_loc(2)],
+        external_uid=1, source_url="https://x.com", stance="supports",
+        finding="confirmed", resolved_claims=[2],
     )
     assert WebResolution.model_validate(wr.model_dump()) == wr
 
@@ -134,9 +134,12 @@ def test_raw_evidence_round_trip():
     assert RawEvidence.model_validate(re_.model_dump()) == re_
 
 
-def test_pipeline_state_defaults_none():
+def test_pipeline_state_defaults():
     s = PipelineState()
+    assert s.next_uid == 1
     for field_name in PipelineState.model_fields:
+        if field_name in ("next_uid",):
+            continue
         assert getattr(s, field_name) is None
 
 
@@ -150,7 +153,7 @@ def test_pipeline_state_assignable():
 
 def test_frozen_models_are_immutable():
     c = Claim(
-        loc=_loc(), text="X", original_quotes=["X"],
+        uid=1, loc=_loc(), text="X", original_quotes=["X"],
         section="1", question="Q?", depends_on=[],
     )
     with pytest.raises(Exception):
@@ -175,7 +178,7 @@ def test_extract_all_output_evidence():
 
 def test_claim_kind_factual():
     c = Claim(
-        loc=_loc(), text="X is 5ns", original_quotes=["X is 5ns"],
+        uid=1, loc=_loc(), text="X is 5ns", original_quotes=["X is 5ns"],
         section="2", question="How fast is X?", kind="factual", depends_on=[],
     )
     assert c.kind == "factual"
@@ -185,16 +188,16 @@ def test_claim_kind_factual():
 def test_caput_causae_round_trip():
     cc = CaputCausae(
         thesis="The paper argues for coroutines.",
-        anchored_claim_locs=[_loc(1), _loc(2)],
-        evidence_root_locs=[_loc(3)],
+        anchored_claim_uids=[1, 2],
+        evidence_root_uids=[3],
     )
     assert CaputCausae.model_validate(cc.model_dump()) == cc
 
 
 def test_caput_causae_defaults():
     cc = CaputCausae(thesis="Minimal thesis.")
-    assert cc.anchored_claim_locs == []
-    assert cc.evidence_root_locs == []
+    assert cc.anchored_claim_uids == []
+    assert cc.evidence_root_uids == []
 
 
 def test_citation_audit_entry_round_trip():
@@ -221,10 +224,6 @@ def test_citation_audit_entry_defaults():
 
 
 def test_citation_audit_entry_rejects_unknown_resolution_method():
-    # `resolution_method` accepts only `local_index`, `wg21_link`,
-    # `open_std`, or `not_found`. `"isocpp"` is outside that set, so
-    # construction must fail at validation time rather than persist a
-    # bogus token into the citation_audit table.
     with pytest.raises(ValidationError):
         CitationAuditEntry(
             paper_id="P0001R0",
@@ -240,7 +239,7 @@ def test_citation_task_output_round_trip():
         resolved=True,
     )
     ee = ExternalEvidence(
-        claim_loc=_loc(1), source_url="https://example.com",
+        claim_uid=1, source_url="https://example.com",
         source_title="Paper", text="passage", finding="confirmed",
         stance="supports", quantitative=False, cited=True,
         verifiable=True, normative=False,

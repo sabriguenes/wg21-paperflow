@@ -156,8 +156,9 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
             f"{len(traps)} misconception traps"
         )
         for a in anchors[:20]:
+            loc_info = f" (line {a.claim_loc.line})" if a.claim_loc else ""
             lines.append(
-                f'  - [{a.kind}] **{a.id}** (line {a.claim_loc.line}): '
+                f'  - [{a.kind}] **{a.id}**{loc_info}: '
                 f'{_sanitize(a.summary)}'
             )
         if len(anchors) > 20:

@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-from paperstore import SourceLoc
-
 from agora.models import (
     DesignTension,
     EncounterPlan,
@@ -22,16 +20,12 @@ from agora.models import (
 from agora.render import render_trace
 
 
-def _loc(line=1):
-    return SourceLoc(line=line, start_char=0, end_char=10)
-
-
 def _anchor(id_="a01", line=1):
     return TechnicalAnchor(
         id=id_, kind="load_bearing",
         summary="X holds the proposal up.",
         claim_text="X holds the proposal up.",
-        claim_loc=_loc(line),
+        claim_uid=line,
     )
 
 

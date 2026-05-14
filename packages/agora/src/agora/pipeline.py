@@ -395,7 +395,7 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
     # pick the fields they need without rebuilding typed models here.
     claim_rows = await asyncio.to_thread(ctx.backend.get_claims, pid)
     evidence_rows = await asyncio.to_thread(ctx.backend.get_evidence, pid)
-    marker_rows = await asyncio.to_thread(ctx.backend.get_markers, pid)
+    marker_rows = await asyncio.to_thread(ctx.backend.get_rhetoric, pid)
     citation_audit_rows = await asyncio.to_thread(ctx.backend.get_citation_audit, pid)
     external_rows = await asyncio.to_thread(ctx.backend.get_external_citations, pid)
     caput = await asyncio.to_thread(ctx.backend.get_caput_causae, pid)

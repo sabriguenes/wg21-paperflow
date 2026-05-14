@@ -114,11 +114,11 @@ def test_step13_report_renders_unsupported():
     import asyncio
     state = PipelineState(
         claims=[
-            Claim(loc=_loc(1), text="X is fast", original_quotes=["X is fast"],
+            Claim(uid=1, loc=_loc(1), text="X is fast", original_quotes=["X is fast"],
                   section="3", question="How fast is X?", depends_on=[]),
         ],
         support_map=[
-            SupportLink(claim_loc=_loc(1), evidence_locs=[], status="unsupported"),
+            SupportLink(claim_uid=1, evidence_uids=[], status="unsupported"),
         ],
     )
     ctx = StepContext(sections={}, model_slots={}, pid="P0001R0")
@@ -135,7 +135,7 @@ def test_step13_report_renders_unsupported():
 def test_guard_web_search_skips_when_no_critical_gap():
     state = PipelineState(
         load_bearing_claims=[
-            LoadBearingResult(claim_loc=_loc(1), dependents=[], classification="anchored"),
+            LoadBearingResult(claim_uid=1, dependents=[], classification="anchored"),
         ],
     )
     assert _guard_web_search(state) is False
@@ -144,7 +144,7 @@ def test_guard_web_search_skips_when_no_critical_gap():
 def test_guard_web_search_fires_on_critical_gap():
     state = PipelineState(
         load_bearing_claims=[
-            LoadBearingResult(claim_loc=_loc(1), dependents=[], classification="critical_gap"),
+            LoadBearingResult(claim_uid=1, dependents=[], classification="critical_gap"),
         ],
     )
     assert _guard_web_search(state) is True
@@ -153,11 +153,11 @@ def test_guard_web_search_fires_on_critical_gap():
 def test_guard_web_search_skips_when_citation_evidence_covers_gap():
     state = PipelineState(
         load_bearing_claims=[
-            LoadBearingResult(claim_loc=_loc(1), dependents=[], classification="critical_gap"),
+            LoadBearingResult(claim_uid=1, dependents=[], classification="critical_gap"),
         ],
         external_evidence=[
             ExternalEvidence(
-                claim_loc=_loc(1), source_url="https://example.com",
+                claim_uid=1, source_url="https://example.com",
                 source_title="Ex", text="passage", finding="confirmed",
                 stance="supports", quantitative=False, cited=True,
                 verifiable=True, normative=False,
@@ -180,7 +180,7 @@ def test_guard_verify_citations_skips_when_empty():
 def test_guard_caput_causae_skips_when_no_anchored():
     state = PipelineState(
         load_bearing_claims=[
-            LoadBearingResult(claim_loc=_loc(1), dependents=[], classification="critical_gap"),
+            LoadBearingResult(claim_uid=1, dependents=[], classification="critical_gap"),
         ],
     )
     assert _guard_caput_causae(state) is False
@@ -189,7 +189,7 @@ def test_guard_caput_causae_skips_when_no_anchored():
 def test_guard_caput_causae_fires_when_anchored():
     state = PipelineState(
         load_bearing_claims=[
-            LoadBearingResult(claim_loc=_loc(1), dependents=[], classification="anchored"),
+            LoadBearingResult(claim_uid=1, dependents=[], classification="anchored"),
         ],
     )
     assert _guard_caput_causae(state) is True
@@ -218,7 +218,6 @@ def test_store_citation_audit_adapts_field_name(store):  # noqa: F811
             quote_match="exact",
         ),
     ]
-    # Mirror the adapter used in _dispatch.
     from types import SimpleNamespace
     store.store_citation_audit("P1000R0", [
         SimpleNamespace(
@@ -347,12 +346,6 @@ def test_pure_verify_citations_injects_known_url_into_user_message(
     assert _P3175_URL in by_pid["P3175R3"]
     assert "## Known URL" not in by_pid["P9999R0"]
 
-    # The Known URL section sits in the message header, between the
-    # `## Citation` line and the bulk JSON payload (`## Primary Claims`,
-    # `## Primary Evidence`, `## Secondary Questions`), and ahead of
-    # `## Instructions`. LLM attention falls off across long messages,
-    # so the canonical URL must appear before the agent reads the
-    # instructions that tell it which URL to fetch.
     indexed = by_pid["P3175R3"]
     assert (
         indexed.index("## Citation")

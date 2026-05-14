@@ -56,7 +56,7 @@ Relatio). Pure-Python steps: 0, 2, 3, 4, 10. LLM `default` steps: 1,
 Step 7 (Defensor Cross-Examination) spawns one isolated sub-agent per
 candidate charge. Each sub-agent receives only: the candidate charge,
 the paper quote it attacks (with `SourceLoc`), the relevant dossier
-slice, the boundaries, the markers, and the six-challenge rubric.
+slice, the boundaries, the rhetoric, and the six-challenge rubric.
 Never the prosecution's chain-of-thought. This is the structural
 adversarial separation.
 

@@ -114,11 +114,10 @@ def render_relatio(state: PipelineState) -> str:
         lines.append("## Objections\n")
         for i, obj in enumerate(ordered, start=1):
             charge = obj.charge.charge
-            loc = obj.articulus_loc
             forum = _FORUM_LABELS.get(obj.motivatio.forum, obj.motivatio.forum)
             damage = _DAMAGE_LABELS.get(obj.motivatio.damage, obj.motivatio.damage)
             lines.append(
-                f"### {i}. [{obj.severity.upper()}] line {loc.line}\n"
+                f"### {i}. [{obj.severity.upper()}] uid {obj.articulus_uid}\n"
             )
             lines.append(f"> {_sanitize(charge.quoted_text)}\n")
             lines.append(f"**Gravamen.** {_sanitize(charge.gravamen)}\n")
@@ -135,7 +134,7 @@ def render_relatio(state: PipelineState) -> str:
         for p in probationes:
             challenge = _CHALLENGE_LABELS.get(p.killing_challenge, p.killing_challenge)
             lines.append(
-                f"- **line {p.articulus_loc.line}** - "
+                f"- **uid {p.articulus_uid}** - "
                 f"the *{challenge}* challenge prevailed. "
                 f"{_sanitize(p.explanation)}"
             )
@@ -165,8 +164,8 @@ def render_relatio(state: PipelineState) -> str:
         lines.append("\n## Notae Minores\n")
         lines.append("<details><summary>Editorial observations</summary>\n")
         for n in notae:
-            loc_part = f" (line {n.loc.line})" if n.loc else ""
-            lines.append(f"- {_sanitize(n.text)}{loc_part}")
+            uid_part = f" (uid {n.uid})" if n.uid is not None else ""
+            lines.append(f"- {_sanitize(n.text)}{uid_part}")
         lines.append("\n</details>\n")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -354,7 +353,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
         lines.append(f"{len(charges)} candidate charges:\n")
         for c in charges[:30]:
             lines.append(
-                f'- [line {c.articulus_loc.line}] [{c.failed_test}] {_sanitize(c.gravamen)}'
+                f'- [uid {c.articulus_uid}] [{c.failed_test}] {_sanitize(c.gravamen)}'
             )
         lines.append("")
 
@@ -392,7 +391,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
             forum = _FORUM_LABELS.get(obj.motivatio.forum, obj.motivatio.forum)
             damage = _DAMAGE_LABELS.get(obj.motivatio.damage, obj.motivatio.damage)
             lines.append(
-                f"- [line {obj.articulus_loc.line}] [{obj.severity.upper()}] "
+                f"- [uid {obj.articulus_uid}] [{obj.severity.upper()}] "
                 f"adversary: {_sanitize(obj.motivatio.adversary)}; forum: {forum}; "
                 f"damage: {damage}"
             )
