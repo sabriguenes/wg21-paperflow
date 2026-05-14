@@ -312,21 +312,19 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
-    def get_debug_md_path(self, paper_id: str, tool: str) -> Path:
-        """Return the canonical path for a tool's per-paper debug transcript.
+    def get_debug_md_path(self, paper_id: str) -> Path:
+        """Return the canonical path for a paper's unified debug transcript.
 
-        File: ``paperstore/<pid>.<tool>.debug.md``. The path is returned
+        File: ``paperstore/<pid>.debug.md``. The path is returned
         whether or not the file exists; callers write to it or check
-        ``.exists()`` themselves. ``tool`` is normalized to lowercase
-        (e.g. ``"dissect"``, ``"advocatus"``); empty / whitespace-only
-        ``tool`` raises ``ValueError``.
+        ``.exists()`` themselves.
         """
 
     @abstractmethod
-    def get_trace_md_path(self, paper_id: str, tool: str) -> Path:
-        """Return the canonical path for a tool's per-paper pipeline trace.
+    def get_trace_md_path(self, paper_id: str) -> Path:
+        """Return the canonical path for a paper's unified pipeline trace.
 
-        File: ``paperstore/<pid>.<tool>.trace.md``. Same semantics as
+        File: ``paperstore/<pid>.trace.md``. Same semantics as
         :meth:`get_debug_md_path`.
         """
 

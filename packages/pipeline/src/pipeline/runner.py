@@ -190,6 +190,9 @@ async def dispatch(
     stop_after: int | None = None,
     on_progress: ProgressCallback | None = None,
     on_step_complete: Callable[[StepSpec, Any], None] | None = None,
+    trace_path: Path | None = None,
+    debug_path: Path | None = None,
+    render_trace_fn: Callable[[Any, int], str] | None = None,
 ) -> None:
     """Execute the pipeline step by step.
 
@@ -208,76 +211,97 @@ async def dispatch(
 
     When ``stop_after`` is set, processing stops after completing
     that step (inclusive).
+
+    When ``trace_path`` and ``render_trace_fn`` are set, the trace
+    file is overwritten after every successful step (and in a finally
+    block on crash). ``debug_path`` works the same way for debug logs.
     """
     total = len(pipeline)
-    for i, spec in enumerate(pipeline):
-        if stop_after is not None and i > stop_after:
-            break
+    last_completed_step = -1
 
-        if on_progress is not None:
-            on_progress(ProgressEvent(
-                step=i, total=total, name=spec.meta.name, pct=i / total,
-            ))
+    def _flush_trace_and_debug() -> None:
+        if trace_path and render_trace_fn:
+            step = last_completed_step if last_completed_step >= 0 else 0
+            trace_path.write_text(
+                render_trace_fn(state, step), encoding="utf-8",
+            )
+        if debug_path and ctx.debug_log:
+            write_debug_file(debug_path, ctx.debug_log)
 
-        if spec.hooks.guard and not spec.hooks.guard(state):
-            logger.info("Step %d: %s (skipped by guard)", i, spec.meta.name)
-            continue
+    try:
+        for i, spec in enumerate(pipeline):
+            if stop_after is not None and i > stop_after:
+                break
 
-        logger.info("Step %d: %s", i, spec.meta.name)
-        ctx._current_spec = spec
-        ctx.tool_counts = {}
-        t0 = time.monotonic()
-        metrics = StepMetrics(name=spec.meta.name)
+            if on_progress is not None:
+                on_progress(ProgressEvent(
+                    step=i, total=total, name=spec.meta.name, pct=i / total,
+                ))
 
-        try:
-            if spec.hooks.custom:
-                await spec.hooks.custom(state, ctx)
-            elif spec.hooks.parallel:
-                assert spec.hooks.prepare is not None
-                user_msgs = spec.hooks.prepare(state, ctx)
-                results = await asyncio.gather(*[
-                    run_agent(
-                        ctx, spec, msg,
+            if spec.hooks.guard and not spec.hooks.guard(state):
+                logger.info("Step %d: %s (skipped by guard)", i, spec.meta.name)
+                continue
+
+            logger.info("Step %d: %s", i, spec.meta.name)
+            ctx._current_spec = spec
+            ctx.tool_counts = {}
+            t0 = time.monotonic()
+            metrics = StepMetrics(name=spec.meta.name)
+
+            try:
+                if spec.hooks.custom:
+                    await spec.hooks.custom(state, ctx)
+                elif spec.hooks.parallel:
+                    assert spec.hooks.prepare is not None
+                    user_msgs = spec.hooks.prepare(state, ctx)
+                    results = await asyncio.gather(*[
+                        run_agent(
+                            ctx, spec, msg,
+                            request_limit=spec.hooks.request_limit or 500,
+                        )
+                        for msg in user_msgs
+                    ])
+                    for r in results:
+                        usage = getattr(r, "usage", None)
+                        if usage is not None:
+                            metrics.requests += getattr(usage, "requests", 0) or 0
+                            metrics.input_tokens += getattr(usage, "input_tokens", 0) or 0
+                            metrics.output_tokens += getattr(usage, "output_tokens", 0) or 0
+                    if spec.hooks.extract:
+                        spec.hooks.extract(state, [r.output for r in results])
+                else:
+                    assert spec.hooks.prepare is not None
+                    user_msg = spec.hooks.prepare(state, ctx)
+                    result = await run_agent(
+                        ctx, spec, user_msg,
                         request_limit=spec.hooks.request_limit or 500,
                     )
-                    for msg in user_msgs
-                ])
-                for r in results:
-                    usage = getattr(r, "usage", None)
+                    usage = getattr(result, "usage", None)
                     if usage is not None:
-                        metrics.requests += getattr(usage, "requests", 0) or 0
-                        metrics.input_tokens += getattr(usage, "input_tokens", 0) or 0
-                        metrics.output_tokens += getattr(usage, "output_tokens", 0) or 0
-                if spec.hooks.extract:
-                    spec.hooks.extract(state, [r.output for r in results])
-            else:
-                assert spec.hooks.prepare is not None
-                user_msg = spec.hooks.prepare(state, ctx)
-                result = await run_agent(
-                    ctx, spec, user_msg,
-                    request_limit=spec.hooks.request_limit or 500,
+                        metrics.requests = getattr(usage, "requests", 0) or 0
+                        metrics.input_tokens = getattr(usage, "input_tokens", 0) or 0
+                        metrics.output_tokens = getattr(usage, "output_tokens", 0) or 0
+                    if spec.hooks.extract:
+                        spec.hooks.extract(state, result.output)
+            except (StepError, PromptFileError, PipelineError):
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Step %d (%s) failed: %s", i, spec.meta.name, exc, exc_info=True,
                 )
-                usage = getattr(result, "usage", None)
-                if usage is not None:
-                    metrics.requests = getattr(usage, "requests", 0) or 0
-                    metrics.input_tokens = getattr(usage, "input_tokens", 0) or 0
-                    metrics.output_tokens = getattr(usage, "output_tokens", 0) or 0
-                if spec.hooks.extract:
-                    spec.hooks.extract(state, result.output)
-        except (StepError, PromptFileError, PipelineError):
-            raise
-        except Exception as exc:
-            logger.error(
-                "Step %d (%s) failed: %s", i, spec.meta.name, exc, exc_info=True,
-            )
-            raise StepError(i, spec.meta.name, exc) from exc
+                raise StepError(i, spec.meta.name, exc) from exc
 
-        metrics.duration_s = time.monotonic() - t0
-        metrics.tool_calls = dict(ctx.tool_counts)
-        ctx.step_metrics.append(metrics)
+            metrics.duration_s = time.monotonic() - t0
+            metrics.tool_calls = dict(ctx.tool_counts)
+            ctx.step_metrics.append(metrics)
 
-        if on_step_complete is not None:
-            on_step_complete(spec, state)
+            if on_step_complete is not None:
+                on_step_complete(spec, state)
+
+            last_completed_step = i
+            _flush_trace_and_debug()
+    finally:
+        _flush_trace_and_debug()
 
     if on_progress is not None:
         on_progress(ProgressEvent(

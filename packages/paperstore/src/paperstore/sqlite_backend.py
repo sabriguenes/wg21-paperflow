@@ -895,24 +895,13 @@ class SqliteBackend(StorageBackend):
             )
         return path
 
-    def get_debug_md_path(self, paper_id: str, tool: str) -> Path:
-        return self._tool_artifact_path(paper_id, tool, ".debug.md")
-
-    def get_trace_md_path(self, paper_id: str, tool: str) -> Path:
-        return self._tool_artifact_path(paper_id, tool, ".trace.md")
-
-    def _tool_artifact_path(self, paper_id: str, tool: str, suffix: str) -> Path:
-        """Compose ``paperstore/<pid>.<tool><suffix>``.
-
-        ``tool`` is normalized to lowercase. Empty / whitespace-only ``tool``
-        raises ``ValueError`` to keep the convention enforceable across
-        every consuming pipeline.
-        """
-        normalized_tool = tool.strip().lower()
-        if not normalized_tool:
-            raise ValueError("tool must be a non-empty identifier")
+    def get_debug_md_path(self, paper_id: str) -> Path:
         pid = paper_id.strip().upper().lower()
-        return self._papers_dir / f"{pid}.{normalized_tool}{suffix}"
+        return self._papers_dir / f"{pid}.debug.md"
+
+    def get_trace_md_path(self, paper_id: str) -> Path:
+        pid = paper_id.strip().upper().lower()
+        return self._papers_dir / f"{pid}.trace.md"
 
     def list_years(self) -> list[tuple[str, int]]:
         """Return ``[(year, paper_count)]`` sorted by year."""

@@ -512,42 +512,21 @@ def test_reconcile_finds_advocatus_files(store: SqliteBackend):
     assert meta.advocatus_path == str(advocatus_path)
 
 
-# ---- per-tool debug/trace path helpers ------------------------------------
+# ---- per-paper debug/trace path helpers ------------------------------------
 
 
-def test_get_debug_md_path_dissect(store: SqliteBackend):
-    p = store.get_debug_md_path("P1234R0", "dissect")
-    assert p.name == "p1234r0.dissect.debug.md"
+def test_get_debug_md_path(store: SqliteBackend):
+    p = store.get_debug_md_path("P1234R0")
+    assert p.name == "p1234r0.debug.md"
     assert p.parent == store._papers_dir
-    # Path is returned regardless of file existence.
     assert not p.exists()
 
 
-def test_get_debug_md_path_advocatus(store: SqliteBackend):
-    p = store.get_debug_md_path("P1234R0", "advocatus")
-    assert p.name == "p1234r0.advocatus.debug.md"
-
-
-def test_get_trace_md_path_dissect(store: SqliteBackend):
-    p = store.get_trace_md_path("P1234R0", "dissect")
-    assert p.name == "p1234r0.dissect.trace.md"
-
-
-def test_get_trace_md_path_advocatus(store: SqliteBackend):
-    p = store.get_trace_md_path("P1234R0", "advocatus")
-    assert p.name == "p1234r0.advocatus.trace.md"
-
-
-def test_tool_artifact_path_normalizes_tool_to_lowercase(store: SqliteBackend):
-    p = store.get_debug_md_path("p1234r0", "Dissect")
-    assert p.name == "p1234r0.dissect.debug.md"
-
-
-def test_tool_artifact_path_rejects_empty_tool(store: SqliteBackend):
-    with pytest.raises(ValueError):
-        store.get_debug_md_path("P1234R0", "")
-    with pytest.raises(ValueError):
-        store.get_trace_md_path("P1234R0", "   ")
+def test_get_trace_md_path(store: SqliteBackend):
+    p = store.get_trace_md_path("P1234R0")
+    assert p.name == "p1234r0.trace.md"
+    assert p.parent == store._papers_dir
+    assert not p.exists()
 
 
 # ---- extract store/get round-trips ----------------------------------------

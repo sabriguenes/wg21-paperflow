@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import time
 
 import httpx
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 _ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 _MAX_BRAVE_COUNT = 20
+_RETRYABLE_STATUS = {500, 502, 503, 504, 429}
+_MAX_RETRIES = 3
 
 
 class _TokenBucket:
@@ -79,20 +82,48 @@ class BraveBackend(SearchBackend):
         await self._limiter.acquire()
         count = min(max(1, max_results), _MAX_BRAVE_COUNT)
 
-        try:
-            resp = await self._client.get(
-                _ENDPOINT,
-                params={"q": query, "count": count},
-                headers={
-                    "Accept": "application/json",
-                    "Accept-Encoding": "gzip",
-                    "X-Subscription-Token": self._api_key,
-                },
-                timeout=15,
-            )
-        except httpx.HTTPError as exc:
-            logger.warning("Brave search failed for %r: %s", query, exc)
-            return SearchResponse(status_code=0, results=[])
+        resp = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                resp = await self._client.get(
+                    _ENDPOINT,
+                    params={"q": query, "count": count},
+                    headers={
+                        "Accept": "application/json",
+                        "Accept-Encoding": "gzip",
+                        "X-Subscription-Token": self._api_key,
+                    },
+                    timeout=15,
+                )
+                if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+                    delay = min(10, (2 ** attempt) * random.uniform(0.5, 1.5))
+                    if resp.status_code == 429:
+                        retry_after = resp.headers.get("retry-after")
+                        if retry_after and retry_after.isdigit():
+                            delay = max(delay, float(retry_after))
+                    logger.warning(
+                        "Brave search %r returned %d, retrying in %.1fs",
+                        query, resp.status_code, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                break
+            except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException) as exc:
+                if attempt < _MAX_RETRIES:
+                    delay = min(10, (2 ** attempt) * random.uniform(0.5, 1.5))
+                    logger.warning(
+                        "Brave search %r failed (%s), retrying in %.1fs",
+                        query, type(exc).__name__, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.warning("Brave search failed for %r: %s", query, exc)
+                return SearchResponse(status_code=0, results=[])
+            except httpx.HTTPError as exc:
+                logger.warning("Brave search failed for %r: %s", query, exc)
+                return SearchResponse(status_code=0, results=[])
+
+        assert resp is not None
 
         if resp.status_code != 200:
             return SearchResponse(status_code=resp.status_code, results=[])

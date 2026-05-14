@@ -41,7 +41,6 @@ from pipeline import (
     load_sections,
     run_agent,
     run_task,
-    write_debug_file,
 )
 from pipeline.errors import (
     PaperNotConvertedError,
@@ -144,7 +143,7 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
     # Articuli seed: alive claims (skip tombstones)
     articuli_seed: list[Articulus] = []
     for row in claim_rows:
-        if row.merged_into_line is not None:
+        if row.merged_into is not None:
             continue
         articuli_seed.append(Articulus(
             uid=row.uid,
@@ -160,7 +159,7 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
     # paper's own evidence, not from independent web search).
     dissect_evidence: list[DossierEntry] = []
     for row in evidence_rows:
-        if row.merged_into_line is not None:
+        if row.merged_into is not None:
             continue
         dissect_evidence.append(DossierEntry(
             label="operator_provided",
@@ -254,10 +253,10 @@ async def _pure_public_record(state: PipelineState, ctx: StepContext) -> None:
     """Spawn parallel sub-agents for public-record search."""
     assert ctx._current_spec is not None
     body = ctx.sections.get(_STEP_2_PUBLIC_RECORD, "")
-    web_search = ctx.tool_registry.get("web_search")
+    deep_search = ctx.tool_registry.get("deep_search")
     web_fetch = ctx.tool_registry.get("web_fetch")
-    if web_search is None or web_fetch is None:
-        logger.warning("Step 2 skipped: web_search/web_fetch not available")
+    if deep_search is None or web_fetch is None:
+        logger.warning("Step 2 skipped: deep_search/web_fetch not available")
         state.dossier = list(state.dissect_external_evidence or [])
         return
 
@@ -286,7 +285,7 @@ async def _pure_public_record(state: PipelineState, ctx: StepContext) -> None:
             output_type=PublicRecordOutput,
             label=f"Step 2 - Survey Public Record ({domain})",
             debug_log=ctx.debug_log if ctx.debug else None,
-            tools={"web_search": web_search, "web_fetch": web_fetch},
+            tools={"deep_search": deep_search, "web_fetch": web_fetch},
             model=model,
         )
 
@@ -327,9 +326,9 @@ def _public_record_domains(state: PipelineState) -> list[str]:
 async def _pure_stakeholders(state: PipelineState, ctx: StepContext) -> None:
     assert ctx._current_spec is not None
     body = ctx.sections.get(_STEP_3_STAKEHOLDERS, "")
-    web_search = ctx.tool_registry.get("web_search")
+    deep_search = ctx.tool_registry.get("deep_search")
     web_fetch = ctx.tool_registry.get("web_fetch")
-    if web_search is None or web_fetch is None:
+    if deep_search is None or web_fetch is None:
         state.stakeholders = []
         return
 
@@ -361,7 +360,7 @@ async def _pure_stakeholders(state: PipelineState, ctx: StepContext) -> None:
             output_type=StakeholdersOutput,
             label=f"Step 3 - Map Stakeholders ({target})",
             debug_log=ctx.debug_log if ctx.debug else None,
-            tools={"web_search": web_search, "web_fetch": web_fetch},
+            tools={"deep_search": deep_search, "web_fetch": web_fetch},
             model=model,
         )
 
@@ -791,11 +790,11 @@ async def advocatus_paper(
 
     With ``debug=True``, every LLM call (top-level + every sub-agent)
     is rendered to a debug transcript at
-    ``backend.get_debug_md_path(pid, "advocatus")``. The file is
+    ``backend.get_debug_md_path(pid)``. The file is
     cleared before dispatch so reruns do not append to stale logs.
 
     With ``trace=True``, a full per-step state dump is written to
-    ``backend.get_trace_md_path(pid, "advocatus")`` after dispatch
+    ``backend.get_trace_md_path(pid)`` after dispatch
     completes; ``state.relatio`` is still returned.
 
     With ``stop_after=N``, dispatch halts after pipeline step ``N`` and
@@ -823,6 +822,7 @@ async def advocatus_paper(
 
     async with WebResearcher() as researcher:
         tool_reg: dict[str, Callable[..., Any]] = {
+            "deep_search": researcher.deep_search,
             "web_search": researcher.web_search,
             "web_fetch": researcher.web_fetch,
         }
@@ -837,25 +837,21 @@ async def advocatus_paper(
             tool_registry=tool_reg,
         )
 
-        debug_path = backend.get_debug_md_path(pid, "advocatus")
+        debug_path = backend.get_debug_md_path(pid)
         if debug:
             debug_path.unlink(missing_ok=True)
 
-        try:
-            await dispatch(
-                pipeline, state, ctx,
-                stop_after=stop_after,
-                on_progress=on_progress,
-            )
-        finally:
-            if debug and ctx.debug_log:
-                write_debug_file(debug_path, ctx.debug_log)
-            if trace or stop_after is not None:
-                trace_step = stop_after if stop_after is not None else len(pipeline) - 1
-                trace_path = backend.get_trace_md_path(pid, "advocatus")
-                trace_path.write_text(
-                    render_trace(state, trace_step), encoding="utf-8",
-                )
+        trace_path = backend.get_trace_md_path(pid) if (trace or stop_after is not None) else None
+        dp = debug_path if debug else None
+
+        await dispatch(
+            pipeline, state, ctx,
+            stop_after=stop_after,
+            on_progress=on_progress,
+            trace_path=trace_path,
+            debug_path=dp,
+            render_trace_fn=lambda st, step: render_trace(st, step),
+        )
 
     if stop_after is not None:
         return render_trace(state, stop_after)

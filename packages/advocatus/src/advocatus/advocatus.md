@@ -81,11 +81,11 @@ The articuli output is the union of dissect's articuli and any additions from th
 
 - **Model:** fast
 - **Execution:** parallel
-- **Tools:** web_search, web_fetch
+- **Tools:** deep_search, web_fetch
 - **Reads:** paper_id, paper_title, central_thesis_recap, articuli
 - **Writes:** dossier (public_record entries)
 
-Pure-orchestration step backed by parallel sub-agents. Spawn one sub-agent per search domain (paper number, paper topic, named referenced papers). Each sub-agent runs `web_search`, follows promising leads with `web_fetch`, and returns a compressed list of `DossierEntry` items labeled `public_record`. The main agent merges them into the dossier.
+Pure-orchestration step backed by parallel sub-agents. Spawn one sub-agent per search domain (paper number, paper topic, named referenced papers). Each sub-agent runs `deep_search`, which searches multiple angles simultaneously and includes fetched content from top results. Only use `web_fetch` for specific URLs not found in the search results. Each sub-agent returns a compressed list of `DossierEntry` items labeled `public_record`. The main agent merges them into the dossier.
 
 Each dossier entry includes a one-sentence `relevance` note explaining how the source bears on the cause. Sub-agents do not return raw HTML or full page content; only structured findings.
 
@@ -97,11 +97,11 @@ Concurrency is capped at 5 by the pipeline-wide semaphore.
 
 - **Model:** fast
 - **Execution:** parallel
-- **Tools:** web_search, web_fetch
+- **Tools:** deep_search, web_fetch
 - **Reads:** paper_authors, articuli, dissect_external_evidence
 - **Writes:** stakeholders
 
-Pure-orchestration step backed by parallel sub-agents. For every named author and every referenced paper, spawn a sub-agent that searches for the stakeholder's published positions and returns a `Stakeholder` record (name, position, source URL, stance: `opponent` / `ally` / `neutral`).
+Pure-orchestration step backed by parallel sub-agents. For every named author and every referenced paper, spawn a sub-agent that uses `deep_search` to find the stakeholder's published positions and returns a `Stakeholder` record (name, position, source URL, stance: `opponent` / `ally` / `neutral`). Only use `web_fetch` for specific URLs not found in the search results.
 
 Concurrency is capped at 5 by the pipeline-wide semaphore.
 

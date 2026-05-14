@@ -20,6 +20,7 @@ to prepare cited papers without committing them to the full pipeline.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from paperstore.backend import StorageBackend
@@ -65,9 +66,26 @@ async def process_paper(
         status = failed_stage(status)
         backend.advance_status(pid, paper.status, status)
 
+    if debug or trace:
+        trace_path = backend.get_trace_md_path(pid)
+        debug_path = backend.get_debug_md_path(pid)
+        if paper.status >= 0:
+            for p in (trace_path, debug_path):
+                if p.exists():
+                    bak = p.with_suffix(".bak.md")
+                    bak.unlink(missing_ok=True)
+                    p.rename(bak)
+
     while 0 <= status < through:
         stage_name = STAGE_NAMES.get(status, f"stage-{status}")
         logger.info("Processing %s: %s", pid, stage_name)
+
+        if trace and status >= 2:
+            tp = backend.get_trace_md_path(pid)
+            if tp.exists():
+                now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                with open(tp, "a", encoding="utf-8") as f:
+                    f.write(f"\n---\n\n## {stage_name} (started {now})\n\n")
 
         try:
             await _run_stage(pid, status, backend, debug=debug, trace=trace,

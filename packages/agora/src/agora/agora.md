@@ -170,7 +170,7 @@ sections), 1.4g (feature test macro relevance).
 
 - **Model:** default
 - **Execution:** parallel
-- **Tools:** web_search, web_fetch
+- **Tools:** deep_search, web_fetch
 - **Reads:** paper_id, paper_title, paper_authors, paper_audience, paper_number, paper_revision, technical_anchors
 - **Writes:** research_summary
 
@@ -192,8 +192,7 @@ their results into a ``ResearchSummary``. The three sub-agents are:
 
 Each sub-agent receives only the paper identifying metadata and the
 list of technical anchors. They do not see each other. They do not
-see the paper source. They use ``web_search`` to find leads and
-``web_fetch`` to confirm one or two of the most promising. Their
+see the paper source. They use ``deep_search`` as the primary search tool, which searches multiple angles simultaneously and includes fetched content from top results. Only use ``web_fetch`` for specific URLs not found in the search results. Their
 findings are paraphrased prose; they never quote pages verbatim.
 
 Heat signal uses the ``cold | warm | hot | thermonuclear`` ladder

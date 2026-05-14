@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_FETCH_TIMEOUT = 15
 _DEFAULT_MAX_FETCH_LENGTH = 8000
+_RETRYABLE_STATUS = {500, 502, 503, 504, 429}
+_MAX_FETCH_RETRIES = 3
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
@@ -166,19 +169,50 @@ class WebResearcher:
 
         url = _normalize_open_std_url(url)
 
-        try:
-            resp = await self._client.get(
-                url,
-                headers={"User-Agent": _DEFAULT_USER_AGENT},
-                timeout=_DEFAULT_FETCH_TIMEOUT,
-                follow_redirects=True,
-            )
-        except httpx.HTTPError as exc:
-            logger.warning("Fetch failed for %r: %s", url, exc)
-            return FetchResponse(
-                status_code=0,
-                content=f"Error: Failed to fetch URL: {exc}",
-            )
+        resp = None
+        for attempt in range(_MAX_FETCH_RETRIES + 1):
+            try:
+                resp = await self._client.get(
+                    url,
+                    headers={"User-Agent": _DEFAULT_USER_AGENT},
+                    timeout=_DEFAULT_FETCH_TIMEOUT,
+                    follow_redirects=True,
+                )
+                if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_FETCH_RETRIES:
+                    delay = min(10, (2 ** attempt) * random.uniform(0.5, 1.5))
+                    if resp.status_code == 429:
+                        retry_after = resp.headers.get("retry-after")
+                        if retry_after and retry_after.isdigit():
+                            delay = max(delay, float(retry_after))
+                    logger.warning(
+                        "Fetch %s returned %d, retrying in %.1fs",
+                        url, resp.status_code, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                break
+            except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException) as exc:
+                if attempt < _MAX_FETCH_RETRIES:
+                    delay = min(10, (2 ** attempt) * random.uniform(0.5, 1.5))
+                    logger.warning(
+                        "Fetch %s failed (%s), retrying in %.1fs",
+                        url, type(exc).__name__, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.warning("Fetch failed for %r: %s", url, exc)
+                return FetchResponse(
+                    status_code=0,
+                    content=f"Error: Failed to fetch URL: {exc}",
+                )
+            except httpx.HTTPError as exc:
+                logger.warning("Fetch failed for %r: %s", url, exc)
+                return FetchResponse(
+                    status_code=0,
+                    content=f"Error: Failed to fetch URL: {exc}",
+                )
+
+        assert resp is not None
 
         if resp.status_code != 200:
             logger.warning("Fetch got HTTP %d for %r", resp.status_code, url)
@@ -245,3 +279,122 @@ class WebResearcher:
         """
         response = await self.fetch(url, extract=True)
         return response.content
+
+    async def deep_search(
+        self,
+        query: str,
+        *,
+        fan_out: int = 3,
+        max_fetch: int = 2,
+    ) -> str:
+        """Search multiple angles and auto-fetch top results in one call.
+
+        Fans out to ``fan_out`` search variants (deterministic query
+        expansion), merges results with Reciprocal Rank Fusion, and
+        auto-fetches the top ``max_fetch`` unique URLs. Returns a
+        digest with search results and fetched content wrapped in
+        ``<<<SOURCE>>>`` delimiters.
+
+        ``fan_out=1`` collapses to a simple search + auto-fetch.
+
+        Designed for Pydantic AI::
+
+            agent.tool_plain(researcher.deep_search)
+        """
+        if not query:
+            return "Error: Empty search query"
+
+        variants = _make_search_variants(query, fan_out)
+
+        search_tasks = [self.search(v, max_results=3) for v in variants]
+        responses = await asyncio.gather(*search_tasks, return_exceptions=True)
+
+        url_scores: dict[str, float] = {}
+        url_to_result: dict[str, SearchResult] = {}
+        for resp in responses:
+            if isinstance(resp, Exception):
+                continue
+            for rank, r in enumerate(resp.results):
+                if not r.url:
+                    continue
+                score = 1.0 / (60 + rank)
+                url_scores[r.url] = url_scores.get(r.url, 0.0) + score
+                if r.url not in url_to_result:
+                    url_to_result[r.url] = r
+
+        ranked = sorted(url_scores, key=lambda u: url_scores[u], reverse=True)
+
+        parts: list[str] = [f"## Search: {query}\n"]
+        for url in ranked[:6]:
+            r = url_to_result[url]
+            parts.append(f"- [{r.title}]({r.url})\n  {r.snippet}\n")
+
+        if not ranked:
+            parts.append("No results found.\n")
+            return "\n".join(parts)
+
+        fetch_urls = ranked[:max_fetch]
+        fetch_tasks = [
+            self.fetch(url, extract=True, max_length=10000)
+            for url in fetch_urls
+        ]
+        fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+        total_chars = 0
+        for url, result in zip(fetch_urls, fetch_results):
+            if isinstance(result, Exception):
+                parts.append(f"\n### Fetch failed: {url}\n{result}\n")
+                continue
+            if result.status_code >= 400:
+                parts.append(f"\n### Fetch failed: {url} (HTTP {result.status_code})\n")
+                continue
+            content = result.content
+            if total_chars + len(content) > 30000:
+                content = content[:30000 - total_chars]
+            if content:
+                total_chars += len(content)
+                title = url_to_result.get(url)
+                label = title.title if title else url
+                parts.append(f"\n### {label}\n<<<SOURCE>>>\n{content}\n<<<END_SOURCE>>>\n")
+
+        return "\n".join(parts)
+
+
+def _make_search_variants(query: str, fan_out: int) -> list[str]:
+    """Generate search query variants for fan-out.
+
+    Deterministic, no LLM. Returns up to ``fan_out`` variants.
+    """
+    if fan_out <= 1:
+        return [query]
+
+    variants = [query]
+
+    words = query.split()
+    key_terms = [w for w in words if len(w) > 3 and w.isalpha()]
+    if len(key_terms) >= 2:
+        quoted = " ".join(f'"{t}"' for t in key_terms[:3])
+        variants.append(quoted)
+    else:
+        variants.append(f'"{query}"')
+
+    domain_keywords = {
+        "c++": "site:stackoverflow.com",
+        "coroutine": "site:stackoverflow.com",
+        "proposal": "site:open-std.org",
+        "standard": "site:open-std.org",
+        "wg21": "site:open-std.org",
+        "benchmark": "site:github.com",
+        "performance": "site:github.com",
+    }
+    site_filter = ""
+    for kw, site in domain_keywords.items():
+        if kw in query.lower():
+            site_filter = site
+            break
+    if site_filter:
+        variants.append(f"{query} {site_filter}")
+    else:
+        variants.append(f"{query} C++ standard")
+
+    return variants[:fan_out]

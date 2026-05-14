@@ -67,8 +67,8 @@ calibration produced zero encounters.
 
 The pipeline writes the final `Thread` as `{pid}.agora.json` via
 `backend.write_agora_json`. Debug transcripts and per-step traces go
-to `backend.get_debug_md_path(pid, "agora")` and
-`backend.get_trace_md_path(pid, "agora")`.
+to `backend.get_debug_md_path(pid)` and
+`backend.get_trace_md_path(pid)`.
 
 ## Invariants
 

@@ -416,7 +416,7 @@ Return exactly one `CitationAuditEntry` plus zero or more `ExternalEvidence` ite
 
 - **Model:** fast
 - **Execution:** parallel (per-claim via run_task)
-- **Tools:** web_search, web_fetch
+- **Tools:** deep_search, web_fetch
 - **Reads:** claims, evidence, support_map, load_bearing_claims, external_evidence
 - **Writes:** external_evidence
 - **Condition:** at least one triggered claim after excluding claims already covered by Step 8
@@ -433,13 +433,13 @@ Parallel per-claim agents. One isolated agent per triggered claim. Each agent se
 
 ### Per-claim agent prompt
 
-Find one relevant external source for this claim. Use the claim's `question` as the primary search query.
+Use `deep_search` as the primary search tool. It searches multiple angles simultaneously and includes fetched content from top results. Only use `web_fetch` for specific URLs not found in the search results.
 
-**WHEN a relevant result is found** fetch it, extract the key passage, classify stance as `supports` or `contradicts`.
+**WHEN a relevant result is found** extract the key passage, classify stance as `supports` or `contradicts`.
 
 **WHEN no results are found** return empty.
 
-**IF your first search returns no relevant results, return empty. Do not reformulate and retry.**
+If `deep_search` returns no relevant results, return empty. Do not reformulate and retry.
 
 ### Output per claim
 

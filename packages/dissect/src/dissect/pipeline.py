@@ -40,7 +40,6 @@ from pipeline import (
     run_agent,
     run_task,
     sanitize_md,
-    write_debug_file,
 )
 from pipeline.errors import (
     PaperNotConvertedError,
@@ -78,8 +77,8 @@ from dissect.render import render_report, render_trace
 logger = logging.getLogger(__name__)
 
 _REQUEST_LIMIT_DEDUP = 50
-_REQUEST_LIMIT_PER_CLAIM = 36
-_REQUEST_LIMIT_PER_CITATION = 36
+_REQUEST_LIMIT_PER_CLAIM = 12
+_REQUEST_LIMIT_PER_CITATION = 12
 _CLASSIFICATION_CRITICAL_GAP = "critical_gap"
 
 _STEP_0_READ = "Step 0 - Read"
@@ -649,7 +648,7 @@ async def _custom_web_search(state: PipelineState, ctx: StepContext) -> None:
     if not claims_for_search:
         return
 
-    web_search_fn = ctx.tool_registry["web_search"]
+    deep_search_fn = ctx.tool_registry["deep_search"]
     web_fetch_fn = ctx.tool_registry["web_fetch"]
 
     assert ctx._current_spec is not None
@@ -673,7 +672,7 @@ async def _custom_web_search(state: PipelineState, ctx: StepContext) -> None:
                 output_type=WebSearchOutput,
                 label=f"Step 9 - Web Search (uid {claim.uid})",
                 debug_log=ctx.debug_log if ctx.debug else None,
-                tools={"web_search": web_search_fn, "web_fetch": web_fetch_fn},
+                tools={"deep_search": deep_search_fn, "web_fetch": web_fetch_fn},
                 model=resolved,
                 request_limit=_REQUEST_LIMIT_PER_CLAIM,
             )
@@ -943,6 +942,7 @@ async def dissect_paper(
         tool_reg["paper_meta"] = ps_tools.paper_meta
         tool_reg["paper_meta_latest"] = ps_tools.paper_meta_latest
         tool_reg["read_file"] = ps_tools.read_file
+        tool_reg["deep_search"] = researcher.deep_search
         tool_reg["web_search"] = researcher.web_search
         tool_reg["web_fetch"] = researcher.web_fetch
 
@@ -956,26 +956,22 @@ async def dissect_paper(
             tool_registry=tool_reg,
         )
 
-        debug_path = backend.get_debug_md_path(pid, "dissect")
+        debug_path = backend.get_debug_md_path(pid)
         if debug:
             debug_path.unlink(missing_ok=True)
 
-        try:
-            await dispatch(
-                pipeline, state, ctx,
-                stop_after=stop_after,
-                on_progress=on_progress,
-                on_step_complete=lambda spec, st: _persist_step(spec, st, ctx),
-            )
-        finally:
-            if debug and ctx.debug_log:
-                write_debug_file(debug_path, ctx.debug_log)
-            if trace or stop_after is not None:
-                trace_step = stop_after if stop_after is not None else len(pipeline) - 1
-                trace_path = backend.get_trace_md_path(pid, "dissect")
-                trace_path.write_text(
-                    render_trace(state, meta, trace_step), encoding="utf-8",
-                )
+        trace_path = backend.get_trace_md_path(pid) if (trace or stop_after is not None) else None
+        dp = debug_path if debug else None
+
+        await dispatch(
+            pipeline, state, ctx,
+            stop_after=stop_after,
+            on_progress=on_progress,
+            on_step_complete=lambda spec, st: _persist_step(spec, st, ctx),
+            trace_path=trace_path,
+            debug_path=dp,
+            render_trace_fn=lambda st, step: render_trace(st, meta, step),
+        )
 
     if stop_after is not None:
         return render_trace(state, meta, stop_after)

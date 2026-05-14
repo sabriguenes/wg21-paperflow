@@ -45,7 +45,6 @@ from pipeline import (
     load_sections,
     run_agent,
     run_task,
-    write_debug_file,
 )
 from pipeline.errors import (
     PaperNotConvertedError,
@@ -322,17 +321,17 @@ async def _pure_research(state: PipelineState, ctx: StepContext) -> None:
     """Dispatch three sub-agents in parallel and gather a ResearchSummary."""
     assert ctx._current_spec is not None
     body = ctx.sections.get(_STEP_2_RESEARCH, "")
-    web_search = ctx.tool_registry.get("web_search")
+    deep_search = ctx.tool_registry.get("deep_search")
     web_fetch = ctx.tool_registry.get("web_fetch")
 
-    if web_search is None or web_fetch is None:
+    if deep_search is None or web_fetch is None:
         logger.warning("Step 2 skipped: web tools not available; emitting empty research summary")
         state.research_summary = _empty_research_summary()
         return
 
     slot = ctx._current_spec.meta.model_slot
     model = ctx.model_slots.get(slot) or DEFAULT_MODEL_SLOTS.get(slot, slot)
-    tools = {"web_search": web_search, "web_fetch": web_fetch}
+    tools = {"deep_search": deep_search, "web_fetch": web_fetch}
     anchors_json = _json(
         [a.model_dump(mode="json") for a in (state.technical_anchors or [])]
     )
@@ -716,11 +715,11 @@ async def agora_paper(
 
     With ``debug=True``, every LLM call (top-level + every sub-agent)
     is rendered to a debug transcript at
-    ``backend.get_debug_md_path(pid, "agora")``. The file is cleared
+    ``backend.get_debug_md_path(pid)``. The file is cleared
     before dispatch so reruns do not append to stale logs.
 
     With ``trace=True``, a full per-step state dump is written to
-    ``backend.get_trace_md_path(pid, "agora")`` after dispatch
+    ``backend.get_trace_md_path(pid)`` after dispatch
     completes; the planned :class:`Thread` is still returned.
 
     With ``stop_after=N``, dispatch halts after pipeline step ``N`` and
@@ -756,6 +755,7 @@ async def agora_paper(
 
     async with WebResearcher() as researcher:
         tool_reg: dict[str, Callable[..., Any]] = {
+            "deep_search": researcher.deep_search,
             "web_search": researcher.web_search,
             "web_fetch": researcher.web_fetch,
         }
@@ -770,25 +770,21 @@ async def agora_paper(
             tool_registry=tool_reg,
         )
 
-        debug_path = backend.get_debug_md_path(pid, "agora")
+        debug_path = backend.get_debug_md_path(pid)
         if debug:
             debug_path.unlink(missing_ok=True)
 
-        try:
-            await dispatch(
-                pipeline, state, ctx,
-                stop_after=stop_after,
-                on_progress=on_progress,
-            )
-        finally:
-            if debug and ctx.debug_log:
-                write_debug_file(debug_path, ctx.debug_log)
-            if trace or stop_after is not None:
-                trace_step = stop_after if stop_after is not None else len(pipeline) - 1
-                trace_path = backend.get_trace_md_path(pid, "agora")
-                trace_path.write_text(
-                    render_trace(state, trace_step), encoding="utf-8",
-                )
+        trace_path = backend.get_trace_md_path(pid) if (trace or stop_after is not None) else None
+        dp = debug_path if debug else None
+
+        await dispatch(
+            pipeline, state, ctx,
+            stop_after=stop_after,
+            on_progress=on_progress,
+            trace_path=trace_path,
+            debug_path=dp,
+            render_trace_fn=lambda st, step: render_trace(st, step),
+        )
 
     if stop_after is not None:
         return render_trace(state, stop_after)
