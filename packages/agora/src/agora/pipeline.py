@@ -743,6 +743,30 @@ async def agora_paper(
 
     pipeline = build_pipeline(secs, _HOOKS)
 
+    # Preflight prerequisite checks before constructing WebResearcher,
+    # which requires BRAVE_API_KEY at __init__ time. Step 0 re-runs these
+    # checks during dispatch; doing them here surfaces the actionable
+    # "missing prerequisite" error before any environment dependency.
+    try:
+        meta = await asyncio.to_thread(backend.get_meta, pid)
+    except MissingMetaError as exc:
+        raise PaperNotFoundError(
+            f"Paper '{pid}' not found in paperstore. "
+            f"Run 'paperflow mailing <year>' to index it."
+        ) from exc
+    try:
+        await asyncio.to_thread(backend.get_paper_md, pid)
+    except MissingPaperMdError as exc:
+        raise PaperNotConvertedError(
+            f"Paper '{pid}' has no converted markdown. "
+            f"Run 'paperflow convert {pid}' first."
+        ) from exc
+    if not meta.dissect_path:
+        raise PaperNotDissectedError(
+            f"Paper '{pid}' has no dissect output. "
+            f"Run 'paperflow dissect {pid}' first."
+        )
+
     state = PipelineState()
 
     # Clear any stale agora JSON so a crash partway through does not
