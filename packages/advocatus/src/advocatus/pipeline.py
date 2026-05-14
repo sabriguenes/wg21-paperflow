@@ -53,7 +53,6 @@ from advocatus.models import (
     ArticulusExam,
     CandidateCharge,
     ChargesOutput,
-    DefensorChallenge,
     DefensorChargeOutput,
     DossierEntry,
     ExamenOutput,
