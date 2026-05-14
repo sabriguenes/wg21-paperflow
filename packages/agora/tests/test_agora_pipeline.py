@@ -15,7 +15,7 @@ import pytest
 from paperstore import SqliteBackend
 
 from agora import agora_paper
-from agora.errors import (
+from pipeline.errors import (
     PaperNotConvertedError,
     PaperNotDissectedError,
     PaperNotFoundError,

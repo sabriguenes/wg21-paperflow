@@ -15,7 +15,7 @@ import pytest
 from paperstore import SqliteBackend, SourceLoc
 
 from advocatus import advocatus_paper
-from advocatus.errors import (
+from pipeline.errors import (
     PaperNotConvertedError,
     PaperNotDissectedError,
     PaperNotFoundError,
@@ -80,14 +80,14 @@ def test_step_0_sine_causa_state_shape():
 
 def test_load_sections_caches_result():
     from advocatus.pipeline import load_sections
-    s1 = load_sections()
-    s2 = load_sections()
+    s1 = load_sections("advocatus", "advocatus.md")
+    s2 = load_sections("advocatus", "advocatus.md")
     assert s1 is s2  # @functools.cache
 
 
 def test_step_names_match_advocatus_md_to_hooks():
     from advocatus.pipeline import _HOOKS, load_sections
-    secs = load_sections()
+    secs = load_sections("advocatus", "advocatus.md")
     step_keys = {k for k in secs if k.startswith("Step ")}
     assert step_keys == set(_HOOKS), (
         f"Mismatch between advocatus.md and _HOOKS:\n"
@@ -122,7 +122,8 @@ def test_pure_load_reads_all_paperrow_fields_we_care_about(tmp_path: Path):
     field is actually ``target_group``).
     """
     from advocatus.models import PipelineState
-    from advocatus.pipeline import StepContext, _pure_load
+    from pipeline import StepContext
+    from advocatus.pipeline import _pure_load
 
     backend = SqliteBackend(tmp_path)
     backend.upsert_year("2026", [{
@@ -150,21 +151,21 @@ def test_pure_load_reads_all_paperrow_fields_we_care_about(tmp_path: Path):
 
 
 def test_step_context_initializes_debug_log_when_debug_true():
-    from advocatus.pipeline import StepContext
+    from pipeline import StepContext
     ctx = StepContext(sections={}, model_slots={}, debug=True)
     assert ctx.debug_log == []
 
 
 def test_step_context_debug_log_stays_none_when_debug_false():
-    from advocatus.pipeline import StepContext
+    from pipeline import StepContext
     ctx = StepContext(sections={}, model_slots={}, debug=False)
     assert ctx.debug_log is None
 
 
 def test_dispatch_stop_after_halts_after_step_n():
     """_dispatch must stop after pipeline step N (inclusive)."""
-    from advocatus.pipeline import StepContext, _dispatch
-    from advocatus.prompt import StepHooks, StepMeta, StepSpec
+    from pipeline import StepContext, dispatch
+    from pipeline import StepHooks, StepMeta, StepSpec
 
     visited: list[int] = []
 
@@ -177,19 +178,19 @@ def test_dispatch_stop_after_halts_after_step_n():
         async def _pure(state, ctx):
             visited.append(n)
 
-        return StepSpec(meta=meta, hooks=StepHooks(pure=_pure))
+        return StepSpec(meta=meta, hooks=StepHooks(custom=_pure))
 
     pipeline = [_spec(i) for i in range(5)]
     state = PipelineState()
     ctx = StepContext(sections={}, model_slots={})
 
-    asyncio.run(_dispatch(pipeline, state, ctx, stop_after=2))
+    asyncio.run(dispatch(pipeline, state, ctx, stop_after=2))
     assert visited == [0, 1, 2]
 
 
 def test_run_task_appends_to_debug_log_when_provided():
     """run_task must call render_debug_md and append to debug_log."""
-    import advocatus.pipeline as pmod
+    import pipeline.tasks as pmod
 
     log: list[str] = []
     captured: list = []

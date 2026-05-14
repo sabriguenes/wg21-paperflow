@@ -19,19 +19,18 @@ import pytest
 from paperstore.errors import MissingMetaError, MissingPaperMdError
 from paperstore.testing import store  # noqa: F401
 
-from dissect.errors import PaperNotFoundError, PaperNotConvertedError
+from pipeline import StepContext, load_sections
+from pipeline.errors import PaperNotFoundError, PaperNotConvertedError
 from dissect.pipeline import (
     _known_paper_urls,
-    _pure_read,
-    _pure_report,
-    _pure_verify_citations,
+    _custom_read,
+    _custom_report,
+    _custom_verify_citations,
     _guard_web_search,
     _guard_resolve,
     _guard_verify_citations,
     _guard_caput_causae,
-    load_sections,
     dissect_paper,
-    StepContext,
 )
 from dissect.models import (
     CaputCausae,
@@ -45,7 +44,7 @@ from dissect.models import (
     SourceLoc,
     SupportLink,
 )
-from dissect.prompt import StepHooks, StepMeta, StepSpec
+from pipeline import StepHooks, StepMeta, StepSpec
 
 
 def test_paper_not_found_raises_specific_error(store):  # noqa: F811
@@ -79,7 +78,7 @@ def test_load_paper_success(store):  # noqa: F811
 
 
 def test_load_sections_returns_system_prompt():
-    secs = load_sections()
+    secs = load_sections("dissect", "dissect.md")
     assert "System Prompt" in secs
 
 
@@ -97,7 +96,7 @@ def test_step0_read_chunks_and_citations():
     import asyncio
     state = PipelineState(paper_source="# Title\n\nSee P2300R10 for details.\n")
     ctx = StepContext(sections={}, model_slots={})
-    asyncio.run(_pure_read(state, ctx))
+    asyncio.run(_custom_read(state, ctx))
 
     assert state.chunks is not None
     assert len(state.chunks) == 1
@@ -122,7 +121,7 @@ def test_step13_report_renders_unsupported():
         ],
     )
     ctx = StepContext(sections={}, model_slots={}, pid="P0001R0")
-    asyncio.run(_pure_report(state, ctx))
+    asyncio.run(_custom_report(state, ctx))
 
     assert state.report is not None
     assert "How fast is X?" in state.report
@@ -339,7 +338,7 @@ def test_pure_verify_citations_injects_known_url_into_user_message(
     )
     ctx._current_spec = _verify_citations_spec()
 
-    asyncio.run(_pure_verify_citations(state, ctx))
+    asyncio.run(_custom_verify_citations(state, ctx))
 
     by_pid = {msg.split("Paper: ", 1)[1].split(" ", 1)[0]: msg for msg in captured}
     assert "## Known URL" in by_pid["P3175R3"]

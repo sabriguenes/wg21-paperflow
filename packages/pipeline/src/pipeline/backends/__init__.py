@@ -5,12 +5,12 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Backend registry for web_tools."""
+"""Backend registry for pipeline."""
 
 from __future__ import annotations
 
-from web_tools.session import SearchBackend
-from web_tools.backends.brave import BraveBackend
+from pipeline.session import SearchBackend
+from pipeline.backends.brave import BraveBackend
 
 
 def get_default_backend() -> SearchBackend:

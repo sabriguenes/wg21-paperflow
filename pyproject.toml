@@ -9,7 +9,7 @@ dependencies = [
     "paperstore",
     "mailing",
     "tomd",
-    "web_tools",
+    "pipeline",
     "dissect",
     "advocatus",
     "agora",
@@ -30,7 +30,7 @@ members = ["packages/*"]
 paperstore   = {workspace = true}
 mailing      = {workspace = true}
 tomd         = {workspace = true}
-web_tools    = {workspace = true}
+pipeline     = {workspace = true}
 dissect      = {workspace = true}
 advocatus    = {workspace = true}
 agora        = {workspace = true}
@@ -43,7 +43,7 @@ testpaths = [
     "packages/paperstore/tests",
     "packages/mailing/tests",
     "packages/tomd/tests",
-    "packages/web_tools/tests",
+    "packages/pipeline/tests",
     "packages/dissect/tests",
     "packages/advocatus/tests",
     "packages/agora/tests",

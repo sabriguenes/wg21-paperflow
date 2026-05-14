@@ -17,7 +17,7 @@ special-case non-TTY environments.
 from __future__ import annotations
 
 from contextlib import nullcontext
-from typing import Any, Callable, ContextManager
+from typing import Any, ContextManager
 
 from paperstore.progress import ProgressCallback, ProgressEvent
 
@@ -68,50 +68,3 @@ def make_progress_handler(
         progress.update(task_id, completed=ev.step, description=ev.name)
 
     return progress, handler
-
-
-def progress_callbacks(
-    label: str,
-) -> tuple[ContextManager[Any], Callable[[int], None] | None, Callable[[dict], None] | None]:
-    """Legacy helper — returns ``(ctx, on_total, on_progress)`` for batch jobs.
-
-    Use as::
-
-        ctx, on_total, on_progress = progress_callbacks("Converting")
-        with ctx:
-            asyncio.run(run_convert(..., on_total=on_total, on_progress=on_progress))
-    """
-    from rich.console import Console
-    from rich.progress import (
-        BarColumn,
-        MofNCompleteColumn,
-        Progress,
-        SpinnerColumn,
-        TaskProgressColumn,
-        TextColumn,
-        TimeElapsedColumn,
-    )
-
-    console = Console(stderr=True)
-    if not console.is_terminal:
-        return nullcontext(), None, None
-
-    progress = Progress(
-        SpinnerColumn(style="green"),
-        TextColumn("[bold]{task.description}"),
-        BarColumn(complete_style="green", finished_style="bold green"),
-        TaskProgressColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        console=console,
-    )
-    task_id = progress.add_task(label, total=None, start=False)
-
-    def on_total(n: int) -> None:
-        progress.update(task_id, total=n)
-        progress.start_task(task_id)
-
-    def on_progress(_result: dict) -> None:
-        progress.advance(task_id)
-
-    return progress, on_total, on_progress

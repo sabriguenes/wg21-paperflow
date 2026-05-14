@@ -57,15 +57,15 @@ def test_command_writes_relatio_via_backend(backend: SqliteBackend, capsys):
     assert "Relatio written to" in captured.out
 
 
-def test_command_handles_advocatus_error(backend: SqliteBackend, capsys):
-    """When advocatus_paper raises, CLI exits 1 with the error message."""
-    from advocatus.errors import PaperNotDissectedError
+def test_command_handles_pipeline_error(backend: SqliteBackend, capsys):
+    """When advocatus_paper raises a non-prereq PipelineError, CLI exits 1."""
+    from pipeline.errors import PipelineError
     from cli.advocatus import command
 
     backend.upsert_year("2026", [{"paper_id": "P1234R0"}])
 
     async def fake_advocatus_paper(pid, backend, **kwargs):
-        raise PaperNotDissectedError(f"no dissect for {pid}")
+        raise PipelineError(f"something broke for {pid}")
 
     with patch("advocatus.advocatus_paper", new=fake_advocatus_paper):
         rc = command(_stub_args("P1234R0"), backend)
@@ -76,7 +76,7 @@ def test_command_handles_advocatus_error(backend: SqliteBackend, capsys):
 
 
 def test_command_batch_dispatch(backend: SqliteBackend, capsys):
-    """Year-month target routes to advocatus_since."""
+    """Year-month target routes to advocatus_since after run_full."""
     from cli.advocatus import command
 
     captured_months: list[str] = []
@@ -88,11 +88,17 @@ def test_command_batch_dispatch(backend: SqliteBackend, capsys):
             {"paper_id": "P2", "status": "error", "error": "boom"},
         ]
 
-    with patch("advocatus.advocatus_since", new=fake_advocatus_since):
+    async def fake_run_full(targets, backend, **kwargs):
+        return {}
+
+    with (
+        patch("advocatus.advocatus_since", new=fake_advocatus_since),
+        patch("cli.jobs.run_full", new=fake_run_full),
+    ):
         rc = command(_stub_args("2026-01"), backend)
 
     assert captured_months == ["2026-01"]
-    assert rc == 1  # one paper failed
+    assert rc == 1
     captured = capsys.readouterr()
     assert "1 succeeded, 1 failed" in captured.out
     assert "FAILED: P2" in captured.err

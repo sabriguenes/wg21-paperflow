@@ -5,13 +5,13 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Error hierarchy for the agora pipeline.
+"""Error hierarchy for pipeline execution.
 
 Three categories, each with a different response:
 
-- **User-fixable**: edit ``agora.md`` or run a paperflow command.
+- **User-fixable**: edit the prompt file or run a paperflow command.
   ``PromptFileError`` and its subclasses carry the step name and
-  expected format. ``PaperNotFoundError`` and ``PaperNotDissectedError``
+  expected format. ``PaperNotFoundError`` and ``PaperNotConvertedError``
   carry the paperflow command to run.
 - **Transient**: retry. ``TransientStepError`` wraps API timeouts,
   rate limits, and network errors.
@@ -22,37 +22,33 @@ Three categories, each with a different response:
 from __future__ import annotations
 
 
-class AgoraError(Exception):
-    """Base for all agora pipeline errors."""
+class PipelineError(Exception):
+    """Base for all pipeline errors."""
 
 
-# -- User-fixable: edit agora.md or run a paperflow command ------------------
-
-
-class PaperNotFoundError(AgoraError):
+class PaperNotFoundError(PipelineError):
     """Paper not in paperstore.
 
     Message includes the paperflow command to run.
     """
 
 
-class PaperNotConvertedError(AgoraError):
+class PaperNotConvertedError(PipelineError):
     """Paper has no converted markdown.
 
-    Message includes the paperflow command to run.
+    Message includes the paperflow convert command.
     """
 
 
-class PaperNotDissectedError(AgoraError):
-    """Paper has not been dissected.
+class PaperNotDissectedError(PipelineError):
+    """Paper has no dissect output.
 
-    The agora pipeline consumes dissect data; the paper must be
-    dissected first. Message includes the paperflow command to run.
+    Message includes the paperflow dissect command.
     """
 
 
-class PromptFileError(AgoraError):
-    """``agora.md`` has a structural problem the user must fix.
+class PromptFileError(PipelineError):
+    """The prompt file has a structural problem the user must fix.
 
     Every subclass carries the step name (if applicable) and a
     description of the expected format.
@@ -68,16 +64,13 @@ class MissingMetadataError(PromptFileError):
 
 
 class HookMismatchError(PromptFileError):
-    """A step in ``agora.md`` has no registered Python hook,
+    """A step in the prompt file has no registered Python hook,
     a hook is registered for a step that does not exist,
     or a declared tool has no matching callable in the registry.
     """
 
 
-# -- Runtime: pipeline bug or external failure -------------------------------
-
-
-class StepError(AgoraError):
+class StepError(PipelineError):
     """A step failed during execution.
 
     Wraps the cause with step index and name for diagnostics.

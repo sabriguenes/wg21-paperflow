@@ -17,7 +17,7 @@ import time
 
 import httpx
 
-from web_tools.session import SearchBackend, SearchResponse, SearchResult
+from pipeline.session import SearchBackend, SearchResponse, SearchResult
 
 logger = logging.getLogger(__name__)
 

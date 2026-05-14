@@ -9,13 +9,13 @@
 
 from __future__ import annotations
 
-from agora.errors import (
-    AgoraError,
+from pipeline.errors import (
     HookMismatchError,
     MissingMetadataError,
     PaperNotConvertedError,
     PaperNotDissectedError,
     PaperNotFoundError,
+    PipelineError,
     PromptFileError,
     StepError,
     TransientStepError,
@@ -26,7 +26,7 @@ from agora.pipeline import agora_paper, agora_since
 __all__ = [
     "agora_paper",
     "agora_since",
-    "AgoraError",
+    "PipelineError",
     "PaperNotFoundError",
     "PaperNotConvertedError",
     "PaperNotDissectedError",

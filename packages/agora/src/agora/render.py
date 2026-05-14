@@ -23,34 +23,11 @@ here. Presentation is the Django module's responsibility downstream.
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
+from pipeline import sanitize_md
+
 from agora.models import PipelineState
-
-_CODE_SPAN_RE = re.compile(r'``.+?``|`[^`]+`')
-
-
-def _escape_md(text: str) -> str:
-    """Escape characters that would break markdown rendering in prose."""
-    text = text.replace('<', r'\<').replace('>', r'\>')
-    text = text.replace('|', r'\|')
-    return text
-
-
-def _sanitize(text: str) -> str:
-    """Escape prose while preserving inline code spans."""
-    segments: list[str] = []
-    last = 0
-    for m in _CODE_SPAN_RE.finditer(text):
-        if m.start() > last:
-            segments.append(_escape_md(text[last:m.start()]))
-        segments.append(m.group())
-        last = m.end()
-    if last < len(text):
-        segments.append(_escape_md(text[last:]))
-    return ''.join(segments)
-
 
 # -- Debug renderer ----------------------------------------------------------
 
@@ -135,7 +112,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
         )
         if state.dissect_caput_causae:
             lines.append(
-                f"- caput causae: {_sanitize(state.dissect_caput_causae)}"
+                f"- caput causae: {sanitize_md(state.dissect_caput_causae)}"
             )
         if state.prior_revision:
             lines.append(f"- prior revision: {state.prior_revision}")
@@ -159,12 +136,12 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
             loc_info = f" (line {a.claim_loc.line})" if a.claim_loc else ""
             lines.append(
                 f'  - [{a.kind}] **{a.id}**{loc_info}: '
-                f'{_sanitize(a.summary)}'
+                f'{sanitize_md(a.summary)}'
             )
         if len(anchors) > 20:
             lines.append(f"  - (... {len(anchors) - 20} more)")
         for t in tensions[:10]:
-            lines.append(f"  - tension **{t.id}**: {_sanitize(t.description)}")
+            lines.append(f"  - tension **{t.id}**: {sanitize_md(t.description)}")
         lines.append("")
 
     if stop_step >= 2:
@@ -183,7 +160,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
                     f"- heat={rep.heat_signal}, interest={rep.interest_signal}, "
                     f"sources={len(rep.sources)}\n"
                 )
-                lines.append(f"{_sanitize(rep.findings)}\n")
+                lines.append(f"{sanitize_md(rep.findings)}\n")
 
     if stop_step >= 3:
         lines.append("## 3. Calibrate\n")
@@ -204,7 +181,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
         lines.append("## 4. Submission\n")
         if state.submission_title:
             lines.append(
-                f"**Title:** {_sanitize(state.submission_title)}\n"
+                f"**Title:** {sanitize_md(state.submission_title)}\n"
             )
             link = state.submission_link or "-"
             lines.append(f"**Link:** {link}\n")
@@ -213,7 +190,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
             if state.submission_body:
                 body_preview = state.submission_body.strip().splitlines()[:8]
                 for ln in body_preview:
-                    lines.append(f"> {_sanitize(ln)}")
+                    lines.append(f"> {sanitize_md(ln)}")
                 lines.append("")
         else:
             lines.append("- (no submission)\n")
@@ -243,7 +220,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
                 lens = f" lens={r.domain_lens}" if r.domain_lens is not None else ""
                 lines.append(
                     f"  - **{r.slot_id}** (depth {r.depth}, {r.role}{anchor}{lens}) "
-                    f"-> {_sanitize(r.brief)}"
+                    f"-> {sanitize_md(r.brief)}"
                 )
             if len(replies) > 25:
                 lines.append(f"  - (... {len(replies) - 25} more)")
@@ -259,9 +236,9 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
             for e in encounters:
                 lines.append(
                     f"### {e.encounter_id} ({e.resolution})\n"
-                    f"- tension: {_sanitize(e.design_tension)}\n"
-                    f"- position A: {_sanitize(e.position_a)}\n"
-                    f"- position B: {_sanitize(e.position_b)}\n"
+                    f"- tension: {sanitize_md(e.design_tension)}\n"
+                    f"- position A: {sanitize_md(e.position_a)}\n"
+                    f"- position B: {sanitize_md(e.position_b)}\n"
                     f"- slots: {', '.join(e.slot_ids)}\n"
                 )
         else:

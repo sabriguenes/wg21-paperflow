@@ -7,7 +7,7 @@
 
 """Integration tests against real backends. Run manually, not in CI.
 
-    uv run pytest packages/web_tools/tests/test_integration.py -v -m network
+    uv run pytest packages/pipeline/tests/test_integration.py -v -m network
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import os
 
 import pytest
 
-from web_tools import WebResearcher
+from pipeline import WebResearcher
 
 pytestmark = pytest.mark.network
 
@@ -50,7 +50,7 @@ async def test_brave_real_web_search_json():
 
 @pytest.mark.anyio
 async def test_real_fetch():
-    from web_tools.session import SearchBackend, SearchResponse
+    from pipeline.session import SearchBackend, SearchResponse
 
     class NoOpBackend(SearchBackend):
         name = "noop"

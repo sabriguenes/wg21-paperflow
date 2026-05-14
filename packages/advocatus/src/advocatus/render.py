@@ -19,8 +19,9 @@ This module also renders the diagnostic outputs:
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
+
+from pipeline import sanitize_md
 
 from advocatus.models import (
     PipelineState,
@@ -59,30 +60,6 @@ _DAMAGE_LABELS = {
     "capital_cost": "costs political capital",
 }
 
-_CODE_SPAN_RE = re.compile(r'``.+?``|`[^`]+`')
-
-
-def _escape_md(text: str) -> str:
-    """Escape characters that would break markdown rendering in prose."""
-    text = text.replace('<', r'\<').replace('>', r'\>')
-    text = text.replace('|', r'\|')
-    return text
-
-
-def _sanitize(text: str) -> str:
-    """Escape prose while preserving inline code spans."""
-    segments: list[str] = []
-    last = 0
-    for m in _CODE_SPAN_RE.finditer(text):
-        if m.start() > last:
-            segments.append(_escape_md(text[last:m.start()]))
-        segments.append(m.group())
-        last = m.end()
-    if last < len(text):
-        segments.append(_escape_md(text[last:]))
-    return ''.join(segments)
-
-
 def _seal_label(seal: Seal) -> str:
     return _SEAL_HEADERS.get(seal, seal)
 
@@ -99,7 +76,7 @@ def render_relatio(state: PipelineState) -> str:
     confidence = state.confidence
     lines.append(f"## *{_seal_label(seal)}*\n")
     if assessment:
-        lines.append(f"{_sanitize(assessment)}\n")
+        lines.append(f"{sanitize_md(assessment)}\n")
     if confidence is not None:
         lines.append(f"**Confidence:** {confidence:.2f}\n")
 
@@ -119,12 +96,12 @@ def render_relatio(state: PipelineState) -> str:
             lines.append(
                 f"### {i}. [{obj.severity.upper()}] uid {obj.articulus_uid}\n"
             )
-            lines.append(f"> {_sanitize(charge.quoted_text)}\n")
-            lines.append(f"**Gravamen.** {_sanitize(charge.gravamen)}\n")
+            lines.append(f"> {sanitize_md(charge.quoted_text)}\n")
+            lines.append(f"**Gravamen.** {sanitize_md(charge.gravamen)}\n")
             lines.append(
-                f"**Motivatio.** {_sanitize(obj.motivatio.adversary)} "
+                f"**Motivatio.** {sanitize_md(obj.motivatio.adversary)} "
                 f"would raise this in {forum}; it {damage}. "
-                f"{_sanitize(obj.motivatio.explanation)}\n"
+                f"{sanitize_md(obj.motivatio.explanation)}\n"
             )
 
     # 3. Probationes
@@ -136,7 +113,7 @@ def render_relatio(state: PipelineState) -> str:
             lines.append(
                 f"- **uid {p.articulus_uid}** - "
                 f"the *{challenge}* challenge prevailed. "
-                f"{_sanitize(p.explanation)}"
+                f"{sanitize_md(p.explanation)}"
             )
         lines.append("")
 
@@ -148,7 +125,7 @@ def render_relatio(state: PipelineState) -> str:
         lines.append("|---|---|---|---|")
         for entry in tabula:
             resolved = "Yes" if entry.resolved else "No"
-            disc = _sanitize(entry.discrepancy) if entry.discrepancy else "-"
+            disc = sanitize_md(entry.discrepancy) if entry.discrepancy else "-"
             lines.append(
                 f"| {entry.paper_id} | {resolved} | {entry.quote_match} | {disc} |"
             )
@@ -165,7 +142,7 @@ def render_relatio(state: PipelineState) -> str:
         lines.append("<details><summary>Editorial observations</summary>\n")
         for n in notae:
             uid_part = f" (uid {n.uid})" if n.uid is not None else ""
-            lines.append(f"- {_sanitize(n.text)}{uid_part}")
+            lines.append(f"- {sanitize_md(n.text)}{uid_part}")
         lines.append("\n</details>\n")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -286,24 +263,24 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
         lines.append(f"- {len(cit_audit)} citation audit entries")
         lines.append(f"- {len(ext_evidence)} external evidence items")
         if state.dissect_caput_causae:
-            lines.append(f"- Caput causae (from dissect): {_sanitize(state.dissect_caput_causae)}")
+            lines.append(f"- Caput causae (from dissect): {sanitize_md(state.dissect_caput_causae)}")
         lines.append("")
 
     if stop_step >= 1:
         lines.append("## 1. Read Scripta\n")
         if state.central_thesis_recap:
-            lines.append(f"**Thesis recap:** {_sanitize(state.central_thesis_recap)}\n")
+            lines.append(f"**Thesis recap:** {sanitize_md(state.central_thesis_recap)}\n")
         articuli = state.articuli or []
         boundaries = state.boundaries or []
         lines.append(f"{len(articuli)} articuli, {len(boundaries)} boundaries:\n")
         for a in articuli[:30]:
-            lines.append(f'- [line {a.loc.line}] [{a.kind}] "{_sanitize(a.text)}"')
+            lines.append(f'- [line {a.loc.line}] [{a.kind}] "{sanitize_md(a.text)}"')
         if len(articuli) > 30:
             lines.append(f"  (... {len(articuli) - 30} more)")
         if boundaries:
             lines.append("\n### Boundaries\n")
             for b in boundaries:
-                lines.append(f'- [line {b.loc.line}] [{b.kind}] "{_sanitize(b.text)}"')
+                lines.append(f'- [line {b.loc.line}] [{b.kind}] "{sanitize_md(b.text)}"')
         lines.append("")
 
     if stop_step >= 2:
@@ -313,7 +290,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
         lines.append(f"{len(public)} public-record entries:\n")
         for d in public[:10]:
             url = f" ({d.source_url})" if d.source_url else ""
-            lines.append(f'- "{_sanitize(d.text[:140])}"{url}')
+            lines.append(f'- "{sanitize_md(d.text[:140])}"{url}')
         lines.append("")
 
     if stop_step >= 3:
@@ -321,7 +298,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
         stakeholders = state.stakeholders or []
         lines.append(f"{len(stakeholders)} stakeholders:\n")
         for s in stakeholders:
-            lines.append(f"- [{s.stance}] **{_sanitize(s.name)}**: {_sanitize(s.position)}")
+            lines.append(f"- [{s.stance}] **{sanitize_md(s.name)}**: {sanitize_md(s.position)}")
         lines.append("")
 
     if stop_step >= 4:
@@ -353,7 +330,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
         lines.append(f"{len(charges)} candidate charges:\n")
         for c in charges[:30]:
             lines.append(
-                f'- [uid {c.articulus_uid}] [{c.failed_test}] {_sanitize(c.gravamen)}'
+                f'- [uid {c.articulus_uid}] [{c.failed_test}] {sanitize_md(c.gravamen)}'
             )
         lines.append("")
 
@@ -392,7 +369,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
             damage = _DAMAGE_LABELS.get(obj.motivatio.damage, obj.motivatio.damage)
             lines.append(
                 f"- [uid {obj.articulus_uid}] [{obj.severity.upper()}] "
-                f"adversary: {_sanitize(obj.motivatio.adversary)}; forum: {forum}; "
+                f"adversary: {sanitize_md(obj.motivatio.adversary)}; forum: {forum}; "
                 f"damage: {damage}"
             )
         lines.append("")
@@ -403,7 +380,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
             lines.append(f"**Seal:** {state.seal}")
             lines.append(f"**Central thesis survives:** {state.central_thesis_survives}")
             if state.one_sentence_assessment:
-                lines.append(f"**Assessment:** {_sanitize(state.one_sentence_assessment)}")
+                lines.append(f"**Assessment:** {sanitize_md(state.one_sentence_assessment)}")
             if state.confidence is not None:
                 lines.append(f"**Confidence:** {state.confidence:.2f}")
         else:

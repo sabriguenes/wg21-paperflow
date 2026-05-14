@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from dissect.parse import sections
+from pipeline import sections
 
 
 def test_basic_h2_split():

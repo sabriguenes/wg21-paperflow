@@ -7,7 +7,7 @@ license = {text = "BSL-1.0"}
 authors = [{name = "Vinnie Falco", email = "vinnie.falco@gmail.com"}]
 dependencies = [
     "paperstore",
-    "web_tools",
+    "pipeline",
     "pydantic-ai",
     "pydantic>=2.0",
 ]

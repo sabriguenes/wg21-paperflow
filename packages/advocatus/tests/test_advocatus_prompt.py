@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import pytest
 
-from advocatus.errors import HookMismatchError, MissingMetadataError
-from advocatus.parse import sections
+from pipeline import HookMismatchError, MissingMetadataError
+from pipeline import sections
 from advocatus.pipeline import _HOOKS, load_sections
-from advocatus.prompt import StepHooks, build_pipeline, parse_step_meta
+from pipeline import StepHooks, build_pipeline, parse_step_meta
 
 
 def test_load_sections_returns_all_step_headers():
-    secs = load_sections()
+    secs = load_sections("advocatus", "advocatus.md")
     step_keys = sorted(k for k in secs if k.startswith("Step "))
     assert len(step_keys) == 11
     assert step_keys[0] == "Step 0 - Load"
@@ -27,13 +27,13 @@ def test_load_sections_returns_all_step_headers():
 
 
 def test_load_sections_has_system_prompt():
-    secs = load_sections()
+    secs = load_sections("advocatus", "advocatus.md")
     assert "System Prompt" in secs
     assert secs["System Prompt"].strip()
 
 
 def test_build_pipeline_returns_11_specs_in_order():
-    secs = load_sections()
+    secs = load_sections("advocatus", "advocatus.md")
     specs = build_pipeline(secs, _HOOKS)
     assert len(specs) == 11
     assert [s.meta.number for s in specs] == list(range(11))
@@ -109,7 +109,7 @@ def test_steps_that_spawn_subagents_declare_a_real_model_slot():
     """Steps whose pure hook calls run_task internally must declare a
     real model slot (not 'none'), otherwise the sub-agent dispatch
     fails at runtime with 'Unknown model: none'."""
-    secs = load_sections()
+    secs = load_sections("advocatus", "advocatus.md")
     specs = build_pipeline(secs, _HOOKS)
     by_name = {s.meta.name: s for s in specs}
     subagent_steps = (

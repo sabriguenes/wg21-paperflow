@@ -7,21 +7,19 @@
 
 """Rendering functions for pipeline output.
 
-Produces three output formats from ``PipelineState``:
+Produces two output formats from ``PipelineState``:
 
 - ``render_report`` -- the final dissection markdown (unsupported/supported
   claims + external resources).
 - ``render_trace`` -- diagnostic trace of pipeline state up to a given step.
-- ``render_debug_md`` -- full LLM interaction transcript for debugging.
 """
 
 from __future__ import annotations
 
-import json
-import re
 from typing import Any
 
 from paperstore.backend import PaperRow
+from pipeline import sanitize_md
 
 from dissect.models import PipelineState
 
@@ -29,119 +27,6 @@ _STATUS_DIRECTLY = "directly_supported"
 _STATUS_TRANSITIVELY = "transitively_supported"
 _STATUS_UNSUPPORTED = "unsupported"
 _SUPPORTED_STATUSES = (_STATUS_DIRECTLY, _STATUS_TRANSITIVELY)
-
-_CODE_SPAN_RE = re.compile(r'``.+?``|`[^`]+`')
-
-
-def render_debug_md(result: Any, step_name: str) -> str:
-    """Render an agent run result as a markdown debug section."""
-    parts: list[str] = [f"# {step_name}\n"]
-    for msg in result.all_messages():
-        kind = msg.kind
-        if kind == "request":
-            for part in msg.parts:
-                if hasattr(part, "content") and part.part_kind == "system-prompt":
-                    parts.append(f"## System Prompt\n\n{part.content}\n")
-                elif hasattr(part, "content") and part.part_kind == "user-prompt":
-                    parts.append(f"## User Message\n\n{part.content}\n")
-                elif part.part_kind == "tool-return":
-                    tool_name = getattr(part, "tool_name", "")
-                    content = getattr(part, "content", "")
-                    parts.append(
-                        f"### Tool Return: {tool_name}\n\n{content}\n"
-                    )
-        elif kind == "response":
-            for part in msg.parts:
-                if part.part_kind == "text":
-                    parts.append(f"## Model Response\n\n{part.content}\n")
-                elif part.part_kind == "tool-call":
-                    tool_name = getattr(part, "tool_name", "")
-                    args = getattr(part, "args", "")
-                    args_str = json.dumps(args) if not isinstance(args, str) else args
-                    parts.append(
-                        f"### Tool Call: {tool_name}\n\n```json\n{args_str}\n```\n"
-                    )
-    if hasattr(result, "output"):
-        output = result.output
-        if hasattr(output, "model_dump"):
-            output_str = json.dumps(
-                output.model_dump(), indent=2, ensure_ascii=False,
-            )
-        else:
-            output_str = str(output)
-        parts.append(f"## Final Output\n\n```json\n{output_str}\n```\n")
-    return "\n".join(parts)
-
-
-def _escape_md_chars(text: str) -> str:
-    """Escape markdown-sensitive characters in prose text."""
-    text = text.replace('<', r'\<').replace('>', r'\>')
-    text = text.replace('|', r'\|')
-    text = re.sub(r'^(\s*)(#)', r'\1\\\2', text, flags=re.MULTILINE)
-    for double in ('**', '__'):
-        if text.count(double) % 2 != 0:
-            text = text.replace(double, '\\' + double)
-    for single in ('*', '_'):
-        double = single * 2
-        esc_double = '\\' + double
-        temp = text.replace(esc_double, '\x00\x00\x00')
-        temp = temp.replace(double, '\x00\x00')
-        temp = temp.replace('\\' + single, '\x00\x00')
-        count = temp.count(single)
-        if count % 2 != 0:
-            parts: list[str] = []
-            i = 0
-            while i < len(text):
-                if text[i:i + 3] == esc_double:
-                    parts.append(text[i:i + 3])
-                    i += 3
-                elif text[i:i + 2] == double:
-                    parts.append(text[i:i + 2])
-                    i += 2
-                elif text[i:i + 2] == '\\' + single:
-                    parts.append(text[i:i + 2])
-                    i += 2
-                elif text[i] == single:
-                    parts.append('\\' + single)
-                    i += 1
-                else:
-                    parts.append(text[i])
-                    i += 1
-            text = ''.join(parts)
-    return text
-
-
-def _sanitize_inline(text: str) -> str:
-    """Escape prose segments while preserving inline code spans."""
-    segments: list[str] = []
-    last = 0
-    for m in _CODE_SPAN_RE.finditer(text):
-        if m.start() > last:
-            segments.append(_escape_md_chars(text[last:m.start()]))
-        segments.append(m.group())
-        last = m.end()
-    if last < len(text):
-        segments.append(_escape_md_chars(text[last:]))
-    return ''.join(segments)
-
-
-def sanitize_md(text: str) -> str:
-    """Sanitize text for safe markdown embedding.
-
-    Splits on balanced inline code spans and triple-backtick fences.
-    Code spans pass through unchanged.  Prose segments get ``<``, ``>``,
-    ``|``, leading ``#``, and unbalanced emphasis markers escaped.
-    """
-    if '```' in text:
-        parts = text.split('```')
-        result = _sanitize_inline(parts[0].rstrip())
-        for i in range(1, len(parts), 2):
-            code = parts[i].strip()
-            result += f'\n\n```\n{code}\n```'
-            if i + 1 < len(parts) and parts[i + 1].strip():
-                result += f'\n\n{_sanitize_inline(parts[i + 1].strip())}'
-        return result
-    return _sanitize_inline(text)
 
 
 def _uid_text(

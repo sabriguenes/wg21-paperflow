@@ -9,13 +9,13 @@
 
 from __future__ import annotations
 
-from advocatus.errors import (
-    AdvocatusError,
+from pipeline.errors import (
     HookMismatchError,
     MissingMetadataError,
     PaperNotConvertedError,
     PaperNotDissectedError,
     PaperNotFoundError,
+    PipelineError,
     PromptFileError,
     StepError,
     TransientStepError,
@@ -26,7 +26,7 @@ from advocatus.pipeline import advocatus_paper, advocatus_since
 __all__ = [
     "advocatus_paper",
     "advocatus_since",
-    "AdvocatusError",
+    "PipelineError",
     "PaperNotFoundError",
     "PaperNotConvertedError",
     "PaperNotDissectedError",

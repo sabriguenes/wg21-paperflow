@@ -1,4 +1,4 @@
-# web_tools
+# pipeline
 
 Web search and content fetch for LLM pipelines. Uses the Brave
 Search API for deterministic, high-quality results.
@@ -6,7 +6,7 @@ Search API for deterministic, high-quality results.
 ## Quick Start
 
 ```python
-from web_tools import WebResearcher
+from pipeline import WebResearcher
 
 async with WebResearcher() as researcher:
     # Search
@@ -41,7 +41,7 @@ agent.tool_plain(researcher.web_fetch)    # extracted markdown
 and rate limiter (50 req/s). Share it across parallel pipeline runs:
 
 ```python
-from web_tools.backends.brave import BraveBackend
+from pipeline.backends.brave import BraveBackend
 
 backend = BraveBackend()
 try:
@@ -56,4 +56,4 @@ finally:
 ## Adding a Backend
 
 See [DESIGN.md](DESIGN.md) for architecture and
-[CLAUDE.md](src/web_tools/CLAUDE.md) for the step-by-step guide.
+[CLAUDE.md](src/pipeline/CLAUDE.md) for the step-by-step guide.

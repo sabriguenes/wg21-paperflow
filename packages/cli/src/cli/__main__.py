@@ -27,6 +27,7 @@ import cli.dissect as _dissect_mod
 import cli.advocatus as _advocatus_mod
 import cli.agora as _agora_mod
 from cli.logutil import configure_console_logging
+from cli.targets import MONTH_RE
 from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
 
 _VERB_NAMES = {
@@ -137,7 +138,6 @@ _FLAG_DEFS: list[dict] = [
 ]
 
 _PAPER_ID_RE = re.compile(r"^[PND]\d{3,5}(R\d+)?$", re.IGNORECASE)
-_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 _EPILOG = """\
 Examples:
@@ -173,7 +173,7 @@ def _classify_target(t: str) -> str:
         return "paper"
     if t.isdigit() and len(t) == 4 and int(t) >= 2011:
         return "year"
-    if _MONTH_RE.match(t):
+    if MONTH_RE.match(t):
         return "month"
     raise ValueError(
         f"Unrecognized target {t!r}. "
@@ -204,44 +204,18 @@ def _validate_targets(verb: str, targets: list[str]) -> None:
             )
             sys.exit(1)
 
-    if verb == "dissect":
+    for llm_verb in ("dissect", "advocatus", "agora"):
+        if verb != llm_verb:
+            continue
         if "year" in kinds or "all" in kinds:
             print(
-                "paperflow dissect: accepts a paper ID or year-month, not years or 'all'.",
+                f"paperflow {verb}: accepts a paper ID or year-month, not years or 'all'.",
                 file=sys.stderr,
             )
             sys.exit(1)
         if len(targets) != 1:
             print(
-                f"paperflow dissect: accepts exactly one target, got {len(targets)}.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    if verb == "advocatus":
-        if "year" in kinds or "all" in kinds:
-            print(
-                "paperflow advocatus: accepts a paper ID or year-month, not years or 'all'.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if len(targets) != 1:
-            print(
-                f"paperflow advocatus: accepts exactly one target, got {len(targets)}.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    if verb == "agora":
-        if "year" in kinds or "all" in kinds:
-            print(
-                "paperflow agora: accepts a paper ID or year-month, not years or 'all'.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if len(targets) != 1:
-            print(
-                f"paperflow agora: accepts exactly one target, got {len(targets)}.",
+                f"paperflow {verb}: accepts exactly one target, got {len(targets)}.",
                 file=sys.stderr,
             )
             sys.exit(1)

@@ -106,7 +106,7 @@ class WebResearcher:
     """
 
     def __init__(self, *, backend: SearchBackend | None = None) -> None:
-        from web_tools.backends import get_default_backend
+        from pipeline.backends import get_default_backend
 
         self._backend = backend or get_default_backend()
         self._owns_backend = backend is None

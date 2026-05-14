@@ -10,9 +10,9 @@ members = [
     "dissect",
     "mailing",
     "paperstore",
+    "pipeline",
     "preview",
     "tomd",
-    "web-tools",
     "wg21-paperflow",
 ]
 
@@ -22,17 +22,17 @@ version = "0.1.0"
 source = { editable = "packages/advocatus" }
 dependencies = [
     { name = "paperstore" },
+    { name = "pipeline" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
-    { name = "web-tools" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "paperstore", editable = "packages/paperstore" },
+    { name = "pipeline", editable = "packages/pipeline" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-ai" },
-    { name = "web-tools", editable = "packages/web_tools" },
 ]
 
 [[package]]
@@ -53,17 +53,17 @@ version = "0.1.0"
 source = { editable = "packages/agora" }
 dependencies = [
     { name = "paperstore" },
+    { name = "pipeline" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
-    { name = "web-tools" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "paperstore", editable = "packages/paperstore" },
+    { name = "pipeline", editable = "packages/pipeline" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-ai" },
-    { name = "web-tools", editable = "packages/web_tools" },
 ]
 
 [[package]]
@@ -671,17 +671,17 @@ version = "0.3.0"
 source = { editable = "packages/dissect" }
 dependencies = [
     { name = "paperstore" },
+    { name = "pipeline" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
-    { name = "web-tools" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "paperstore", editable = "packages/paperstore" },
+    { name = "pipeline", editable = "packages/pipeline" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-ai" },
-    { name = "web-tools", editable = "packages/web_tools" },
 ]
 
 [[package]]
@@ -2144,6 +2144,23 @@ wheels = [
 ]
 
 [[package]]
+name = "pipeline"
+version = "0.3.0"
+source = { editable = "packages/pipeline" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic-ai-slim" },
+    { name = "trafilatura" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx" },
+    { name = "pydantic-ai-slim" },
+    { name = "trafilatura" },
+]
+
+[[package]]
 name = "platformdirs"
 version = "4.9.6"
 source = { registry = "https://pypi.org/simple" }
@@ -3523,21 +3540,6 @@ wheels = [
 ]
 
 [[package]]
-name = "web-tools"
-version = "0.3.0"
-source = { editable = "packages/web_tools" }
-dependencies = [
-    { name = "httpx" },
-    { name = "trafilatura" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx" },
-    { name = "trafilatura" },
-]
-
-[[package]]
 name = "websockets"
 version = "16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3605,9 +3607,9 @@ dependencies = [
     { name = "dissect" },
     { name = "mailing" },
     { name = "paperstore" },
+    { name = "pipeline" },
     { name = "preview" },
     { name = "tomd" },
-    { name = "web-tools" },
 ]
 
 [package.dev-dependencies]
@@ -3625,9 +3627,9 @@ requires-dist = [
     { name = "dissect", editable = "packages/dissect" },
     { name = "mailing", editable = "packages/mailing" },
     { name = "paperstore", editable = "packages/paperstore" },
+    { name = "pipeline", editable = "packages/pipeline" },
     { name = "preview", editable = "packages/preview" },
     { name = "tomd", editable = "packages/tomd" },
-    { name = "web-tools", editable = "packages/web_tools" },
 ]
 
 [package.metadata.requires-dev]

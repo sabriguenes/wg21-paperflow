@@ -9,13 +9,13 @@
 
 from __future__ import annotations
 
-from dissect.errors import (
+from pipeline.errors import (
     HookMismatchError,
     MissingMetadataError,
     PaperNotConvertedError,
     PaperNotFoundError,
+    PipelineError,
     PromptFileError,
-    DissectError,
     StepError,
     TransientStepError,
     ValidationStepError,
@@ -25,7 +25,7 @@ from dissect.pipeline import dissect_paper, dissect_since
 __all__ = [
     "dissect_paper",
     "dissect_since",
-    "DissectError",
+    "PipelineError",
     "PaperNotFoundError",
     "PaperNotConvertedError",
     "PromptFileError",

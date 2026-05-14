@@ -5,16 +5,16 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Parse step metadata from ``agora.md`` and build the pipeline.
+"""Parse step metadata from a prompt file and build the pipeline.
 
-``agora.md`` is the upstream authority for pipeline structure. Each
+The prompt file is the upstream authority for pipeline structure. Each
 step section declares metadata (model slot, execution mode, reads,
 writes, tools, conditions). This module parses that metadata, validates
 it, and combines it with registered Python hooks to produce an ordered
 list of ``StepSpec`` instances.
 
 Raises ``PromptFileError`` subtypes on any structural mismatch so the
-user knows to go fix ``agora.md``.
+user knows to go fix the prompt file.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from agora.errors import HookMismatchError, MissingMetadataError
+from pipeline.errors import HookMismatchError, MissingMetadataError
 
 _STEP_RE = re.compile(r"^Step\s+(\d+)")
 _META_RE = re.compile(r"^-\s+\*\*(\w+):\*\*\s*(.+)$", re.MULTILINE)
@@ -33,23 +33,23 @@ _META_RE = re.compile(r"^-\s+\*\*(\w+):\*\*\s*(.+)$", re.MULTILINE)
 
 @dataclass(frozen=True)
 class StepMeta:
-    """Parsed from a step section in ``advocatus.md``.
+    """Parsed from a step section in the prompt file.
 
     This is the authority for the step's configuration. Python hooks
     provide HOW to prepare and extract; this provides WHAT.
     """
 
     name: str
-    """Full section header, e.g. ``'Step 7 - Defensor Cross-Examination'``."""
+    """Full section header, e.g. ``'Step 5 - Verify'``."""
 
     number: int
     """Numeric index parsed from the name. Controls execution order."""
 
     model_slot: str
-    """Key into ``StepContext.model_slots``. ``'none'`` for pure-Python steps."""
+    """Key into ``StepContext.model_slots``. ``'none'`` for custom steps."""
 
     execution: str
-    """``'main'`` (sequential) or ``'parallel'`` (per articulus / per charge)."""
+    """``'main'`` (sequential) or ``'subagent'`` (parallel)."""
 
     reads: list[str]
     """``PipelineState`` field names this step reads."""
@@ -64,8 +64,8 @@ class StepMeta:
     """Guard condition text from ``**Condition:**``, or ``None``."""
 
     @property
-    def is_pure(self) -> bool:
-        """True when the step bypasses the LLM entirely."""
+    def is_custom(self) -> bool:
+        """True when the step owns its own execution (no framework-managed LLM call)."""
         return self.model_slot.startswith("none")
 
 
@@ -82,8 +82,8 @@ class StepHooks:
     prepare: Any = None
     extract: Any = None
     guard: Any = None
-    pure: Any = None
-    retry_empty: Any = None
+    custom: Any = None
+    output_validator: Any = None
     parallel: bool = False
     request_limit: int | None = None
 
@@ -92,7 +92,7 @@ class StepHooks:
 class StepSpec:
     """Declarative step descriptor.
 
-    ``agora.md`` is the upstream authority for pipeline structure.
+    The prompt file is the upstream authority for pipeline structure.
     Each step section declares its metadata: model slot, execution
     mode, which state fields it reads and writes, tools, and guard
     conditions. Python provides the bespoke hooks: how to format
@@ -152,7 +152,7 @@ def build_pipeline(
     sections: dict[str, str],
     hooks: dict[str, StepHooks],
 ) -> list[StepSpec]:
-    """Parse ``agora.md`` metadata, attach hooks, return ordered specs.
+    """Parse prompt file metadata, attach hooks, return ordered specs.
 
     Steps are sorted by their numeric index (parsed from ``Step N``),
     not by section position in the file.
@@ -174,14 +174,14 @@ def build_pipeline(
     orphan_hooks = hook_names - step_names
     if orphan_hooks:
         raise HookMismatchError(
-            f"Hooks registered for steps not in agora.md: "
+            f"Hooks registered for steps not in prompt file: "
             f"{sorted(orphan_hooks)}"
         )
 
     missing_hooks = step_names - hook_names
     if missing_hooks:
         raise HookMismatchError(
-            f"Steps in agora.md have no registered hooks: "
+            f"Steps in prompt file have no registered hooks: "
             f"{sorted(missing_hooks)}"
         )
 
