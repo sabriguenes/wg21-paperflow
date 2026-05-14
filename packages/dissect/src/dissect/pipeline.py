@@ -34,7 +34,9 @@ from pipeline import (
     WebResearcher,
     build_pipeline,
     dispatch,
+    ensure_paper_md,
     load_sections,
+    make_read_paper_tool,
     run_agent,
     run_task,
     sanitize_md,
@@ -493,26 +495,26 @@ async def _custom_dedup_factual(state: PipelineState, ctx: StepContext) -> None:
     state.claims = normative + factual
 
 
-def _known_paper_urls(
+def _citation_info(
     citations: list[CitationRef],
     backend: StorageBackend | None,
-) -> dict[str, str]:
-    """Map citation paper_id -> canonical URL, when paperstore knows it.
+) -> dict[str, dict]:
+    """Map cited paper_id -> {url, status, readable} from paperstore.
 
-    Returns an empty dict when ``backend`` is None or no citation has a
-    matching paperstore row. Missing citations are silently omitted; the
-    agent falls back to the cascade for those.
+    Returns an empty dict when ``backend`` is None. Missing citations
+    are silently omitted.
     """
     if backend is None:
         return {}
-    out: dict[str, str] = {}
+    out: dict[str, dict] = {}
     for cit in citations:
         result = backend.resolve_year_for_paper(cit.paper_id)
         if result is None:
             continue
         _, row = result
-        if row.url:
-            out[cit.paper_id] = row.url
+        url = row.url or ""
+        readable = url.lower().endswith((".html", ".pdf", ".htm")) if url else False
+        out[cit.paper_id] = {"url": url, "status": row.status, "readable": readable}
     return out
 
 
@@ -537,8 +539,8 @@ async def _custom_verify_citations(state: PipelineState, ctx: StepContext) -> No
     alive_claims = [c for c in state.claims if c.merged_into is None]
     alive_evidence = [e for e in (state.evidence or []) if e.merged_into is None]
 
-    known_urls = await asyncio.to_thread(
-        _known_paper_urls, state.citations, ctx.backend,
+    citation_info = await asyncio.to_thread(
+        _citation_info, state.citations, ctx.backend,
     )
 
     async def _one_citation(cit) -> CitationTaskOutput | None:
@@ -547,15 +549,39 @@ async def _custom_verify_citations(state: PipelineState, ctx: StepContext) -> No
         primary_evidence = [e for e in alive_evidence if pid_num in e.text]
         secondary_questions = [c.question for c in alive_claims]
 
-        known_url = known_urls.get(cit.paper_id)
-        known_url_block = (
-            f"## Known URL\n\n{known_url}\n\n"
-            if known_url
-            else ""
-        )
+        info = citation_info.get(cit.paper_id)
+        tools: dict[str, Any] = {"web_fetch": web_fetch_fn}
+
+        if info and info["readable"]:
+            md = await ensure_paper_md(cit.paper_id, ctx.backend)
+            if md:
+                read_fn = make_read_paper_tool(cit.paper_id, ctx.backend)
+                tools[f"read_paper_{cit.paper_id.lower()}"] = read_fn
+
+        if info is None:
+            status_block = (
+                "## Citation Status\n\n"
+                'This paper is not in the local index. '
+                'Report resolved: false, resolution_method: "not_found".\n\n'
+            )
+        elif not info["url"]:
+            status_block = (
+                "## Citation Status\n\n"
+                'This paper is not in the local index. '
+                'Report resolved: false, resolution_method: "not_found".\n\n'
+            )
+        elif not info["readable"]:
+            status_block = (
+                "## Citation Status\n\n"
+                f'This paper exists but is in an unreadable format ({info["url"]}). '
+                'Report resolved: true, quote_match: "unreadable".\n\n'
+            )
+        else:
+            status_block = f'## Known URL\n\n{info["url"]}\n\n'
+
         user_msg = (
             f"## Citation\n\nPaper: {cit.paper_id} (cited {cit.count} times)\n\n"
-            f"{known_url_block}"
+            f"{status_block}"
             f"## Primary Claims\n\n"
             f"{json.dumps([c.model_dump() for c in primary_claims], ensure_ascii=False)}\n\n"
             f"## Primary Evidence\n\n"
@@ -571,7 +597,7 @@ async def _custom_verify_citations(state: PipelineState, ctx: StepContext) -> No
                 output_type=CitationTaskOutput,
                 label=f"Step 8 - Verify Citations ({cit.paper_id})",
                 debug_log=ctx.debug_log if ctx.debug else None,
-                tools={"web_fetch": web_fetch_fn},
+                tools=tools,
                 model=resolved,
                 request_limit=_REQUEST_LIMIT_PER_CITATION,
             )
@@ -944,16 +970,15 @@ async def dissect_paper(
         finally:
             if debug and ctx.debug_log:
                 write_debug_file(debug_path, ctx.debug_log)
+            if trace or stop_after is not None:
+                trace_step = stop_after if stop_after is not None else len(pipeline) - 1
+                trace_path = backend.get_trace_md_path(pid, "dissect")
+                trace_path.write_text(
+                    render_trace(state, meta, trace_step), encoding="utf-8",
+                )
 
     if stop_after is not None:
         return render_trace(state, meta, stop_after)
-
-    if trace:
-        last_step = len(pipeline) - 1
-        trace_path = backend.get_trace_md_path(pid, "dissect")
-        trace_path.write_text(
-            render_trace(state, meta, last_step), encoding="utf-8",
-        )
 
     return state.report or ""
 

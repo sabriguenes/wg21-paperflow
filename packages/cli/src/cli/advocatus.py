@@ -9,23 +9,7 @@
 
 from __future__ import annotations
 
-import argparse
 
-from paperstore.backend import StorageBackend
-
-
-def command(args: argparse.Namespace, backend: StorageBackend) -> int:
-    from advocatus import advocatus_paper, advocatus_since
-    from cli.llm_command import run_llm_command
-
-    return run_llm_command(
-        args, backend,
-        paper_fn=advocatus_paper,
-        batch_fn=advocatus_since,
-        write_fn=backend.write_advocatus_md,
-        output_check_fn=lambda pid: backend.get_paper_md_path(pid).with_suffix(".advocatus.md"),
-        verb="Advocatus",
-        progress_label="Examining",
-        trace_tool="advocatus",
-        success_msg="Relatio written to {path}",
-    )
+def command(args, backend):
+    from cli._process import run_process_command
+    return run_process_command(args, backend, through=4)

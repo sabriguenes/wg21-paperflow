@@ -20,6 +20,7 @@ import asyncio
 import functools
 import importlib.resources
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -68,6 +69,18 @@ _VALIDATION_EXCEPTIONS = (UnexpectedModelBehavior, UsageLimitExceeded)
 
 
 @dataclass
+class StepMetrics:
+    """Timing and usage data collected for one pipeline step."""
+
+    name: str
+    duration_s: float = 0.0
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    tool_calls: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
 class StepContext:
     """Shared resources available to every step."""
 
@@ -79,6 +92,8 @@ class StepContext:
     pid: str = ""
     debug_log: list[str] | None = None
     tool_registry: dict[str, Callable[..., Any]] = field(default_factory=dict)
+    step_metrics: list[StepMetrics] = field(default_factory=list)
+    tool_counts: dict[str, int] = field(default_factory=dict)
     _current_spec: StepSpec | None = None
 
     def __post_init__(self) -> None:
@@ -149,7 +164,7 @@ async def run_agent(
             )
         fn = ctx.tool_registry[tool_name]
         if ctx.debug:
-            fn = _wrap_tool_debug(fn, tool_name)
+            fn = _wrap_tool_debug(fn, tool_name, ctx)
         agent.tool_plain(fn)
 
     try:
@@ -210,6 +225,9 @@ async def dispatch(
 
         logger.info("Step %d: %s", i, spec.meta.name)
         ctx._current_spec = spec
+        ctx.tool_counts = {}
+        t0 = time.monotonic()
+        metrics = StepMetrics(name=spec.meta.name)
 
         try:
             if spec.hooks.custom:
@@ -224,6 +242,12 @@ async def dispatch(
                     )
                     for msg in user_msgs
                 ])
+                for r in results:
+                    usage = getattr(r, "usage", None)
+                    if usage is not None:
+                        metrics.requests += getattr(usage, "requests", 0) or 0
+                        metrics.input_tokens += getattr(usage, "input_tokens", 0) or 0
+                        metrics.output_tokens += getattr(usage, "output_tokens", 0) or 0
                 if spec.hooks.extract:
                     spec.hooks.extract(state, [r.output for r in results])
             else:
@@ -233,6 +257,11 @@ async def dispatch(
                     ctx, spec, user_msg,
                     request_limit=spec.hooks.request_limit or 500,
                 )
+                usage = getattr(result, "usage", None)
+                if usage is not None:
+                    metrics.requests = getattr(usage, "requests", 0) or 0
+                    metrics.input_tokens = getattr(usage, "input_tokens", 0) or 0
+                    metrics.output_tokens = getattr(usage, "output_tokens", 0) or 0
                 if spec.hooks.extract:
                     spec.hooks.extract(state, result.output)
         except (StepError, PromptFileError, PipelineError):
@@ -242,6 +271,10 @@ async def dispatch(
                 "Step %d (%s) failed: %s", i, spec.meta.name, exc, exc_info=True,
             )
             raise StepError(i, spec.meta.name, exc) from exc
+
+        metrics.duration_s = time.monotonic() - t0
+        metrics.tool_calls = dict(ctx.tool_counts)
+        ctx.step_metrics.append(metrics)
 
         if on_step_complete is not None:
             on_step_complete(spec, state)
@@ -258,10 +291,13 @@ def write_debug_file(path: Path, debug_log: list[str]) -> None:
         path.write_text(_DEBUG_SEPARATOR.join(debug_log), encoding="utf-8")
 
 
-def _wrap_tool_debug(fn: Callable[..., Any], name: str) -> Callable[..., Any]:
-    """Wrap a tool function to log calls when debugging."""
+def _wrap_tool_debug(
+    fn: Callable[..., Any], name: str, ctx: StepContext,
+) -> Callable[..., Any]:
+    """Wrap a tool function to log calls and count invocations."""
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        ctx.tool_counts[name] = ctx.tool_counts.get(name, 0) + 1
         args_str = ", ".join(
             [repr(a) for a in args] +
             [f"{k}={repr(v)}" for k, v in kwargs.items()]

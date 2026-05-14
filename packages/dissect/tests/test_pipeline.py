@@ -22,7 +22,7 @@ from paperstore.testing import store  # noqa: F401
 from pipeline import StepContext, load_sections
 from pipeline.errors import PaperNotFoundError, PaperNotConvertedError
 from dissect.pipeline import (
-    _known_paper_urls,
+    _citation_info,
     _custom_read,
     _custom_report,
     _custom_verify_citations,
@@ -211,7 +211,7 @@ def test_store_citation_audit_adapts_field_name(store):  # noqa: F811
     entries = [
         CitationAuditEntry(
             paper_id="P9999R0",
-            resolution_method="wg21_link",
+            resolution_method="local_index",
             resolved=True,
             source_url="https://wg21.link/p9999r0",
             quote_match="exact",
@@ -232,7 +232,7 @@ def test_store_citation_audit_adapts_field_name(store):  # noqa: F811
     rows = store.get_citation_audit("P1000R0")
     assert len(rows) == 1
     assert rows[0].cited_paper_id == "P9999R0"
-    assert rows[0].resolution_method == "wg21_link"
+    assert rows[0].resolution_method == "local_index"
     assert rows[0].resolved is True
 
 
@@ -253,31 +253,34 @@ def test_store_caput_causae_writes_thesis(store):  # noqa: F811
 _P3175_URL = "https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p3175r3.html"
 
 
-def test_known_paper_urls_returns_urls_for_indexed_papers(store):  # noqa: F811
+def test_citation_info_returns_info_for_indexed_papers(store):  # noqa: F811
     store.upsert_year("2024", [{
         "paper_id": "P3175R3",
         "title": "X",
         "url": _P3175_URL,
     }])
     citations = [CitationRef(paper_id="P3175R3", count=2)]
-    urls = _known_paper_urls(citations, store)
-    assert urls == {"P3175R3": _P3175_URL}
+    info = _citation_info(citations, store)
+    assert "P3175R3" in info
+    assert info["P3175R3"]["url"] == _P3175_URL
 
 
-def test_known_paper_urls_skips_unindexed_papers(store):  # noqa: F811
+def test_citation_info_skips_unindexed_papers(store):  # noqa: F811
     citations = [CitationRef(paper_id="P9999R0", count=1)]
-    assert _known_paper_urls(citations, store) == {}
+    assert _citation_info(citations, store) == {}
 
 
-def test_known_paper_urls_handles_missing_backend():
+def test_citation_info_handles_missing_backend():
     citations = [CitationRef(paper_id="P3175R3", count=1)]
-    assert _known_paper_urls(citations, None) == {}
+    assert _citation_info(citations, None) == {}
 
 
-def test_known_paper_urls_skips_rows_with_empty_url(store):  # noqa: F811
+def test_citation_info_includes_rows_with_empty_url(store):  # noqa: F811
     store.upsert_year("2024", [{"paper_id": "P3175R3", "title": "X"}])
     citations = [CitationRef(paper_id="P3175R3", count=1)]
-    assert _known_paper_urls(citations, store) == {}
+    info = _citation_info(citations, store)
+    assert "P3175R3" in info
+    assert info["P3175R3"]["url"] == ""
 
 
 # -- Verify-citations user message assembly ---------------------------------

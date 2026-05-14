@@ -65,6 +65,6 @@ def make_progress_handler(
         nonlocal task_id
         if task_id is None:
             task_id = progress.add_task(ev.name, total=ev.total)
-        progress.update(task_id, completed=ev.step, description=ev.name)
+        progress.update(task_id, completed=ev.step, total=ev.total, description=ev.name)
 
     return progress, handler

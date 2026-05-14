@@ -783,16 +783,15 @@ async def agora_paper(
         finally:
             if debug and ctx.debug_log:
                 write_debug_file(debug_path, ctx.debug_log)
+            if trace or stop_after is not None:
+                trace_step = stop_after if stop_after is not None else len(pipeline) - 1
+                trace_path = backend.get_trace_md_path(pid, "agora")
+                trace_path.write_text(
+                    render_trace(state, trace_step), encoding="utf-8",
+                )
 
     if stop_after is not None:
         return render_trace(state, stop_after)
-
-    if trace:
-        last_step = len(pipeline) - 1
-        trace_path = backend.get_trace_md_path(pid, "agora")
-        trace_path.write_text(
-            render_trace(state, last_step), encoding="utf-8",
-        )
 
     if state.thread is None:
         raise StepError(

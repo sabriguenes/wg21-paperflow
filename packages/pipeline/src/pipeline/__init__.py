@@ -26,6 +26,7 @@ from pipeline.prompt import StepHooks, StepMeta, StepSpec, build_pipeline, parse
 from pipeline.runner import (
     DEFAULT_MODEL_SLOTS,
     StepContext,
+    StepMetrics,
     dispatch,
     load_sections,
     run_agent,
@@ -38,9 +39,14 @@ from pipeline.session import (
     SearchResult,
     WebResearcher,
 )
+from pipeline.process import ensure_paper_md, process_paper
 from pipeline.tasks import run_task
+from pipeline.tools import make_read_paper_tool
 
 __all__ = [
+    "ensure_paper_md",
+    "make_read_paper_tool",
+    "process_paper",
     "build_pipeline",
     "DEFAULT_MODEL_SLOTS",
     "dispatch",
@@ -63,6 +69,7 @@ __all__ = [
     "sections",
     "StepContext",
     "StepError",
+    "StepMetrics",
     "StepHooks",
     "StepMeta",
     "StepSpec",

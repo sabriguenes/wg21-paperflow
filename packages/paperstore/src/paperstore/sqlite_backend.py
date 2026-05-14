@@ -64,7 +64,15 @@ CREATE TABLE IF NOT EXISTS papers (
     dissect_path   TEXT DEFAULT '',
     advocatus_path TEXT DEFAULT '',
     agora_path     TEXT DEFAULT '',
-    line_count     INTEGER DEFAULT 0
+    line_count     INTEGER DEFAULT 0,
+    status         INTEGER NOT NULL DEFAULT 0,
+    error          TEXT DEFAULT '',
+    updated_at     TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS years (
@@ -180,6 +188,41 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "line_count" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN line_count INTEGER DEFAULT 0")
 
+    if "status" not in cols:
+        conn.execute(
+            "ALTER TABLE papers ADD COLUMN status INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.execute(
+            "ALTER TABLE papers ADD COLUMN error TEXT DEFAULT ''"
+        )
+        conn.execute(
+            "ALTER TABLE papers ADD COLUMN updated_at TEXT DEFAULT ''"
+        )
+        conn.execute("""
+            UPDATE papers SET status =
+                CASE
+                    WHEN agora_path != ''     THEN 5
+                    WHEN advocatus_path != '' THEN 4
+                    WHEN dissect_path != ''   THEN 3
+                    WHEN markdown_path != ''  THEN 2
+                    WHEN source_file != ''    THEN 1
+                    ELSE 0
+                END
+        """)
+
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS settings ("
+        "    key   TEXT PRIMARY KEY,"
+        "    value TEXT NOT NULL"
+        ");"
+    )
+    if not conn.execute(
+        "SELECT 1 FROM settings WHERE key = 'process_since'"
+    ).fetchone():
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('process_since', '2020-01')"
+        )
+
     claim_cols = {r[1] for r in conn.execute("PRAGMA table_info(claims)").fetchall()}
     if "kind" not in claim_cols:
         conn.execute("ALTER TABLE claims ADD COLUMN kind TEXT DEFAULT 'normative'")
@@ -203,6 +246,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("DROP TABLE rhetorical_markers")
 
     conn.executescript(_SCHEMA)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _atomic_replace(src: Path, dst: Path) -> None:
@@ -245,6 +292,7 @@ class SqliteBackend(StorageBackend):
         # built SERIALIZED, so concurrent reads are safe; writes still go
         # through `with self._conn:` blocks and a single process.
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         _migrate(self._conn)
@@ -332,6 +380,8 @@ class SqliteBackend(StorageBackend):
             advocatus_path=d.get("advocatus_path", ""),
             agora_path=d.get("agora_path", ""),
             line_count=d.get("line_count", 0),
+            status=d.get("status", 0),
+            error=d.get("error", ""),
         )
 
     # ---- year-based mailing index -----------------------------------------
@@ -415,6 +465,30 @@ class SqliteBackend(StorageBackend):
             return None
         paper = self._row_to_paper(row)
         return paper.year, paper
+
+    def find_latest_revision(self, base_id: str) -> str | None:
+        """Find the latest revision for a paper number without revision suffix.
+
+        ``base_id`` is e.g. ``P4003`` (no R suffix). Returns the full
+        paper_id of the highest revision (e.g. ``P4003R3``), or None.
+        """
+        import re
+        base = base_id.strip().upper()
+        rows = self._conn.execute(
+            "SELECT paper_id FROM papers WHERE paper_id LIKE ?",
+            (f"{base}R%",),
+        ).fetchall()
+        if not rows:
+            return None
+        rev_re = re.compile(rf"^{re.escape(base)}R(\d+)$")
+        best_pid = None
+        best_rev = -1
+        for row in rows:
+            m = rev_re.match(row["paper_id"])
+            if m and int(m.group(1)) > best_rev:
+                best_rev = int(m.group(1))
+                best_pid = row["paper_id"]
+        return best_pid
 
     # ---- writes -----------------------------------------------------------
 
@@ -854,6 +928,39 @@ class SqliteBackend(StorageBackend):
             (month,),
         ).fetchall()
         return [self._row_to_paper(r) for r in rows]
+
+    # ---- status / settings ------------------------------------------------
+
+    def advance_status(self, paper_id: str, from_status: int, to_status: int) -> bool:
+        """CAS: advance only if current status matches from_status. Clears error."""
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE papers SET status = ?, error = '', updated_at = ? "
+                "WHERE paper_id = ? AND status = ?",
+                (to_status, _now_iso(), paper_id.strip().upper(), from_status),
+            )
+            return cur.rowcount == 1
+
+    def fail_paper(self, paper_id: str, stage: int, error: str) -> None:
+        """Mark paper as failed at the given stage."""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE papers SET status = ?, error = ?, updated_at = ? WHERE paper_id = ?",
+                (-(stage + 1), error, _now_iso(), paper_id.strip().upper()),
+            )
+
+    def get_setting(self, key: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (key, value),
+            )
 
     # ---- extract writes ---------------------------------------------------
 

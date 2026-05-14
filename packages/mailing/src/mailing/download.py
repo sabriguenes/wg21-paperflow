@@ -88,6 +88,7 @@ async def download_paper(
     source_url: str,
     client: httpx.AsyncClient | None = None,
     timeout: float = _FETCH_TIMEOUT_SEC,
+    on_progress: object = None,
 ) -> tuple[bytes, str] | None:
     """Fetch a paper's source over HTTP.
 
@@ -97,6 +98,10 @@ async def download_paper(
 
     When ``client`` is provided it is used as-is (caller owns its
     lifetime). Otherwise a throwaway client is created for the call.
+
+    ``on_progress`` is an optional ``ProgressCallback``. When provided,
+    the download is streamed and progress fires as 11 steps (0-10)
+    mapping to 0%-100% of the total bytes.
     """
     if not source_url:
         logger.warning("No source URL for %s - skipping download", paper_id)
@@ -106,10 +111,49 @@ async def download_paper(
     logger.info("Downloading %s from %s", paper_id, source_url)
 
     if client is not None:
-        resp = await client.get(source_url)
-    else:
-        async with default_client(timeout=timeout) as c:
-            resp = await c.get(source_url)
-    resp.raise_for_status()
+        return await _do_download(client, paper_id, source_url, suffix, on_progress)
+    async with default_client(timeout=timeout) as c:
+        return await _do_download(c, paper_id, source_url, suffix, on_progress)
 
-    return resp.content, suffix
+
+async def _do_download(
+    c: httpx.AsyncClient,
+    paper_id: str,
+    source_url: str,
+    suffix: str,
+    on_progress: object,
+) -> tuple[bytes, str]:
+    """Fetch bytes, optionally streaming with progress."""
+    if on_progress is None:
+        resp = await c.get(source_url)
+        resp.raise_for_status()
+        return resp.content, suffix
+
+    from paperstore.progress import ProgressEvent
+
+    cl = await content_length(source_url, client=c)
+    total_bytes = cl or 0
+    on_progress(ProgressEvent(step=0, total=10, name=f"downloading {paper_id}", pct=0.0))
+
+    async with c.stream("GET", source_url) as resp:
+        resp.raise_for_status()
+        if total_bytes == 0:
+            total_bytes = int(resp.headers.get("content-length", 0))
+        chunks: list[bytes] = []
+        downloaded = 0
+        last_step = 0
+        async for chunk in resp.aiter_bytes():
+            chunks.append(chunk)
+            downloaded += len(chunk)
+            if total_bytes > 0:
+                step = min(10, (downloaded * 10) // total_bytes)
+                if step > last_step:
+                    last_step = step
+                    on_progress(ProgressEvent(
+                        step=step, total=10,
+                        name=f"downloading {paper_id}",
+                        pct=step / 10,
+                    ))
+
+    on_progress(ProgressEvent(step=10, total=10, name=f"downloading {paper_id}", pct=1.0))
+    return b"".join(chunks), suffix

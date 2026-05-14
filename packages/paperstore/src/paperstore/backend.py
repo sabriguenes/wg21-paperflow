@@ -91,6 +91,8 @@ class PaperRow:
     advocatus_path: str = ""
     agora_path: str = ""
     line_count: int = 0
+    status: int = 0
+    error: str = ""
 
 
 class StorageBackend(ABC):
@@ -335,6 +337,24 @@ class StorageBackend(ABC):
     @abstractmethod
     def list_papers_since(self, month: str) -> list[PaperRow]:
         """Return papers where ``mailing_date`` >= ``month``."""
+
+    # ---- status / settings ------------------------------------------------
+
+    @abstractmethod
+    def advance_status(self, paper_id: str, from_status: int, to_status: int) -> bool:
+        """CAS: advance only if current status matches from_status. Clears error."""
+
+    @abstractmethod
+    def fail_paper(self, paper_id: str, stage: int, error: str) -> None:
+        """Mark paper as failed at the given stage."""
+
+    @abstractmethod
+    def get_setting(self, key: str) -> str | None:
+        """Return the value for ``key`` from the settings table, or None."""
+
+    @abstractmethod
+    def set_setting(self, key: str, value: str) -> None:
+        """Insert or replace a setting value."""
 
     # ---- extract writes ---------------------------------------------------
 

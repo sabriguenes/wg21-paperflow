@@ -20,7 +20,7 @@ def resolve_pid(target: str, backend: StorageBackend) -> str:
     """Normalize a paper ID target to uppercase.
 
     Accepts full IDs (P4003R3) or short forms (p4003). For short forms
-    without a revision suffix, looks up the latest revision in the store.
+    without a revision suffix, finds the latest revision in the store.
     """
     pid = target.strip().upper()
 
@@ -30,5 +30,9 @@ def resolve_pid(target: str, backend: StorageBackend) -> str:
     result = backend.resolve_year_for_paper(pid)
     if result is not None:
         return result[1].paper_id
+
+    latest = backend.find_latest_revision(pid)
+    if latest is not None:
+        return latest
 
     return pid

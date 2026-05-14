@@ -22,26 +22,26 @@ from pathlib import Path
 import cli.mailing as _mailing_mod
 import cli.download as _download_mod
 import cli.convert as _convert_mod
-import cli.full as _full_mod
 import cli.dissect as _dissect_mod
 import cli.advocatus as _advocatus_mod
 import cli.agora as _agora_mod
+import cli.status as _status_mod
 from cli.logutil import configure_console_logging
 from cli.targets import MONTH_RE
 from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
 
 _VERB_NAMES = {
-    "mailing", "download", "convert", "full", "dissect", "advocatus", "agora",
+    "mailing", "download", "convert", "dissect", "advocatus", "agora", "status",
 }
 
 _VERB_HELP = {
-    "mailing":   "Scrape mailing indexes from open-std.org (no downloads)",
-    "download":  "Download paper source files (PDF/HTML)",
-    "convert":   "Convert staged source files to markdown (no LLM)",
-    "full":      "Run all three stages: mailing + download + convert",
-    "dissect":   "Run an LLM-driven dissection of a WG21 paper",
-    "advocatus": "Examine a dissected paper through the Advocatus / Defensor tribunal",
-    "agora":     "Plan a fake r/wg21 Reddit thread for a dissected paper",
+    "mailing":   "Scrape all WG21 mailing indexes (2011-current). Idempotent.",
+    "download":  "Download source files for TARGET papers.",
+    "convert":   "Convert source files to markdown for TARGET papers. Downloads first if needed.",
+    "dissect":   "Extract claims and evidence for TARGET papers. Downloads and converts if needed.",
+    "advocatus": "Run adversarial examination for TARGET papers. Runs all prior stages if needed.",
+    "agora":     "Plan discussion threads for TARGET papers. Runs all prior stages if needed.",
+    "status":    "Show processing status for papers.",
 }
 
 _VERB_DESCRIPTION = {
@@ -56,10 +56,6 @@ _VERB_DESCRIPTION = {
     "convert": (
         "Convert staged PDF/HTML sources to markdown using tomd. "
         "Hard-fails if the source is not yet staged."
-    ),
-    "full": (
-        "Full pipeline: scrape mailing index, download sources, and convert to "
-        "markdown. Each stage is idempotent; already-done work is skipped."
     ),
     "dissect": (
         "Dissect a paper using the multi-step LLM pipeline. "
@@ -77,58 +73,47 @@ _VERB_DESCRIPTION = {
         "are filled by a later generation phase. Requires the paper to be "
         "dissected first."
     ),
+    "status": (
+        "Show the current pipeline status for papers. Accepts a paper ID, "
+        "year, year-month, or no argument to show all incomplete papers."
+    ),
 }
 
 _VERB_TARGETS_HELP = {
-    "mailing":   'Year(s) to scrape (e.g. 2026 2025), or "all".',
-    "download":  'Year (2026), paper id(s) (P3642R4 ...), or "all".',
-    "convert":   'Year (2026), paper id(s) (P3642R4 ...), or "all".',
-    "full":      'Year (2026), paper id(s) (P3642R4 ...), or "all".',
+    "mailing":   "Not used (mailing discovers years automatically).",
+    "download":  "Year (2026), paper id(s) (P3642R4 ...), or year-month (2026-01).",
+    "convert":   "Year (2026), paper id(s) (P3642R4 ...), or year-month (2026-01).",
     "dissect":   "Paper ID (P4003R2) or year-month (2026-01) for batch dissection.",
     "advocatus": "Paper ID (P4003R2) or year-month (2026-01) for batch examination.",
     "agora":     "Paper ID (P4003R2) or year-month (2026-01) for batch planning.",
+    "status":    "Paper ID, year, year-month, or omit for all incomplete papers.",
 }
 
 _COMMANDS = {
     "mailing":   _mailing_mod,
     "download":  _download_mod,
     "convert":   _convert_mod,
-    "full":      _full_mod,
     "dissect":   _dissect_mod,
     "advocatus": _advocatus_mod,
     "agora":     _agora_mod,
+    "status":    _status_mod,
 }
 
 _VERB_FLAGS: dict[str, set[str]] = {
-    "mailing":   {"force"},
-    "download":  {"force", "verify", "concurrency"},
-    "convert":   {"force", "concurrency", "no_prompts", "qa", "qa_json",
-                  "workers", "timeout"},
-    "full":      {"force", "verify", "concurrency"},
-    "dissect":   {"debug", "trace"},
-    "advocatus": {"debug", "trace"},
-    "agora":     {"debug", "trace"},
+    "mailing":   set(),
+    "download":  {"force", "concurrency"},
+    "convert":   {"force", "concurrency"},
+    "dissect":   {"debug", "trace", "force"},
+    "advocatus": {"debug", "trace", "force"},
+    "agora":     {"debug", "trace", "force"},
+    "status":    set(),
 }
 
 _FLAG_DEFS: list[dict] = [
     dict(name="force", flags=["-f", "--force"], action="store_true",
          default=False, help="Redo stage even if already complete."),
-    dict(name="verify", flags=["--verify"], action="store_true",
-         default=False,
-         help="HEAD-check staged files against Content-Length; re-download on mismatch."),
     dict(name="concurrency", flags=["--concurrency"], type=int,
          default=None, metavar="N", help="Number of parallel workers."),
-    dict(name="no_prompts", flags=["--no-prompts"], action="store_true",
-         default=False, help="Skip writing the .prompts.json intermediate."),
-    dict(name="qa", flags=["--qa"], action="store_true", default=False,
-         help="Score existing markdown quality instead of converting."),
-    dict(name="qa_json", flags=["--qa-json"], type=Path, default=None,
-         metavar="PATH",
-         help="Write per-paper QA metrics as JSON to PATH (implies --qa)."),
-    dict(name="workers", flags=["--workers"], type=int, default=None,
-         metavar="N", help="QA parallelism."),
-    dict(name="timeout", flags=["--timeout"], type=int, default=None,
-         metavar="SEC", help="QA straggler timeout in seconds."),
     dict(name="debug", flags=["--debug"], action="store_true",
          default=False,
          help="Write full LLM transcripts per step to paperstore as a single .debug.md file."),
@@ -141,17 +126,18 @@ _PAPER_ID_RE = re.compile(r"^[PND]\d{3,5}(R\d+)?$", re.IGNORECASE)
 
 _EPILOG = """\
 Examples:
-  paperflow 2026                   full pipeline for 2026
-  paperflow mailing 2026           scrape index only
+  paperflow 2026                   process all papers for 2026
+  paperflow mailing                scrape mailing index
   paperflow download P3642R4       download one paper
-  paperflow convert all            convert all staged-but-not-converted
-  paperflow full all               full pipeline for all pending work
+  paperflow convert 2026-01        convert papers from Jan 2026 onward
   paperflow dissect P4003R2        LLM-driven paper dissection
   paperflow dissect 2026-01        batch dissect papers from Jan 2026 onward
   paperflow advocatus P4003R2      examine a dissected paper through the tribunal
   paperflow advocatus 2026-01      batch advocatus for a month
   paperflow agora P4003R2          plan a fake r/wg21 thread for a dissected paper
   paperflow agora 2026-01          batch agora for a month
+  paperflow status                 show all incomplete papers
+  paperflow status P4003R2         show status of one paper
 """
 
 
@@ -166,9 +152,7 @@ def _add_flags(p: argparse.ArgumentParser, verb: str) -> None:
 
 
 def _classify_target(t: str) -> str:
-    """Return 'paper', 'year', 'month', 'all', or raise ValueError."""
-    if t.lower() == "all":
-        return "all"
+    """Return 'paper', 'year', 'month', or raise ValueError."""
     if _PAPER_ID_RE.match(t):
         return "paper"
     if t.isdigit() and len(t) == 4 and int(t) >= 2011:
@@ -177,7 +161,7 @@ def _classify_target(t: str) -> str:
         return "month"
     raise ValueError(
         f"Unrecognized target {t!r}. "
-        "Expected a paper ID (P4003R2), year (2026), year-month (2026-01), or 'all'."
+        "Expected a paper ID (P4003R2), year (2026), or year-month (2026-01)."
     )
 
 
@@ -194,22 +178,12 @@ def _validate_targets(verb: str, targets: list[str]) -> None:
             print(f"paperflow {verb}: {exc}", file=sys.stderr)
             sys.exit(1)
 
-    if verb == "mailing":
-        bad = kinds - {"year", "all"}
-        if bad:
-            print(
-                f"paperflow mailing: accepts years or 'all', "
-                f"not paper IDs ({', '.join(t for t in targets if _classify_target(t) == 'paper')})",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    for llm_verb in ("dissect", "advocatus", "agora"):
-        if verb != llm_verb:
+    for process_verb in ("dissect", "advocatus", "agora"):
+        if verb != process_verb:
             continue
-        if "year" in kinds or "all" in kinds:
+        if "year" in kinds:
             print(
-                f"paperflow {verb}: accepts a paper ID or year-month, not years or 'all'.",
+                f"paperflow {verb}: accepts a paper ID or year-month, not bare years.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -219,13 +193,6 @@ def _validate_targets(verb: str, targets: list[str]) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-
-    if "all" in kinds and len(targets) > 1:
-        print(
-            f"paperflow {verb}: 'all' cannot be combined with other targets.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
     if len(kinds) > 1:
         if "paper" in kinds and "year" in kinds:
@@ -263,7 +230,7 @@ def _backend_for(workspace_dir: Path | None) -> SqliteBackend:
 def main() -> int:
     argv = sys.argv[1:]
     if argv and argv[0] not in _VERB_NAMES and not argv[0].startswith("-"):
-        argv = ["full"] + argv
+        argv = ["agora"] + argv
 
     parser = argparse.ArgumentParser(
         prog="paperflow",
@@ -284,8 +251,15 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command")
 
     for verb, mod in _COMMANDS.items():
-        nargs = "*" if verb == "mailing" else "+"
-        metavar = "YEAR_OR_ALL" if verb == "mailing" else "TARGET"
+        if verb == "mailing":
+            nargs = "*"
+            metavar = "YEAR_OR_ALL"
+        elif verb == "status":
+            nargs = "*"
+            metavar = "TARGET"
+        else:
+            nargs = "+"
+            metavar = "TARGET"
         p = subparsers.add_parser(
             verb,
             help=_VERB_HELP[verb],

@@ -92,3 +92,17 @@ to `backend.get_debug_md_path(pid, "agora")` and
   or write files directly.
 - **Library code uses `logging`, never `print()`.** No
   `print(file=sys.stderr)` in any package except `cli`.
+
+## Fidelity invariant
+
+If full fidelity cannot be achieved, stop. Set the paper status to failed with a clear error message. Preserve the debug transcript for diagnosis. Never produce a partial result that could be mistaken for a complete one.
+
+The thread plan depends on accurate dissect and advocatus output. If either is incomplete or absent, the thread plan would misrepresent the paper.
+
+## Prompt injection defense
+
+Content returned by tools (read_paper, web_fetch) is untrusted data. Mitigations:
+- Structured output via pydantic-ai enforces the output schema
+- Tool returns are wrapped in <<<SOURCE>>>/<<<END_SOURCE>>> delimiters
+- System prompts instruct agents to treat delimited content as data, not instructions
+- read_paper is scoped to one paper's markdown with a 500-line cap per call

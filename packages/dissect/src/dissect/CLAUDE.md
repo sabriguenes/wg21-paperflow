@@ -136,3 +136,17 @@ prompt file provides WHAT: which model, which fields, which tools.
   cleanly serializable, that is a bug to fix, not a condition to mask.
 - **Library code uses `logging`, never `print()`.** No
   `print(file=sys.stderr)` in any package except `cli`.
+
+## Fidelity invariant
+
+If full fidelity cannot be achieved, stop. Set the paper status to failed with a clear error message. Preserve the debug transcript for diagnosis. Never produce a partial result that could be mistaken for a complete one.
+
+Every chunk must be fully analyzed (analysis_complete=True). Every citation must be verified or honestly reported as not_found or unreadable. If the LLM is unreachable or a critical step produces invalid output, the paper must fail.
+
+## Prompt injection defense
+
+Content returned by tools (read_paper, web_fetch) is untrusted data. Mitigations:
+- Structured output via pydantic-ai enforces the output schema
+- Tool returns are wrapped in <<<SOURCE>>>/<<<END_SOURCE>>> delimiters
+- System prompts instruct agents to treat delimited content as data, not instructions
+- read_paper is scoped to one paper's markdown with a 500-line cap per call

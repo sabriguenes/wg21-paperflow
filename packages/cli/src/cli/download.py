@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2026 Sergio DuBois (sentientsergio@gmail.com)
+# Copyright (c) 2026 Vinnie Falco (vinnie.falco@gmail.com)
 #
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,38 +9,7 @@
 
 from __future__ import annotations
 
-import argparse
-import asyncio
-import sys
 
-from paperstore.backend import StorageBackend
-
-from cli.jobs import DEFAULT_DOWNLOAD_CONCURRENCY
-
-
-def command(args: argparse.Namespace, backend: StorageBackend) -> int:
-    from cli.jobs import run_download
-    from cli.progress import make_progress_handler
-
-    progress_ctx, on_progress = make_progress_handler("Downloading")
-
-    with progress_ctx:
-        result = asyncio.run(run_download(
-            args.targets,
-            backend,
-            force=args.force,
-            verify=args.verify,
-            concurrency=args.concurrency or DEFAULT_DOWNLOAD_CONCURRENCY,
-            on_progress=on_progress,
-        ))
-
-    succeeded = result.get("succeeded", [])
-    skipped = result.get("skipped", [])
-    failed = result.get("failed", [])
-
-    print(f"Download: {len(succeeded)} downloaded, {len(skipped)} skipped, {len(failed)} failed.")
-    if failed:
-        for item in failed:
-            print(f"  ERROR {item['paper_id']}: {item['error']}", file=sys.stderr)
-        return 1
-    return 0
+def command(args, backend):
+    from cli._process import run_process_command
+    return run_process_command(args, backend, through=1)

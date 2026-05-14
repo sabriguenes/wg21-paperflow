@@ -9,23 +9,7 @@
 
 from __future__ import annotations
 
-import argparse
 
-from paperstore.backend import StorageBackend
-
-
-def command(args: argparse.Namespace, backend: StorageBackend) -> int:
-    from dissect import dissect_paper, dissect_since
-    from cli.llm_command import run_llm_command
-
-    return run_llm_command(
-        args, backend,
-        paper_fn=dissect_paper,
-        batch_fn=dissect_since,
-        write_fn=backend.write_dissect_md,
-        output_check_fn=lambda pid: backend.get_paper_md_path(pid).with_suffix(".dissect.md"),
-        verb="Dissect",
-        progress_label="Extracting",
-        trace_tool="dissect",
-        success_msg="Dissect written to {path}",
-    )
+def command(args, backend):
+    from cli._process import run_process_command
+    return run_process_command(args, backend, through=3)

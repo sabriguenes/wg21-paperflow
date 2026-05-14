@@ -203,7 +203,7 @@ def test_caput_causae_defaults():
 def test_citation_audit_entry_round_trip():
     entry = CitationAuditEntry(
         paper_id="P1928R15",
-        resolution_method="wg21_link",
+        resolution_method="local_index",
         resolved=True,
         source_url="https://example.com",
         quote_match="exact",
@@ -235,7 +235,7 @@ def test_citation_audit_entry_rejects_unknown_resolution_method():
 def test_citation_task_output_round_trip():
     audit = CitationAuditEntry(
         paper_id="P2300R10",
-        resolution_method="wg21_link",
+        resolution_method="local_index",
         resolved=True,
     )
     ee = ExternalEvidence(

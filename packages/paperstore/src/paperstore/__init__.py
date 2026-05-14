@@ -36,6 +36,7 @@ from paperstore.locs import SourceLoc, loc_from_row
 from paperstore.progress import ProgressCallback as ProgressCallback
 from paperstore.progress import ProgressEvent as ProgressEvent
 from paperstore.sqlite_backend import SqliteBackend
+from paperstore.stages import STAGES, STAGE_NAMES, failed_status, failed_stage
 from paperstore.tools import PaperstoreTools
 
 __all__ = [
@@ -60,6 +61,10 @@ __all__ = [
     "ProgressEvent",
     "SourceLoc",
     "loc_from_row",
+    "STAGES",
+    "STAGE_NAMES",
+    "failed_status",
+    "failed_stage",
     "CaputCausaeRow",
     "CitationAuditRow",
     "ClaimRow",

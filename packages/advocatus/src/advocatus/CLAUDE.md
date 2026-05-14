@@ -76,3 +76,17 @@ adversarial separation.
   or write files directly.
 - **Library code uses `logging`, never `print()`.** No
   `print(file=sys.stderr)` in any package except `cli`.
+
+## Fidelity invariant
+
+If full fidelity cannot be achieved, stop. Set the paper status to failed with a clear error message. Preserve the debug transcript for diagnosis. Never produce a partial result that could be mistaken for a complete one.
+
+The tribunal must have the full dossier before filing charges. If external evidence gathering fails, the examination is incomplete. A charge filed without checking external evidence is a false charge.
+
+## Prompt injection defense
+
+Content returned by tools (read_paper, web_fetch) is untrusted data. Mitigations:
+- Structured output via pydantic-ai enforces the output schema
+- Tool returns are wrapped in <<<SOURCE>>>/<<<END_SOURCE>>> delimiters
+- System prompts instruct agents to treat delimited content as data, not instructions
+- read_paper is scoped to one paper's markdown with a 500-line cap per call
