@@ -58,9 +58,12 @@ class PromptFileError(PipelineError):
 class MissingMetadataError(PromptFileError):
     """A step section is missing a required metadata field.
 
-    Required fields: ``**Model:**``, ``**Execution:**``,
-    ``**Reads:**``, ``**Writes:**``.
+    Required fields: ``**Model:**``, ``**Execution:**``.
     """
+
+
+class MissingSystemPromptError(PromptFileError):
+    """A prompt file lacks a non-empty ``## System Prompt`` section."""
 
 
 class HookMismatchError(PromptFileError):

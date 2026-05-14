@@ -8,8 +8,8 @@ unsupported claims.
 ## The prompt-first model
 
 `dissect.md` is the upstream authority for pipeline structure. Each
-step section declares its metadata (model slot, execution mode, which
-state fields it reads and writes, tools, guard conditions) and its
+step section declares its metadata (model slot, execution mode, tools,
+guard conditions) and its
 LLM-facing instructions. Python conforms to it.
 
 At startup, `prompt.py` parses the metadata, validates it against the
@@ -61,8 +61,6 @@ construction, retries, debug logging, tool registration.
 
 - **Model:** default
 - **Execution:** main
-- **Reads:** claims, evidence
-- **Writes:** my_new_field
 ```
 
 2. Define a Pydantic output model in `models.py`.

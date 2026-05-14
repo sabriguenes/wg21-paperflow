@@ -23,10 +23,8 @@ from pipeline import sanitize_md
 
 from dissect.models import PipelineState
 
-_STATUS_DIRECTLY = "directly_supported"
-_STATUS_TRANSITIVELY = "transitively_supported"
-_STATUS_UNSUPPORTED = "unsupported"
-_SUPPORTED_STATUSES = (_STATUS_DIRECTLY, _STATUS_TRANSITIVELY)
+_SUPPORTED_VERDICTS = ("proven", "implied")
+_UNSUPPORTED_VERDICT = "unproven"
 
 
 def _uid_text(
@@ -58,20 +56,24 @@ def render_report(state: PipelineState, pid: str, title: str) -> str:
         lines.append("## Caput Causae\n")
         lines.append(f"{state.caput_causae.thesis}\n")
 
-    claims = state.claims or []
-    support_map = state.support_map or []
+    claims = state.normative_claims or []
+    verdicts = state.verdicts or []
     external_evidence = state.external_evidence or []
-    evidence = state.evidence or []
+    evidence = state.deduped_evidence or []
 
     ev_by_uid = {e.uid: e for e in evidence if e.merged_into is None}
 
     supported_uids = {
-        s.claim_uid for s in support_map
-        if s.status in _SUPPORTED_STATUSES
+        v.claim_uid for v in verdicts if v.status in _SUPPORTED_VERDICTS
     }
     unsupported_uids = {
-        s.claim_uid for s in support_map if s.status == _STATUS_UNSUPPORTED
-    }
+        v.claim_uid for v in verdicts if v.status == _UNSUPPORTED_VERDICT
+    } - supported_uids
+
+    uid_to_evidence_uids: dict[int, list[int]] = {}
+    for v in verdicts:
+        if v.status == "proven" and v.related_uid >= 0:
+            uid_to_evidence_uids.setdefault(v.claim_uid, []).append(v.related_uid)
 
     lines.append("## Unsupported Claims\n")
     unsupported = [
@@ -104,11 +106,6 @@ def render_report(state: PipelineState, pid: str, title: str) -> str:
     if not supported:
         lines.append("None identified.\n")
     else:
-        uid_to_evidence_uids: dict[int, list[int]] = {}
-        for s in support_map:
-            if s.status in _SUPPORTED_STATUSES:
-                uid_to_evidence_uids[s.claim_uid] = s.evidence_uids
-
         has_normative = any(c.kind == "normative" for c in supported)
         has_factual = any(c.kind == "factual" for c in supported)
         if has_normative and has_factual:
@@ -166,6 +163,52 @@ def _partition_merged(items: list[Any]) -> tuple[list[Any], list[Any]]:
     return survivors, merged
 
 
+_SHADOW_HEADER = (
+    "Model: BAAI/bge-small-en-v1.5 @ cosine >= 0.75 (community_detection)"
+)
+
+
+def _render_shadow_section(
+    section_label: str,
+    groups: list[list[int]] | None,
+    items: list[Any],
+) -> list[str]:
+    """Render an embedding shadow sub-section after a Dedup section.
+
+    ``section_label`` is the section number prefix (e.g. ``"2a"`` for
+    the shadow that follows ``## 2. Dedup Claims``). ``groups`` carries
+    uid lists from PipelineState; an empty list means no candidates
+    above the threshold; ``None`` means the step that would have
+    populated this group has not run yet (only fires for partial
+    pipelines stopped before the dedup step).
+    """
+    lines = [f"## {section_label}. Shadow: embedding-proposed merges\n"]
+    lines.append(_SHADOW_HEADER)
+    if not groups:
+        lines.append("")
+        lines.append("No proposals (no clusters above threshold).")
+        lines.append("")
+        return lines
+
+    lines.append(f"{len(groups)} candidate group(s) proposed (not applied):\n")
+    by_uid = {item.uid: item for item in items}
+    for i, group in enumerate(groups, 1):
+        uids_str = ", ".join(str(u) for u in group)
+        lines.append(f"Group {i}: uids {uids_str}")
+        for j, uid in enumerate(group):
+            item = by_uid.get(uid)
+            marker = " (survivor)" if j == 0 else ""
+            if item is None:
+                lines.append(f"  {uid}{marker} (uid not found)")
+            else:
+                # Items can become tombstoned between shadow time and
+                # render time (e.g. Tier 2 runs after the claim shadow).
+                tomb = " [later tombstoned]" if item.merged_into is not None else ""
+                lines.append(f'  {uid}{marker}{tomb} "{sanitize_md(item.text)}"')
+        lines.append("")
+    return lines
+
+
 def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) -> str:
     """Render a diagnostic trace of pipeline state up to stop_step."""
     title = meta.title if meta else "Untitled"
@@ -177,28 +220,49 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
         chunks = state.chunks or []
         citations = state.citations or []
         lines.append(f"- {len(chunks)} chunk{'s' if len(chunks) != 1 else ''}")
+        if state.blanked_lines:
+            lines.append(f"- {state.blanked_lines} non-prose lines blanked (code blocks, wording divs)")
         if citations:
-            cit_list = ", ".join(c.paper_id for c in citations)
+            sorted_cits = sorted(citations, key=lambda c: c.paper_id)
+            cit_list = ", ".join(c.paper_id for c in sorted_cits)
             lines.append(f"- Paper citations: {cit_list}")
         lines.append("")
 
     if stop_step >= 1:
-        lines.append("## 1. Extract Normative\n")
+        lines.append("## 1. Extract Claims\n")
         raw_claims = state.raw_claims or []
-        raw_evidence = state.raw_evidence or []
-        rhetoric = state.rhetoric or []
-        lines.append(f"{len(raw_claims)} claims, {len(raw_evidence)} evidence, {len(rhetoric)} markers extracted:\n")
+        lines.append(f"{len(raw_claims)} claims extracted:\n")
 
         if raw_claims:
-            lines.append("### Claims\n")
             for i, rc in enumerate(raw_claims[:50], 1):
-                lines.append(f'{i}. "{sanitize_md(rc.text)}" ({rc.section})')
+                lines.append(f'{i}. "{sanitize_md(rc.text)}"')
                 if rc.question:
                     lines.append(f"  - Q: {rc.question}")
             lines.append("")
 
+    if stop_step >= 2:
+        lines.append("## 2. Dedup Claims\n")
+        all_claims = state.normative_claims or []
+        normative = [c for c in all_claims if c.kind != "factual"]
+        survivors, merged = _partition_merged(normative)
+        lines.append(f"{len(normative)} -> {len(survivors)} survivors ({len(merged)} merged):\n")
+        for i, c in enumerate(normative, 1):
+            if c.merged_into is not None:
+                lines.append(f"{i}. [tombstone]")
+            else:
+                lines.append(f'{i}. "{sanitize_md(c.text)}" ({c.section})')
+                if c.question:
+                    lines.append(f"   - Q: {c.question}")
+        lines.append("")
+        lines.extend(_render_shadow_section(
+            "2a", state.shadow_claim_groups, normative,
+        ))
+
+    if stop_step >= 3:
+        lines.append("## 3. Extract Evidence\n")
+        raw_evidence = state.raw_evidence or []
+        lines.append(f"{len(raw_evidence)} evidence items extracted:\n")
         if raw_evidence:
-            lines.append("### Evidence\n")
             for i, re_ in enumerate(raw_evidence[:50], 1):
                 supports_str = re_.supports[0] if re_.supports else ""
                 flags = []
@@ -211,53 +275,13 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
                 if re_.normative:
                     flags.append("normative")
                 flag_str = f" ({', '.join(flags)})" if flags else ""
-                lines.append(f'{i}. "{sanitize_md(re_.text)}" ({re_.section})')
+                lines.append(f'{i}. "{sanitize_md(re_.text)}"')
                 lines.append(f'   - Supports: "{supports_str}"{flag_str}')
             lines.append("")
 
-        if rhetoric:
-            lines.append("### Rhetorical Markers\n")
-            for i, m in enumerate(rhetoric, 1):
-                lines.append(f'{i}. [{m.marker_type}] "{sanitize_md(m.text)}" ({m.section})')
-                lines.append(f"   - Target: {m.target} | Intensity: {m.intensity}")
-            lines.append("")
-
-    if stop_step >= 2:
-        lines.append("## 2. Dedup Claims\n")
-        all_claims = state.claims or []
-        survivors, merged = _partition_merged(all_claims)
-        lines.append(f"{len(all_claims)} -> {len(survivors)} survivors ({len(merged)} merged):\n")
-        for i, c in enumerate(all_claims, 1):
-            if c.merged_into is not None:
-                lines.append(f"{i}. [tombstone]")
-            else:
-                lines.append(f'{i}. "{sanitize_md(c.text)}" ({c.section})')
-                if c.question:
-                    lines.append(f"   - Q: {c.question}")
-        lines.append("")
-
-    if stop_step >= 3:
-        lines.append("## 3. Extract Factual\n")
-        raw_factual = state.raw_factual_claims or []
-        lines.append(f"{len(raw_factual)} factual claims extracted:\n")
-        for i, rc in enumerate(raw_factual[:50], 1):
-            lines.append(f'{i}. "{sanitize_md(rc.text)}" ({rc.section})')
-            if rc.question:
-                lines.append(f"   - Q: {rc.question}")
-        lines.append("")
-
     if stop_step >= 4:
-        lines.append("## 4. Dedup Factual Claims\n")
-        all_claims = state.claims or []
-        factual = [c for c in all_claims if c.kind == "factual"]
-        survivors = [c for c in factual if c.merged_into is None]
-        merged = [c for c in factual if c.merged_into is not None]
-        lines.append(f"{len(factual)} -> {len(survivors)} survivors ({len(merged)} merged)")
-        lines.append("")
-
-    if stop_step >= 5:
-        lines.append("## 5. Dedup Evidence\n")
-        all_ev = state.evidence or []
+        lines.append("## 4. Dedup Evidence\n")
+        all_ev = state.deduped_evidence or []
         survivors, merged = _partition_merged(all_ev)
         lines.append(f"{len(all_ev)} -> {len(survivors)} survivors ({len(merged)} merged):\n")
         for i, e in enumerate(all_ev, 1):
@@ -268,59 +292,109 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
                 lines.append(f'{i}. "{sanitize_md(e.text)}" ({e.section})')
                 lines.append(f'   - Supports: "{supports_str}"')
         lines.append("")
+        lines.extend(_render_shadow_section(
+            "4a", state.shadow_evidence_groups, all_ev,
+        ))
 
-    claims = state.claims or []
-    evidence = state.evidence or []
-    claim_index = _build_uid_index(claims)
-    ev_index = _build_uid_index(evidence)
+    if stop_step >= 5:
+        lines.append("## 5. Extract Factual\n")
+        raw_factual = state.raw_factual or []
+        lines.append(f"{len(raw_factual)} factual claims extracted:\n")
+        for i, rc in enumerate(raw_factual[:50], 1):
+            lines.append(f'{i}. "{sanitize_md(rc.text)}"')
+            if rc.question:
+                lines.append(f"   - Q: {rc.question}")
+        lines.append("")
 
     if stop_step >= 6:
-        lines.append("## 6. Verify\n")
-        smap = state.support_map or []
-
-        directly = [s for s in smap if s.status == _STATUS_DIRECTLY]
-        transitively = [s for s in smap if s.status == _STATUS_TRANSITIVELY]
-        unsupported = [s for s in smap if s.status == _STATUS_UNSUPPORTED]
-        contras = state.internal_contradictions or []
-
-        claim_vs_claim = [ic for ic in contras if ic.kind == "claim_vs_claim"]
-        ev_vs_claim = [ic for ic in contras if ic.kind == "evidence_vs_claim"]
-
-        if claim_vs_claim:
-            lines.append(f"### Claim-vs-Claim Contradictions ({len(claim_vs_claim)})\n")
-            for ic in claim_vs_claim:
-                lines.append(f'- Claim: "{_uid_text(claim_index, ic.claim_uid)}"')
-                lines.append(f'  - Contradicted by: "{_uid_text(claim_index, ic.source_uid)}"')
-            lines.append("")
-
-        if ev_vs_claim:
-            lines.append(f"### Evidence-vs-Claim Contradictions ({len(ev_vs_claim)})\n")
-            for ic in ev_vs_claim:
-                lines.append(f'- Claim: "{_uid_text(claim_index, ic.claim_uid)}"')
-                lines.append(f'  - Contradicted by: "{_uid_text(ev_index, ic.source_uid)}"')
-            lines.append("")
-
-        if unsupported:
-            lines.append(f"### Unsupported ({len(unsupported)})\n")
-            for s in unsupported:
-                lines.append(f'- "{_uid_text(claim_index, s.claim_uid)}"')
-            lines.append("")
-
-        if transitively:
-            lines.append(f"### Transitively Supported ({len(transitively)})\n")
-            for s in transitively:
-                lines.append(f'- "{_uid_text(claim_index, s.claim_uid)}"')
-            lines.append("")
-
-        lines.append(f"### Directly Supported ({len(directly)})\n")
-        for s in directly:
-            lines.append(f'- "{_uid_text(claim_index, s.claim_uid)}"')
-            for euid in s.evidence_uids:
-                lines.append(f'  - <- "{_uid_text(ev_index, euid)}"')
+        lines.append("## 6. Dedup Factual Claims\n")
+        all_claims = state.normative_claims or []
+        factual = [c for c in all_claims if c.kind == "factual"]
+        survivors = [c for c in factual if c.merged_into is None]
+        merged = [c for c in factual if c.merged_into is not None]
+        lines.append(f"{len(factual)} -> {len(survivors)} survivors ({len(merged)} merged)")
         lines.append("")
 
     if stop_step >= 7:
-        lines.append("## 7. Load-Bearing\n")
+        lines.append("## 7. Extract Rhetoric\n")
+        rhetoric = state.rhetoric or []
+        lines.append(f"{len(rhetoric)} markers extracted:\n")
+        for i, m in enumerate(rhetoric, 1):
+            lines.append(f'{i}. [{m.marker_type}] "{sanitize_md(m.text)}" ({m.section})')
+            lines.append(f"   - Target: {m.target} ({m.intensity})")
+        lines.append("")
+
+    claims = state.normative_claims or []
+    evidence = state.deduped_evidence or []
+    claim_index = _build_uid_index(claims)
+    ev_index = _build_uid_index(evidence)
+
+    if stop_step >= 8:
+        lines.append("## 8. Verify\n")
+
+        triaged = state.triaged_evidence
+        centrality = state.centrality_scores
+        candidates = state.disclaim_candidates
+        batches = state.verify_batch_count
+        self_pair_dropped = state.self_pair_dropped
+
+        if centrality is not None:
+            lines.append(
+                f"Triage: centrality scored {len(centrality)} claim(s); "
+                f"{batches} verify batch(es); "
+                f"{len(candidates or [])} disclaim candidate pair(s); "
+                f"self-pair dropped: {self_pair_dropped}."
+            )
+            if triaged:
+                evid_per_claim = [len(v) for v in triaged.values()]
+                if evid_per_claim:
+                    avg = sum(evid_per_claim) / len(evid_per_claim)
+                    lines.append(
+                        f"Triaged evidence: "
+                        f"{len(triaged)} claim(s) saw "
+                        f"{min(evid_per_claim)}-{max(evid_per_claim)} "
+                        f"evidence item(s) each (mean {avg:.1f})."
+                    )
+            if candidates:
+                preview = ", ".join(
+                    f"({a},{b})" for a, b in candidates[:5]
+                )
+                trailing = "" if len(candidates) <= 5 else f", ... +{len(candidates) - 5} more"
+                lines.append(f"Disclaim candidates (first 5): {preview}{trailing}.")
+            top_central = sorted(
+                centrality.items(), key=lambda kv: (-kv[1], kv[0])
+            )[:5]
+            if top_central:
+                lines.append(
+                    "Top central claims: " + ", ".join(
+                        f"{uid}={score:.1f}" for uid, score in top_central
+                    ) + "."
+                )
+            lines.append("")
+        else:
+            lines.append("Triage: not computed (no claims).")
+            lines.append("")
+
+        all_verdicts = state.verdicts or []
+
+        by_status: dict[str, list[Any]] = {}
+        for v in all_verdicts:
+            by_status.setdefault(v.status, []).append(v)
+
+        for status in ("disclaimed", "disproven", "unproven", "implied", "proven"):
+            group = by_status.get(status, [])
+            if not group and status not in ("proven",):
+                continue
+            lines.append(f"### {status} ({len(group)})\n")
+            for v in group:
+                lines.append(f'- "{_uid_text(claim_index, v.claim_uid)}"')
+                if v.related_uid >= 0:
+                    idx = claim_index if status in ("implied", "disclaimed") else ev_index
+                    lines.append(f'  - <- "{_uid_text(idx, v.related_uid)}"')
+            lines.append("")
+
+    if stop_step >= 9:
+        lines.append("## 9. Load-Bearing\n")
         lb = state.load_bearing_claims or []
         if lb:
             by_cls: dict[str, list[Any]] = {}
@@ -335,8 +409,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append("No classifications.")
         lines.append("")
 
-    if stop_step >= 8:
-        lines.append("## 8. Verify Citations\n")
+    if stop_step >= 10:
+        lines.append("## 10. Verify Citations\n")
         audit = state.citation_audit or []
         if audit:
             resolved_count = sum(1 for a in audit if a.resolved)
@@ -352,8 +426,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append("No citations audited.")
         lines.append("")
 
-    if stop_step >= 9:
-        lines.append("## 9. Web Search\n")
+    if stop_step >= 11:
+        lines.append("## 11. Web Search\n")
         ext = state.external_evidence or []
         lines.append(f"{len(ext)} external evidence items found:\n")
         for ex in ext[:10]:
@@ -361,8 +435,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append(f"  - {ex.finding}")
         lines.append("")
 
-    if stop_step >= 10:
-        lines.append("## 10. Resolve External\n")
+    if stop_step >= 12:
+        lines.append("## 12. Resolve External\n")
         resolutions = state.web_resolutions or []
         if resolutions:
             lines.append(f"{len(resolutions)} resolutions applied:\n")
@@ -374,8 +448,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append("No resolutions.")
         lines.append("")
 
-    if stop_step >= 11:
-        lines.append("## 11. Caput Causae\n")
+    if stop_step >= 13:
+        lines.append("## 13. Caput Causae\n")
         cc = state.caput_causae
         if cc:
             lines.append(f"**Thesis:** {cc.thesis}\n")
@@ -388,8 +462,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append("Not computed.")
             lines.append("")
 
-    if stop_step >= 12:
-        lines.append("## 12. Detect Patterns\n")
+    if stop_step >= 14:
+        lines.append("## 14. Detect Patterns\n")
         patterns = state.marker_patterns
         if patterns:
             if patterns.asymmetries:
@@ -411,6 +485,11 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
                 lines.append("")
         else:
             lines.append("No patterns detected.")
+        lines.append("")
+
+    if stop_step >= 15:
+        lines.append("## 15. Report\n")
+        lines.append("Report rendered." if state.report else "Report not rendered.")
         lines.append("")
 
     return "\n".join(lines)

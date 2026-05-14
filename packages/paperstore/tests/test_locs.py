@@ -69,6 +69,6 @@ def test_loc_from_row_rhetoric():
         section="s",
         marker_type="dismissal",
         target="t",
-        intensity="moderate",
+        intensity="medium",
     )
     assert loc_from_row(row) == SourceLoc(line=33, start_char=1, end_char=44)

@@ -10,7 +10,8 @@
 The status integer on each paper row tracks pipeline progress.
 Positive values indicate the next action needed. Negative values
 indicate failure at a specific stage: failed_status = -(stage + 1),
-recovery: retry_stage = abs(status) - 1.
+recovery: retry_stage = abs(status) - 1. The paper row's ``error``
+column stores the cause.
 """
 
 STAGES = {

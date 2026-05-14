@@ -11,7 +11,17 @@ dependencies = [
     "pydantic-ai",
     "pydantic>=2.0",
     "pymupdf~=1.27.0",
+    # Embedding triage and dedup shadow. Step 8 Verify and Step 9
+    # Load-Bearing depend on this for bounded per-LLM-call inputs;
+    # the dedup shadow uses it for observational merge proposals.
+    # First run downloads BAAI/bge-small-en-v1.5 (~120MB) into the
+    # local Hugging Face cache. Use `dissect-prefetch-embedding-model`
+    # to pre-warm it deterministically (e.g. in CI).
+    "sentence-transformers>=3.0.0",
 ]
+
+[project.scripts]
+dissect-prefetch-embedding-model = "dissect.shadow:prefetch_cli"
 
 [build-system]
 requires = ["hatchling"]

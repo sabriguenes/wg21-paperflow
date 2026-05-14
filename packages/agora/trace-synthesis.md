@@ -159,7 +159,7 @@ replaces the analytical part.
 | "Do receipts match" (§1.2c) | Steps 7-8 (web search, resolve) |
 | "Author already copped to it" (§1.3a) | Concession markers targeting the same topic |
 | "Is it a strawman" (§1.3b) | Original quotes in claim data |
-| Inconsistency anchors (§1.4d) | `internally_contested` claims + asymmetry patterns |
+| Inconsistency anchors (§1.4d) | `conflicted` claims + asymmetry patterns |
 | Miss anchors (§1.4d) | `critical_gap` claims |
 | Hot takes | Provocation and dismissal markers with `strong` intensity |
 | Tangent magnets | Technology keywords in claims and evidence (CUDA, coroutines, Rust, etc.) + dismissal targets |

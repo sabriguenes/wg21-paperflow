@@ -18,10 +18,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
-from pydantic_ai import ModelRetry
 from paperstore.backend import StorageBackend
 from paperstore.progress import ProgressCallback
 from paperstore.errors import MissingMetaError, MissingPaperMdError
@@ -44,8 +44,10 @@ from pipeline.errors import (
     PaperNotConvertedError,
     PaperNotFoundError,
     PromptFileError,
+    StepError,
 )
 from dissect.harness import (
+    _blank_non_prose,
     _chunk_paper,
     _dedup_tier0,
     _dedup_tier1,
@@ -55,66 +57,113 @@ from dissect.harness import (
     _promote_evidence,
     _promote_rhetoric,
 )
+from dissect.shadow import shadow_groups
 from dissect.models import (
+    BatchVerifyOutput,
     CaputCausaeOutput,
     CitationRef,
     CitationTaskOutput,
+    ClaimVerdict,
     DedupGroupingOutput,
-    ExtractAllOutput,
+    DisclaimPairOutput,
+    ExtractClaimsOutput,
+    ExtractEvidenceOutput,
     ExtractFactualOutput,
-    LoadBearingOutput,
+    ExtractRhetoricOutput,
+    LoadBearingBinaryOutput,
+    LoadBearingResult,
     PatternDetectionOutput,
     PipelineState,
     RawClaim,
     ResolveOutput,
-    VerifyOutput,
     WebSearchOutput,
 )
 from dissect.render import render_report, render_trace
+from dissect import triage
+from pipeline.tools import wrap_source
 
 logger = logging.getLogger(__name__)
 
 _REQUEST_LIMIT_DEDUP = 50
 _REQUEST_LIMIT_PER_CLAIM = 12
 _REQUEST_LIMIT_PER_CITATION = 12
+_REQUEST_LIMIT_PER_TASK = 5
 _CLASSIFICATION_CRITICAL_GAP = "critical_gap"
+_MAX_ITEM_FAILURE_FRACTION = 0.5
 
-_STEP_0_READ = "Step 0 - Read"
-_STEP_1_EXTRACT = "Step 1 - Extract Normative"
-_STEP_2_DEDUP_CLAIMS = "Step 2 - Dedup Claims"
-_STEP_3_EXTRACT_FACTUAL = "Step 3 - Extract Factual"
-_STEP_4_DEDUP_FACTUAL = "Step 4 - Dedup Factual Claims"
-_STEP_5_DEDUP_EVIDENCE = "Step 5 - Dedup Evidence"
-_STEP_6_VERIFY = "Step 6 - Verify"
-_STEP_7_LOAD_BEARING = "Step 7 - Load-Bearing"
-_STEP_8_VERIFY_CITATIONS = "Step 8 - Verify Citations"
-_STEP_9_WEB_SEARCH = "Step 9 - Web Search"
-_STEP_10_RESOLVE = "Step 10 - Resolve External"
-_STEP_11_CAPUT_CAUSAE = "Step 11 - Caput Causae"
-_STEP_12_DETECT_PATTERNS = "Step 12 - Detect Patterns"
-_STEP_13_REPORT = "Step 13 - Report"
+# Verify/Load-Bearing tunables.
+#
+# Each Verify LLM call carries at most VERIFY_BATCH_CLAIMS *
+# VERIFY_BATCH_EVIDENCE propositions; interleaved by claim to dilute
+# pattern bias. Disclaim checks fire per cosine-filtered claim pair.
+# CENTRALITY_TOP_K is the lower bound on Tier 1 size so very small
+# papers still get full LLM scrutiny; CENTRALITY_TOP_FRACTION scales
+# with N for larger papers. Whichever is larger wins; the cutoff is
+# generous so Tier 2 (auto-peripheral) genuinely is peripheral.
+_VERIFY_BATCH_CLAIMS = 2
+_VERIFY_BATCH_EVIDENCE = 5
+_DISCLAIM_COSINE_THRESHOLD = 0.55
+_CENTRALITY_TOP_K = 30
+_CENTRALITY_TOP_FRACTION = 0.30
+_CENTRALITY_EVIDENCE_THRESHOLD = 0.55
+_CENTRALITY_PEER_THRESHOLD = 0.55
+
+_STEP_0_READ = "0. Read"
+_STEP_1_EXTRACT_CLAIMS = "1. Extract Claims"
+_STEP_2_DEDUP_CLAIMS = "2. Dedup Claims"
+_STEP_3_EXTRACT_EVIDENCE = "3. Extract Evidence"
+_STEP_4_DEDUP_EVIDENCE = "4. Dedup Evidence"
+_STEP_5_EXTRACT_FACTUAL = "5. Extract Factual"
+_STEP_6_DEDUP_FACTUAL = "6. Dedup Factual Claims"
+_STEP_7_EXTRACT_RHETORIC = "7. Extract Rhetoric"
+_STEP_8_VERIFY = "8. Verify"
+_STEP_9_LOAD_BEARING = "9. Load-Bearing"
+_STEP_10_VERIFY_CITATIONS = "10. Verify Citations"
+_STEP_11_WEB_SEARCH = "11. Web Search"
+_STEP_12_RESOLVE = "12. Resolve External"
+_STEP_13_CAPUT_CAUSAE = "13. Caput Causae"
+_STEP_14_DETECT_PATTERNS = "14. Detect Patterns"
+_STEP_15_REPORT = "15. Report"
 
 
 # -- Output validators --------------------------------------------------------
 
 
-def _validate_analysis_complete(ctx, output):
-    if not output.analysis_complete:
-        raise ModelRetry(
-            "Analysis incomplete - set analysis_complete=True when "
-            "the chunk has been fully analyzed"
-        )
-    return output
 
 
 # -- Prepare hooks ------------------------------------------------------------
 
 
-def _prepare_extract_chunks(state: PipelineState, ctx: StepContext) -> list[str]:
+def _chunk_block(chunk) -> str:
+    """Return a line-numbered chunk wrapped as untrusted source."""
+    return wrap_source(_number_lines(chunk))
+
+
+def _prepare_extract_claims_chunks(state: PipelineState, ctx: StepContext) -> list[str]:
     assert state.chunks is not None
-    prompt_body = ctx.sections.get(_STEP_1_EXTRACT, "")
+    prompt_body = ctx.sections.get(_STEP_1_EXTRACT_CLAIMS, "")
     return [
-        f"## Chunk\n\n{_number_lines(chunk)}\n\n"
+        f"## Input\n\n{_chunk_block(chunk)}\n\n"
+        f"## Instructions\n\n{prompt_body}"
+        for chunk in state.chunks
+    ]
+
+
+def _prepare_extract_evidence_chunks(state: PipelineState, ctx: StepContext) -> list[str]:
+    assert state.chunks is not None
+    prompt_body = ctx.sections.get(_STEP_3_EXTRACT_EVIDENCE, "")
+    return [
+        f"## Input\n\n{_chunk_block(chunk)}\n\n"
+        f"## Instructions\n\n{prompt_body}"
+        for chunk in state.chunks
+    ]
+
+
+def _prepare_extract_rhetoric_chunks(state: PipelineState, ctx: StepContext) -> list[str]:
+    assert state.chunks is not None
+    prompt_body = ctx.sections.get(_STEP_7_EXTRACT_RHETORIC, "")
+    return [
+        f"## Input\n\n{_chunk_block(chunk)}\n\n"
         f"## Instructions\n\n{prompt_body}"
         for chunk in state.chunks
     ]
@@ -122,100 +171,48 @@ def _prepare_extract_chunks(state: PipelineState, ctx: StepContext) -> list[str]
 
 def _prepare_extract_factual_chunks(state: PipelineState, ctx: StepContext) -> list[str]:
     assert state.chunks is not None
-    prompt_body = ctx.sections.get(_STEP_3_EXTRACT_FACTUAL, "")
+    prompt_body = ctx.sections.get(_STEP_5_EXTRACT_FACTUAL, "")
     normative_questions: list[str] = []
-    if state.claims:
-        normative_questions = [
-            c.question for c in state.claims if c.merged_into is None
-        ]
-    questions_text = "\n".join(f"{i + 1}. {q}" for i, q in enumerate(normative_questions))
+    normative_texts: list[str] = []
+    if state.normative_claims:
+        survivors = [c for c in state.normative_claims if c.merged_into is None]
+        normative_questions = [c.question for c in survivors]
+        normative_texts = [c.text for c in survivors]
+    questions_text = "\n".join(f"- {q}" for q in normative_questions)
+    claims_text = "\n".join(f"- {t}" for t in normative_texts)
     return [
-        f"## Normative Claim Questions\n\n{questions_text}\n\n"
-        f"## Chunk\n\n{_number_lines(chunk)}\n\n"
+        f"## Normative Claim Questions\n\n{wrap_source(questions_text)}\n\n"
+        f"## Normative Claims (do not re-extract)\n\n{wrap_source(claims_text)}\n\n"
+        f"## Input\n\n{_chunk_block(chunk)}\n\n"
         f"## Instructions\n\n{prompt_body}"
         for chunk in state.chunks
     ]
 
 
 def _prepare_dedup_claims(state: PipelineState, ctx: StepContext) -> str:
-    assert state.claims is not None
-    survivors = [c for c in state.claims if c.merged_into is None]
+    assert state.normative_claims is not None
+    survivors = [c for c in state.normative_claims if c.merged_into is None]
     prompt_body = ctx.sections.get(_STEP_2_DEDUP_CLAIMS, "")
     survivor_questions = json.dumps(
         [{"idx": i, "question": s.question} for i, s in enumerate(survivors)],
         ensure_ascii=False,
     )
     return (
-        f"## Survivors\n\n{survivor_questions}\n\n"
-        f"## Instructions\n\n{prompt_body}"
-    )
-
-
-def _prepare_dedup_evidence(state: PipelineState, ctx: StepContext) -> str:
-    assert state.evidence is not None
-    survivors = [e for e in state.evidence if e.merged_into is None]
-    prompt_body = ctx.sections.get(_STEP_5_DEDUP_EVIDENCE, "")
-    survivor_supports = json.dumps(
-        [{"idx": i, "supports": s.supports} for i, s in enumerate(survivors)],
-        ensure_ascii=False,
-    )
-    return (
-        f"## Survivors\n\n{survivor_supports}\n\n"
-        f"## Instructions\n\n{prompt_body}"
-    )
-
-
-def _prepare_verify(state: PipelineState, ctx: StepContext) -> str:
-    assert state.claims is not None and state.evidence is not None
-    prompt_body = ctx.sections.get(_STEP_6_VERIFY, "")
-    claims_json = json.dumps(
-        [c.model_dump() for c in state.claims if c.merged_into is None],
-        ensure_ascii=False,
-    )
-    evidence_json = json.dumps(
-        [e.model_dump() for e in state.evidence if e.merged_into is None],
-        ensure_ascii=False,
-    )
-    return (
-        f"## Claims\n\n{claims_json}\n\n"
-        f"## Evidence\n\n{evidence_json}\n\n"
-        f"## Instructions\n\n{prompt_body}"
-    )
-
-
-def _prepare_load_bearing(state: PipelineState, ctx: StepContext) -> str:
-    assert state.claims is not None and state.support_map is not None
-    prompt_body = ctx.sections.get(_STEP_7_LOAD_BEARING, "")
-    claims_json = json.dumps(
-        [c.model_dump() for c in state.claims if c.merged_into is None],
-        ensure_ascii=False,
-    )
-    support_json = json.dumps(
-        [s.model_dump() for s in state.support_map],
-        ensure_ascii=False,
-    )
-    contradictions_json = json.dumps(
-        [ic.model_dump() for ic in (state.internal_contradictions or [])],
-        ensure_ascii=False,
-    )
-    return (
-        f"## Claims\n\n{claims_json}\n\n"
-        f"## Support Map\n\n{support_json}\n\n"
-        f"## Internal Contradictions\n\n{contradictions_json}\n\n"
+        f"## Survivors\n\n{wrap_source(survivor_questions)}\n\n"
         f"## Instructions\n\n{prompt_body}"
     )
 
 
 def _prepare_resolve(state: PipelineState, ctx: StepContext) -> str:
-    assert state.load_bearing_claims is not None and state.claims is not None
-    prompt_body = ctx.sections.get(_STEP_10_RESOLVE, "")
+    assert state.load_bearing_claims is not None and state.normative_claims is not None
+    prompt_body = ctx.sections.get(_STEP_12_RESOLVE, "")
     return (
         f"## Load-Bearing Claims\n\n"
-        f"{json.dumps([lb.model_dump() for lb in state.load_bearing_claims], ensure_ascii=False)}\n\n"
+        f"{wrap_source(json.dumps([lb.model_dump() for lb in state.load_bearing_claims], ensure_ascii=False))}\n\n"
         f"## External Evidence\n\n"
-        f"{json.dumps([ee.model_dump() for ee in (state.external_evidence or [])], ensure_ascii=False)}\n\n"
+        f"{wrap_source(json.dumps([ee.model_dump() for ee in (state.external_evidence or [])], ensure_ascii=False))}\n\n"
         f"## Claims\n\n"
-        f"{json.dumps([c.model_dump() for c in state.claims if c.merged_into is None], ensure_ascii=False)}\n\n"
+        f"{wrap_source(json.dumps([c.model_dump() for c in state.normative_claims if c.merged_into is None], ensure_ascii=False))}\n\n"
         f"## Instructions\n\n{prompt_body}"
     )
 
@@ -223,50 +220,100 @@ def _prepare_resolve(state: PipelineState, ctx: StepContext) -> str:
 # -- Extract hooks ------------------------------------------------------------
 
 
-def _extract_all(state: PipelineState, outputs: list[Any]) -> None:
+def _extract_claims(state: PipelineState, outputs: list[Any]) -> None:
     all_raw_claims = []
-    all_raw_evidence = []
-    all_raw_markers = []
-    for output in outputs:
-        all_raw_claims.extend(output.claims)
-        all_raw_evidence.extend(output.evidence)
-        all_raw_markers.extend(output.markers)
+    chunk_indices: list[int] = []
+    for chunk_idx, output in enumerate(outputs):
+        for claim in output.claims:
+            all_raw_claims.append(claim)
+            chunk_indices.append(chunk_idx)
     state.raw_claims = all_raw_claims
+    assert state.paper_source is not None
+    state.normative_claims, state.next_uid = _promote_claims(
+        all_raw_claims, state.paper_source, state.next_uid,
+        chunk_indices=chunk_indices,
+    )
+
+
+def _extract_evidence(state: PipelineState, outputs: list[Any]) -> None:
+    all_raw_evidence = []
+    chunk_indices: list[int] = []
+    for chunk_idx, output in enumerate(outputs):
+        for ev in output.evidence:
+            all_raw_evidence.append(ev)
+            chunk_indices.append(chunk_idx)
     state.raw_evidence = all_raw_evidence
+    assert state.paper_source is not None
+    state.deduped_evidence, state.next_uid = _promote_evidence(
+        all_raw_evidence, state.paper_source, state.next_uid,
+        chunk_indices=chunk_indices,
+    )
+
+
+def _extract_rhetoric(state: PipelineState, outputs: list[Any]) -> None:
+    all_raw_markers = []
+    chunk_indices: list[int] = []
+    for chunk_idx, output in enumerate(outputs):
+        for marker in output.markers:
+            all_raw_markers.append(marker)
+            chunk_indices.append(chunk_idx)
     state.raw_rhetoric = all_raw_markers
     assert state.paper_source is not None
-    state.claims, state.next_uid = _promote_claims(all_raw_claims, state.paper_source, state.next_uid)
-    state.evidence, state.next_uid = _promote_evidence(all_raw_evidence, state.paper_source, state.next_uid)
-    state.rhetoric, state.next_uid = _promote_rhetoric(all_raw_markers, state.paper_source, state.next_uid)
+    state.rhetoric, state.next_uid = _promote_rhetoric(
+        all_raw_markers, state.paper_source, state.next_uid,
+        chunk_indices=chunk_indices,
+    )
 
 
 def _extract_factual(state: PipelineState, outputs: list[Any]) -> None:
     all_raw: list[RawClaim] = []
-    for output in outputs:
-        all_raw.extend(output.claims)
-    state.raw_factual_claims = all_raw
+    chunk_indices: list[int] = []
+    for chunk_idx, output in enumerate(outputs):
+        for claim in output.claims:
+            all_raw.append(claim)
+            chunk_indices.append(chunk_idx)
+    state.raw_factual = all_raw
     assert state.paper_source is not None
-    factual_claims, state.next_uid = _promote_claims(all_raw, state.paper_source, state.next_uid)
+    factual_claims, state.next_uid = _promote_claims(
+        all_raw, state.paper_source, state.next_uid,
+        chunk_indices=chunk_indices,
+    )
     factual_claims = [
         c.model_copy(update={"kind": "factual"}) if c.kind != "factual" else c
         for c in factual_claims
     ]
-    if state.claims is None:
-        state.claims = factual_claims
+    if state.normative_claims is None:
+        state.normative_claims = factual_claims
     else:
-        state.claims = list(state.claims) + factual_claims
+        state.normative_claims = list(state.normative_claims) + factual_claims
 
 
 def _extract_dedup_claims(state: PipelineState, output: DedupGroupingOutput) -> None:
-    assert state.claims is not None
-    claims = list(state.claims)
+    assert state.normative_claims is not None
+    claims = list(state.normative_claims)
     survivors = [c for c in claims if c.merged_into is None]
+
+    # Only allow merges where questions share enough content words.
+    # Prevents the LLM from grouping by topic when questions require
+    # different evidence. Cost of a missed merge: one extra LLM call
+    # downstream. Cost of a bad merge: a lost finding.
+    from dissect.harness import dedup_overlap_candidates
+    eligible = dedup_overlap_candidates(
+        [s.question for s in survivors], min_overlap=2,
+    )
+
     for group in output.groups:
         if len(group) < 2:
             continue
         valid = [i for i in group if 0 <= i < len(survivors)]
-        if len(valid) < 2:
+        # Filter group to only pairs that passed the overlap check.
+        filtered = []
+        for i in valid:
+            if any(frozenset((i, j)) in eligible for j in valid if j != i):
+                filtered.append(i)
+        if len(filtered) < 2:
             continue
+        valid = filtered
         longest_idx = max(valid, key=lambda i: len(survivors[i].text))
         for i in valid:
             if i != longest_idx:
@@ -283,65 +330,7 @@ def _extract_dedup_claims(state: PipelineState, output: DedupGroupingOutput) -> 
                 claims[absorber_idx] = claims[absorber_idx].model_copy(
                     update={"original_quotes": merged_quotes}
                 )
-    state.claims = claims
-
-
-def _extract_dedup_evidence(state: PipelineState, output: DedupGroupingOutput) -> None:
-    assert state.evidence is not None
-    evidence = list(state.evidence)
-    survivors = [e for e in evidence if e.merged_into is None]
-    for group in output.groups:
-        if len(group) < 2:
-            continue
-        valid = [i for i in group if 0 <= i < len(survivors)]
-        if len(valid) < 2:
-            continue
-        lowest_idx = min(valid, key=lambda i: survivors[i].uid)
-        for i in valid:
-            if i != lowest_idx:
-                s = survivors[i]
-                survivor_obj = survivors[lowest_idx]
-                idx_in_evidence = next(
-                    j for j, e in enumerate(evidence) if e.uid == s.uid
-                )
-                evidence[idx_in_evidence] = s.model_copy(update={"merged_into": survivor_obj.uid})
-                absorber_idx = next(
-                    j for j, e in enumerate(evidence) if e.uid == survivor_obj.uid
-                )
-                merged_quotes = list(evidence[absorber_idx].original_quotes) + list(s.original_quotes)
-                all_supports = list(evidence[absorber_idx].supports)
-                for sup in s.supports:
-                    if sup not in all_supports:
-                        all_supports.append(sup)
-                evidence[absorber_idx] = evidence[absorber_idx].model_copy(
-                    update={
-                        "original_quotes": merged_quotes,
-                        "supports": all_supports,
-                        "quantitative": evidence[absorber_idx].quantitative or s.quantitative,
-                        "cited": evidence[absorber_idx].cited or s.cited,
-                        "verifiable": evidence[absorber_idx].verifiable or s.verifiable,
-                        "normative": evidence[absorber_idx].normative or s.normative,
-                    }
-                )
-    state.evidence = evidence
-
-
-def _extract_verify(state: PipelineState, output: VerifyOutput) -> None:
-    state.support_map = [
-        s for s in output.support_map
-        if not any(euid == s.claim_uid for euid in s.evidence_uids)
-    ]
-    claim_uids = {c.uid for c in state.claims if c.merged_into is None} if state.claims else set()
-    state.internal_contradictions = [
-        ic.model_copy(update={
-            "kind": "claim_vs_claim" if ic.source_uid in claim_uids else "evidence_vs_claim",
-        })
-        for ic in output.internal_contradictions
-    ]
-
-
-def _extract_load_bearing(state: PipelineState, output: LoadBearingOutput) -> None:
-    state.load_bearing_claims = output.results
+    state.normative_claims = claims
 
 
 def _extract_resolve(state: PipelineState, output: ResolveOutput) -> None:
@@ -350,32 +339,32 @@ def _extract_resolve(state: PipelineState, output: ResolveOutput) -> None:
 
 
 def _prepare_caput_causae(state: PipelineState, ctx: StepContext) -> str:
-    assert state.load_bearing_claims is not None and state.claims is not None
-    prompt_body = ctx.sections.get(_STEP_11_CAPUT_CAUSAE, "")
+    assert state.load_bearing_claims is not None and state.normative_claims is not None
+    prompt_body = ctx.sections.get(_STEP_13_CAPUT_CAUSAE, "")
     anchored_uids = {
         lb.claim_uid for lb in state.load_bearing_claims
         if lb.classification in ("anchored", "externally_anchored")
     }
     anchored_claims = [
-        c for c in state.claims
+        c for c in state.normative_claims
         if c.uid in anchored_uids and c.merged_into is None
     ]
     evidence_root_uids: set = set()
-    if state.support_map:
-        for s in state.support_map:
-            if s.claim_uid in anchored_uids:
-                evidence_root_uids.update(s.evidence_uids)
+    if state.verdicts:
+        for v in state.verdicts:
+            if v.claim_uid in anchored_uids and v.status == "proven" and v.related_uid >= 0:
+                evidence_root_uids.add(v.related_uid)
     evidence_items = []
-    if state.evidence:
+    if state.deduped_evidence:
         evidence_items = [
-            e for e in state.evidence
+            e for e in state.deduped_evidence
             if e.uid in evidence_root_uids and e.merged_into is None
         ]
     return (
         f"## Anchored Claims\n\n"
-        f"{json.dumps([c.model_dump() for c in anchored_claims], ensure_ascii=False)}\n\n"
+        f"{wrap_source(json.dumps([c.model_dump() for c in anchored_claims], ensure_ascii=False))}\n\n"
         f"## Evidence Roots\n\n"
-        f"{json.dumps([e.model_dump() for e in evidence_items], ensure_ascii=False)}\n\n"
+        f"{wrap_source(json.dumps([e.model_dump() for e in evidence_items], ensure_ascii=False))}\n\n"
         f"## Instructions\n\n{prompt_body}"
     )
 
@@ -385,14 +374,14 @@ def _extract_caput_causae(state: PipelineState, output: CaputCausaeOutput) -> No
 
 
 def _prepare_detect_patterns(state: PipelineState, ctx: StepContext) -> str:
-    assert state.rhetoric is not None and state.claims is not None
-    prompt_body = ctx.sections.get(_STEP_12_DETECT_PATTERNS, "")
+    assert state.rhetoric is not None and state.normative_claims is not None
+    prompt_body = ctx.sections.get(_STEP_14_DETECT_PATTERNS, "")
     markers_json = json.dumps(
         [m.model_dump() for m in state.rhetoric],
         ensure_ascii=False,
     )
     claims_json = json.dumps(
-        [c.model_dump() for c in state.claims if c.merged_into is None],
+        [c.model_dump() for c in state.normative_claims if c.merged_into is None],
         ensure_ascii=False,
     )
     thesis_preamble = ""
@@ -400,8 +389,8 @@ def _prepare_detect_patterns(state: PipelineState, ctx: StepContext) -> str:
         thesis_preamble = f"The paper's central thesis: {state.caput_causae.thesis}\n\n"
     return (
         f"{thesis_preamble}"
-        f"## Rhetorical Markers\n\n{markers_json}\n\n"
-        f"## Claims\n\n{claims_json}\n\n"
+        f"## Rhetorical Markers\n\n{wrap_source(markers_json)}\n\n"
+        f"## Claims\n\n{wrap_source(claims_json)}\n\n"
         f"## Instructions\n\n{prompt_body}"
     )
 
@@ -415,55 +404,66 @@ def _extract_detect_patterns(state: PipelineState, output: PatternDetectionOutpu
 
 async def _custom_read(state: PipelineState, ctx: StepContext) -> None:
     assert state.paper_source is not None
+    _, state.blanked_lines = _blank_non_prose(state.paper_source)
     state.chunks = _chunk_paper(state.paper_source)
     state.citations = _extract_citations(state.paper_source)
 
 
 async def _custom_dedup_claims(state: PipelineState, ctx: StepContext) -> None:
-    """Deterministic tiers 0-1 + one LLM call for tier 2 semantic grouping."""
-    assert state.claims is not None
-    claims = _dedup_tier0(state.claims)
+    """Deterministic tiers 0-1-2, plus observational embedding shadow."""
+    assert state.normative_claims is not None
+    claims = _dedup_tier0(state.normative_claims)
     claims = _dedup_tier1(claims)
-    state.claims = claims
+    state.normative_claims = claims
 
     survivors = [c for c in claims if c.merged_into is None]
+
+    # Shadow runs over post-Tier-1 survivors (before Tier 2 lexical
+    # grouping) so we can see every candidate the embeddings propose.
+    # Observational: the trace renders proposals but nothing is merged.
+    sg = shadow_groups([s.question for s in survivors])
+    state.shadow_claim_groups = [[survivors[i].uid for i in g] for g in sg]
+
     if len(survivors) <= 1:
         return
 
-    assert ctx._current_spec is not None
-    user_msg = _prepare_dedup_claims(state, ctx)
-    result = await run_agent(
-        ctx, ctx._current_spec, user_msg,
-        request_limit=_REQUEST_LIMIT_DEDUP,
-    )
-    _extract_dedup_claims(state, result.output)
+    from dissect.harness import _dedup_tier2_groups
+    groups = _dedup_tier2_groups([s.question for s in survivors])
+    if groups:
+        _extract_dedup_claims(state, DedupGroupingOutput(groups=groups))
+
+    # LLM tier-2 disabled for determinism. Restore by uncommenting:
+    # assert ctx._current_spec is not None
+    # user_msg = _prepare_dedup_claims(state, ctx)
+    # result = await run_agent(
+    #     ctx, ctx._current_spec, user_msg,
+    #     request_limit=_REQUEST_LIMIT_DEDUP,
+    # )
+    # _extract_dedup_claims(state, result.output)
 
 
 async def _custom_dedup_evidence(state: PipelineState, ctx: StepContext) -> None:
-    """Deterministic tiers 0-1 + one LLM call for tier 2 semantic grouping."""
-    assert state.evidence is not None
-    evidence = _dedup_tier0(state.evidence)
+    """Deterministic tiers 0-1, plus observational embedding shadow.
+
+    Tier 2 was removed: the prior word-overlap-on-supports heuristic
+    produced lossy semantic merges (15-of-15 problematic on P4003R3).
+    Real semantic dedup needs embeddings, which now run as the shadow.
+    """
+    assert state.deduped_evidence is not None
+    evidence = _dedup_tier0(state.deduped_evidence)
     evidence = _dedup_tier1(evidence)
-    state.evidence = evidence
+    state.deduped_evidence = evidence
 
     survivors = [e for e in evidence if e.merged_into is None]
-    if len(survivors) <= 1:
-        return
-
-    assert ctx._current_spec is not None
-    user_msg = _prepare_dedup_evidence(state, ctx)
-    result = await run_agent(
-        ctx, ctx._current_spec, user_msg,
-        request_limit=_REQUEST_LIMIT_DEDUP,
-    )
-    _extract_dedup_evidence(state, result.output)
+    sg = shadow_groups([s.text for s in survivors])
+    state.shadow_evidence_groups = [[survivors[i].uid for i in g] for g in sg]
 
 
 async def _custom_dedup_factual(state: PipelineState, ctx: StepContext) -> None:
-    """Deterministic tiers 0-1 + one LLM call for tier 2 on factual claims only."""
-    assert state.claims is not None
-    normative = [c for c in state.claims if c.kind != "factual"]
-    factual = [c for c in state.claims if c.kind == "factual"]
+    """Deterministic tiers 0-1-2 on factual claims only (no LLM)."""
+    assert state.normative_claims is not None
+    normative = [c for c in state.normative_claims if c.kind != "factual"]
+    factual = [c for c in state.normative_claims if c.kind == "factual"]
     if not factual:
         return
 
@@ -472,24 +472,480 @@ async def _custom_dedup_factual(state: PipelineState, ctx: StepContext) -> None:
 
     survivors = [c for c in factual if c.merged_into is None]
     if len(survivors) > 1:
-        assert ctx._current_spec is not None
-        prompt_body = ctx.sections.get(_STEP_4_DEDUP_FACTUAL, "")
-        survivor_questions = json.dumps(
-            [{"idx": i, "question": s.question} for i, s in enumerate(survivors)],
-            ensure_ascii=False,
-        )
-        user_msg = (
-            f"## Survivors\n\n{survivor_questions}\n\n"
-            f"## Instructions\n\n{prompt_body}"
-        )
-        result = await run_agent(
-            ctx, ctx._current_spec, user_msg,
-            request_limit=_REQUEST_LIMIT_DEDUP,
-        )
-        _extract_dedup_claims(state, result.output)
-        factual = [c for c in state.claims if c.kind == "factual"]
+        from dissect.harness import _dedup_tier2_groups
+        groups = _dedup_tier2_groups([s.question for s in survivors])
+        if groups:
+            # _extract_dedup_claims rebuilds survivors from state.normative_claims.
+            # Put factual first so survivor indices 0..N-1 align with our
+            # factual-only groups; final reorder happens below.
+            state.normative_claims = factual + normative
+            _extract_dedup_claims(state, DedupGroupingOutput(groups=groups))
+            factual = [c for c in state.normative_claims if c.kind == "factual"]
 
-    state.claims = normative + factual
+    # LLM tier-2 disabled for determinism. Restore by uncommenting:
+    # if len(survivors) > 1:
+    #     assert ctx._current_spec is not None
+    #     prompt_body = ctx.sections.get(_STEP_6_DEDUP_FACTUAL, "")
+    #     survivor_questions = json.dumps(
+    #         [{"idx": i, "question": s.question} for i, s in enumerate(survivors)],
+    #         ensure_ascii=False,
+    #     )
+    #     user_msg = (
+    #         f"## Survivors\n\n{wrap_source(survivor_questions)}\n\n"
+    #         f"## Instructions\n\n{prompt_body}"
+    #     )
+    #     result = await run_agent(
+    #         ctx, ctx._current_spec, user_msg,
+    #         request_limit=_REQUEST_LIMIT_DEDUP,
+    #     )
+    #     _extract_dedup_claims(state, result.output)
+    #     factual = [c for c in state.normative_claims if c.kind == "factual"]
+
+    state.normative_claims = normative + factual
+
+
+_SUB_PROMPT_RE = re.compile(
+    r"^###\s+Sub-prompt:\s+(?P<name>[^\n]+?)\s*\n(?P<body>.*?)(?=^###\s|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _split_sub_prompts(section_body: str) -> dict[str, str]:
+    """Extract ``### Sub-prompt: Name`` H3 blocks from a step body.
+
+    Returns ``{name: body}``. Names are case-sensitive and must match
+    the ``dissect.md`` headings exactly. Bodies are stripped of leading
+    and trailing whitespace. Missing names produce no entry.
+    """
+    return {
+        m.group("name").strip(): m.group("body").strip()
+        for m in _SUB_PROMPT_RE.finditer(section_body)
+    }
+
+
+def _resolve_model_for(ctx: StepContext) -> Any:
+    """Resolve the model object for the current step inside a custom hook."""
+    assert ctx._current_spec is not None
+    model_slot = ctx._current_spec.meta.model_slot
+    resolved = ctx.model_slots.get(model_slot)
+    if resolved is None:
+        resolved = DEFAULT_MODEL_SLOTS.get(model_slot, model_slot)
+    return resolved
+
+
+_TRAILING_PUNCT = ".,;:!?"
+
+
+def _normalize(s: str) -> str:
+    """Return ``s`` normalized for self-pair identity comparison.
+
+    Normalization applied:
+
+    - ``str.strip`` of outer whitespace,
+    - ``str.casefold`` for case-insensitive equality (handles Unicode
+      better than ``.lower()``),
+    - internal whitespace runs collapsed to a single space,
+    - trailing terminal punctuation (``.,;:!?``) stripped.
+
+    This is intentionally conservative: it only catches exact-string
+    matches and whitespace / case / trailing-punctuation variants.
+    Wider semantic equivalence is left to the model-side rule in
+    ``dissect.md`` (``Sub-prompt: Batched Verify``).
+    """
+    out = " ".join(s.strip().casefold().split())
+    while out and out[-1] in _TRAILING_PUNCT:
+        out = out[:-1].rstrip()
+    return out
+
+
+async def _custom_verify(state: PipelineState, ctx: StepContext) -> None:
+    """Verify claims via per-batch propositions and per-pair disclaim checks.
+
+    Phases (all serial per D11):
+      1. Triage: embed alive claims and evidence; cosine matrices;
+         per-claim top-K evidence; cosine-thresholded disclaim pairs.
+      2. Centrality: rank claims by graph in-degree + cosine prominence;
+         split into Tier 1 (full LLM scrutiny) and Tier 2 (auto-unproven).
+      3. Batched Verify: small LLM calls evaluating up to
+         ``VERIFY_BATCH_CLAIMS * VERIFY_BATCH_EVIDENCE`` interleaved
+         (claim, evidence) propositions. Tier 1 only.
+      4. Detect Disclaim: one LLM call per candidate pair returning
+         the propositional relation between two claims.
+      5. Aggregate: collapse to ``ClaimVerdict`` rows, default
+         ``unproven`` for any claim with no other verdict, sort,
+         write ``state.verdicts``.
+
+    The triage and centrality phases populate diagnostic state
+    (``centrality_scores``, ``triaged_evidence``, ``disclaim_candidates``,
+    ``verify_batch_count``, ``self_pair_dropped``) so the trace can show
+    what the embedding pre-filter did before any LLM call.
+
+    Between pair construction and batching, the harness drops any
+    ``(claim_uid, evidence_uid)`` whose normalized text is identical:
+    upstream Steps 3 and 5 sometimes capture the same source sentence
+    as both an Evidence item and a Factual claim, which would otherwise
+    produce a self-prove verdict at Step 8. ``self_pair_dropped``
+    counts the drops; ``dissect.md`` carries a model-side backstop for
+    near-identical wording the normalizer cannot reduce to identity.
+    """
+    assert state.normative_claims is not None
+    alive_claims = [c for c in state.normative_claims if c.merged_into is None]
+    alive_evidence = [
+        e for e in (state.deduped_evidence or []) if e.merged_into is None
+    ]
+
+    if not alive_claims:
+        state.verdicts = []
+        state.centrality_scores = {}
+        state.triaged_evidence = {}
+        state.disclaim_candidates = []
+        state.verify_batch_count = 0
+        state.self_pair_dropped = 0
+        return
+
+    # Phase 1: Triage.
+    claim_vecs = await asyncio.to_thread(triage.embed_claims, alive_claims)
+    evid_vecs = await asyncio.to_thread(triage.embed_evidence, alive_evidence)
+    claim_cos = triage.cosine_matrix(claim_vecs, claim_vecs)
+    evid_cos = triage.cosine_matrix(claim_vecs, evid_vecs)
+
+    claim_uids = [c.uid for c in alive_claims]
+    evid_uids = [e.uid for e in alive_evidence]
+
+    state.triaged_evidence = triage.top_k_per_row(
+        evid_cos, claim_uids, evid_uids, k=_VERIFY_BATCH_EVIDENCE,
+    )
+    state.disclaim_candidates = triage.above_threshold_pairs(
+        claim_cos, claim_uids, threshold=_DISCLAIM_COSINE_THRESHOLD,
+    )
+
+    # Phase 2: Centrality.
+    state.centrality_scores = triage.centrality_scores(
+        alive_claims, claim_cos, evid_cos,
+        evidence_threshold=_CENTRALITY_EVIDENCE_THRESHOLD,
+        peer_threshold=_CENTRALITY_PEER_THRESHOLD,
+    )
+    tier1_uids, _tier2_uids = triage.tier_split(
+        state.centrality_scores,
+        top_k=_CENTRALITY_TOP_K,
+        top_fraction=_CENTRALITY_TOP_FRACTION,
+    )
+    tier1_set = set(tier1_uids)
+
+    # Phase 3: Batched Verify.
+    sub_prompts = _split_sub_prompts(ctx.sections.get(_STEP_8_VERIFY, ""))
+    verify_prompt = sub_prompts.get("Batched Verify", "")
+    disclaim_prompt = sub_prompts.get("Detect Disclaim", "")
+
+    claim_by_uid = {c.uid: c for c in alive_claims}
+    evid_by_uid = {e.uid: e for e in alive_evidence}
+    system = ctx.system_prompt_for(ctx._current_spec) if ctx._current_spec else ""
+    resolved_model = _resolve_model_for(ctx)
+
+    pairs: list[tuple[int, int]] = []
+    for cuid in sorted(tier1_set):
+        for euid in state.triaged_evidence.get(cuid, []):
+            pairs.append((cuid, euid))
+
+    before = len(pairs)
+    pairs = [
+        (cuid, euid) for cuid, euid in pairs
+        if _normalize(claim_by_uid[cuid].text) != _normalize(evid_by_uid[euid].text)
+    ]
+    state.self_pair_dropped = before - len(pairs)
+
+    batches = triage.interleave_propositions(
+        pairs,
+        batch_claims=_VERIFY_BATCH_CLAIMS,
+        batch_evidence=_VERIFY_BATCH_EVIDENCE,
+    )
+    state.verify_batch_count = len(batches)
+
+    judgements: list = []
+    for batch_idx, batch in enumerate(batches):
+        prop_payload = [
+            {
+                "claim_uid": cuid,
+                "claim_text": claim_by_uid[cuid].text,
+                "claim_question": claim_by_uid[cuid].question,
+                "evidence_uid": euid,
+                "evidence_text": evid_by_uid[euid].text,
+                "evidence_supports": list(evid_by_uid[euid].supports or []),
+            }
+            for cuid, euid in batch
+        ]
+        user_msg = (
+            f"## Propositions\n\n{wrap_source(json.dumps(prop_payload, ensure_ascii=False))}\n\n"
+            f"## Instructions\n\n{verify_prompt}"
+        )
+        try:
+            batch_out = await run_task(
+                system_prompt=system,
+                user_message=user_msg,
+                output_type=BatchVerifyOutput,
+                label=f"8. Verify (batch {batch_idx + 1}/{len(batches)})",
+                debug_log=ctx.debug_log if ctx.debug else None,
+                model=resolved_model,
+                request_limit=_REQUEST_LIMIT_PER_TASK,
+            )
+        except Exception:
+            logger.warning(
+                "Verify batch %d/%d failed; treating as unrelated.",
+                batch_idx + 1, len(batches),
+                exc_info=True,
+            )
+            continue
+        judgements.extend(batch_out.judgements)
+
+    # Phase 4: Detect Disclaim.
+    disclaim_outputs: list[DisclaimPairOutput] = []
+    for a_uid, b_uid in state.disclaim_candidates:
+        if a_uid not in claim_by_uid or b_uid not in claim_by_uid:
+            continue
+        ca = claim_by_uid[a_uid]
+        cb = claim_by_uid[b_uid]
+        pair_payload = {
+            "claim_a": {
+                "uid": a_uid, "text": ca.text, "question": ca.question,
+            },
+            "claim_b": {
+                "uid": b_uid, "text": cb.text, "question": cb.question,
+            },
+        }
+        user_msg = (
+            f"## Pair\n\n{wrap_source(json.dumps(pair_payload, ensure_ascii=False))}\n\n"
+            f"## Instructions\n\n{disclaim_prompt}"
+        )
+        try:
+            pair_out = await run_task(
+                system_prompt=system,
+                user_message=user_msg,
+                output_type=DisclaimPairOutput,
+                label=f"8. Detect Disclaim ({a_uid} vs {b_uid})",
+                debug_log=ctx.debug_log if ctx.debug else None,
+                model=resolved_model,
+                request_limit=_REQUEST_LIMIT_PER_TASK,
+            )
+        except Exception:
+            logger.warning(
+                "Disclaim detection failed for pair (%d, %d).", a_uid, b_uid,
+                exc_info=True,
+            )
+            continue
+        # Force the model's reported uids to the canonical input order
+        # so a misreported uid cannot silently corrupt aggregation.
+        disclaim_outputs.append(
+            pair_out.model_copy(update={
+                "claim_a_uid": a_uid, "claim_b_uid": b_uid,
+            })
+        )
+
+    # Phase 5: Aggregate.
+    verdicts: list[ClaimVerdict] = []
+    for j in judgements:
+        if j.claim_uid not in claim_by_uid or j.evidence_uid not in evid_by_uid:
+            continue
+        if j.verdict == "support":
+            verdicts.append(ClaimVerdict(
+                claim_uid=j.claim_uid,
+                related_uid=j.evidence_uid,
+                status="proven",
+            ))
+        elif j.verdict == "contradict":
+            verdicts.append(ClaimVerdict(
+                claim_uid=j.claim_uid,
+                related_uid=j.evidence_uid,
+                status="disproven",
+            ))
+
+    for r in disclaim_outputs:
+        if r.relation == "a_disclaims_b":
+            verdicts.append(ClaimVerdict(
+                claim_uid=r.claim_b_uid,
+                related_uid=r.claim_a_uid,
+                status="disclaimed",
+            ))
+        elif r.relation == "b_disclaims_a":
+            verdicts.append(ClaimVerdict(
+                claim_uid=r.claim_a_uid,
+                related_uid=r.claim_b_uid,
+                status="disclaimed",
+            ))
+        elif r.relation == "mutual":
+            verdicts.append(ClaimVerdict(
+                claim_uid=r.claim_a_uid,
+                related_uid=r.claim_b_uid,
+                status="disclaimed",
+            ))
+            verdicts.append(ClaimVerdict(
+                claim_uid=r.claim_b_uid,
+                related_uid=r.claim_a_uid,
+                status="disclaimed",
+            ))
+
+    covered = {v.claim_uid for v in verdicts}
+    for c in alive_claims:
+        if c.uid not in covered:
+            verdicts.append(ClaimVerdict(
+                claim_uid=c.uid, related_uid=-1, status="unproven",
+            ))
+
+    verdicts.sort(key=lambda v: (v.claim_uid, v.related_uid, v.status))
+    state.verdicts = verdicts
+
+
+def _classify_provisional(
+    claim_uid: int,
+    verdicts_by_claim: dict[int, list[ClaimVerdict]],
+) -> str:
+    """Map a claim's verdicts to a provisional load-bearing classification.
+
+    Returns one of ``conflicted``, ``anchored``, or ``critical_gap``.
+    The final classification may be downgraded to ``peripheral`` or
+    upgraded to ``depends_on_contested`` after the per-claim LLM and
+    the dependency sweep.
+    """
+    vs = verdicts_by_claim.get(claim_uid, [])
+    supportive = any(v.status in ("proven", "implied") for v in vs)
+    adverse = any(v.status in ("disproven", "disclaimed") for v in vs)
+    if supportive and adverse:
+        return "conflicted"
+    if supportive:
+        return "anchored"
+    return "critical_gap"
+
+
+async def _custom_load_bearing(state: PipelineState, ctx: StepContext) -> None:
+    """Classify each claim deterministically, then per-claim LLM binary.
+
+    Phase 1: provisional classification from Step 8 verdicts plus
+    ``depends_on`` chains (pure Python).
+    Phase 2: per-claim LLM call (Tier 1 only) deciding whether the
+    claim is structurally load-bearing. Tier 2 claims auto-classified
+    as ``peripheral`` with no LLM call.
+
+    The deterministic + LLM split keeps the per-claim binary
+    cheap (one short prompt per claim, bounded by Tier 1 size) while
+    preserving the classification semantics used downstream by Steps
+    10-15.
+    """
+    assert state.normative_claims is not None
+    alive_claims = [c for c in state.normative_claims if c.merged_into is None]
+    verdicts = state.verdicts or []
+
+    if not alive_claims:
+        state.load_bearing_claims = []
+        return
+
+    verdicts_by_claim: dict[int, list[ClaimVerdict]] = {}
+    for v in verdicts:
+        verdicts_by_claim.setdefault(v.claim_uid, []).append(v)
+
+    provisional: dict[int, str] = {
+        c.uid: _classify_provisional(c.uid, verdicts_by_claim)
+        for c in alive_claims
+    }
+
+    # Re-derive Tier 1 deterministically from the centrality scores
+    # written by Step 8 so Step 9 sees the exact same partition. When
+    # Step 8 ran in fallback mode (no embeddings), every claim falls
+    # into Tier 1 by the generous-cutoff rule.
+    tier1_uids, _tier2 = triage.tier_split(
+        state.centrality_scores or {c.uid: 1.0 for c in alive_claims},
+        top_k=_CENTRALITY_TOP_K,
+        top_fraction=_CENTRALITY_TOP_FRACTION,
+    )
+    tier1_set = set(tier1_uids)
+
+    dependents_by_uid: dict[int, list[int]] = {c.uid: [] for c in alive_claims}
+    for c in alive_claims:
+        for dep_uid in c.depends_on or []:
+            if dep_uid in dependents_by_uid:
+                dependents_by_uid[dep_uid].append(c.uid)
+
+    sub_prompts = _split_sub_prompts(ctx.sections.get(_STEP_9_LOAD_BEARING, ""))
+    binary_prompt = sub_prompts.get("Load-Bearing Binary", "")
+
+    system = ctx.system_prompt_for(ctx._current_spec) if ctx._current_spec else ""
+    resolved_model = _resolve_model_for(ctx)
+    caput_hint = ""
+    if state.caput_causae is not None:
+        caput_hint = state.caput_causae.thesis
+
+    claim_text_by_uid = {c.uid: c.text for c in alive_claims}
+
+    load_bearing_by_uid: dict[int, bool] = {}
+    for c in alive_claims:
+        if c.uid not in tier1_set:
+            load_bearing_by_uid[c.uid] = False
+            continue
+        deps_text = [
+            claim_text_by_uid.get(u, "") for u in dependents_by_uid[c.uid]
+        ]
+        payload = {
+            "claim_uid": c.uid,
+            "claim_text": c.text,
+            "claim_question": c.question,
+            "section": c.section,
+            "dependent_claims": deps_text,
+            "provisional_classification": provisional[c.uid],
+            "central_thesis_hint": caput_hint,
+        }
+        user_msg = (
+            f"## Claim\n\n{wrap_source(json.dumps(payload, ensure_ascii=False))}\n\n"
+            f"## Instructions\n\n{binary_prompt}"
+        )
+        try:
+            out = await run_task(
+                system_prompt=system,
+                user_message=user_msg,
+                output_type=LoadBearingBinaryOutput,
+                label=f"9. Load-Bearing Binary (uid {c.uid})",
+                debug_log=ctx.debug_log if ctx.debug else None,
+                model=resolved_model,
+                request_limit=_REQUEST_LIMIT_PER_TASK,
+            )
+        except Exception:
+            # Bias toward load-bearing on failure so a missing per-claim
+            # decision never silently demotes a claim out of downstream
+            # scrutiny.
+            logger.warning(
+                "Load-Bearing Binary failed for claim uid %d; defaulting to True.",
+                c.uid, exc_info=True,
+            )
+            load_bearing_by_uid[c.uid] = True
+            continue
+        load_bearing_by_uid[c.uid] = bool(out.load_bearing)
+
+    # Compose final classifications.
+    final: dict[int, str] = {}
+    for c in alive_claims:
+        if not load_bearing_by_uid.get(c.uid, False):
+            final[c.uid] = "peripheral"
+            continue
+        final[c.uid] = provisional[c.uid]
+
+    # depends_on_contested: an otherwise-anchored claim that points to
+    # a contested or critically-gapped dependency carries the
+    # contestation forward. Done after the per-claim pass so the source
+    # claim's own classification is settled first.
+    for c in alive_claims:
+        if final[c.uid] != "anchored":
+            continue
+        for dep_uid in c.depends_on or []:
+            dep_cls = final.get(dep_uid)
+            if dep_cls in ("conflicted", "critical_gap"):
+                final[c.uid] = "depends_on_contested"
+                break
+
+    state.load_bearing_claims = [
+        LoadBearingResult(
+            claim_uid=c.uid,
+            dependents=sorted(dependents_by_uid[c.uid]),
+            classification=final[c.uid],  # type: ignore[arg-type]
+        )
+        for c in sorted(alive_claims, key=lambda x: x.uid)
+    ]
 
 
 def _citation_info(
@@ -517,24 +973,20 @@ def _citation_info(
 
 async def _custom_verify_citations(state: PipelineState, ctx: StepContext) -> None:
     """Spawn a run_task per citation in parallel to verify and collect evidence."""
-    assert state.citations is not None and state.claims is not None
+    assert state.citations is not None and state.normative_claims is not None
 
     web_fetch_fn = ctx.tool_registry["web_fetch"]
 
     assert ctx._current_spec is not None
-    prompt_body = ctx.sections.get(_STEP_8_VERIFY_CITATIONS, "")
-    system = (
-        "You are a citation verifier. Fetch the cited paper, check whether "
-        "it says what the citing paper claims, and report any evidence "
-        "relevant to the paper's claims."
-    )
+    prompt_body = ctx.sections.get(_STEP_10_VERIFY_CITATIONS, "")
+    system = ctx.system_prompt_for(ctx._current_spec)
     model_slot = ctx._current_spec.meta.model_slot
     resolved = ctx.model_slots.get(model_slot)
     if resolved is None:
         resolved = DEFAULT_MODEL_SLOTS.get(model_slot, model_slot)
 
-    alive_claims = [c for c in state.claims if c.merged_into is None]
-    alive_evidence = [e for e in (state.evidence or []) if e.merged_into is None]
+    alive_claims = [c for c in state.normative_claims if c.merged_into is None]
+    alive_evidence = [e for e in (state.deduped_evidence or []) if e.merged_into is None]
 
     citation_info = await asyncio.to_thread(
         _citation_info, state.citations, ctx.backend,
@@ -580,11 +1032,11 @@ async def _custom_verify_citations(state: PipelineState, ctx: StepContext) -> No
             f"## Citation\n\nPaper: {cit.paper_id} (cited {cit.count} times)\n\n"
             f"{status_block}"
             f"## Primary Claims\n\n"
-            f"{json.dumps([c.model_dump() for c in primary_claims], ensure_ascii=False)}\n\n"
+            f"{wrap_source(json.dumps([c.model_dump() for c in primary_claims], ensure_ascii=False))}\n\n"
             f"## Primary Evidence\n\n"
-            f"{json.dumps([e.model_dump() for e in primary_evidence], ensure_ascii=False)}\n\n"
+            f"{wrap_source(json.dumps([e.model_dump() for e in primary_evidence], ensure_ascii=False))}\n\n"
             f"## Secondary Questions\n\n"
-            f"{json.dumps(secondary_questions, ensure_ascii=False)}\n\n"
+            f"{wrap_source(json.dumps(secondary_questions, ensure_ascii=False))}\n\n"
             f"## Instructions\n\n{prompt_body}"
         )
         try:
@@ -592,13 +1044,14 @@ async def _custom_verify_citations(state: PipelineState, ctx: StepContext) -> No
                 system_prompt=system,
                 user_message=user_msg,
                 output_type=CitationTaskOutput,
-                label=f"Step 8 - Verify Citations ({cit.paper_id})",
+                label=f"10. Verify Citations ({cit.paper_id})",
                 debug_log=ctx.debug_log if ctx.debug else None,
                 tools=tools,
                 model=resolved,
                 request_limit=_REQUEST_LIMIT_PER_CITATION,
             )
         except Exception:
+            # Per-citation failures are thresholded after all tasks complete.
             logger.warning(
                 "Citation verification failed for %s", cit.paper_id,
                 exc_info=True,
@@ -606,6 +1059,16 @@ async def _custom_verify_citations(state: PipelineState, ctx: StepContext) -> No
             return None
 
     results = await asyncio.gather(*[_one_citation(c) for c in state.citations])
+    failed = sum(1 for r in results if r is None)
+    if results and failed / len(results) > _MAX_ITEM_FAILURE_FRACTION:
+        raise StepError(
+            ctx._current_spec.meta.number,
+            ctx._current_spec.meta.name,
+            RuntimeError(
+                f"Citation verification failed for {failed}/{len(results)} "
+                f"citations, above threshold {_MAX_ITEM_FAILURE_FRACTION:.0%}."
+            ),
+        )
 
     audit_entries = []
     evidence_items = list(state.external_evidence or [])
@@ -621,7 +1084,7 @@ async def _custom_verify_citations(state: PipelineState, ctx: StepContext) -> No
 
 async def _custom_web_search(state: PipelineState, ctx: StepContext) -> None:
     """Spawn a run_task per triggered claim in parallel for web research."""
-    assert state.claims is not None and state.load_bearing_claims is not None
+    assert state.normative_claims is not None and state.load_bearing_claims is not None
 
     triggered = [
         lb for lb in state.load_bearing_claims
@@ -637,7 +1100,7 @@ async def _custom_web_search(state: PipelineState, ctx: StepContext) -> None:
     claims_for_search = []
     for lb in triggered:
         claim = next(
-            (c for c in state.claims if c.uid == lb.claim_uid and c.merged_into is None),
+            (c for c in state.normative_claims if c.uid == lb.claim_uid and c.merged_into is None),
             None,
         )
         if claim:
@@ -650,17 +1113,17 @@ async def _custom_web_search(state: PipelineState, ctx: StepContext) -> None:
     web_fetch_fn = ctx.tool_registry["web_fetch"]
 
     assert ctx._current_spec is not None
-    prompt_body = ctx.sections.get(_STEP_9_WEB_SEARCH, "")
-    system = ctx.sections.get("System Prompt", "")
+    prompt_body = ctx.sections.get(_STEP_11_WEB_SEARCH, "")
+    system = ctx.system_prompt_for(ctx._current_spec)
     model_slot = ctx._current_spec.meta.model_slot
     resolved = ctx.model_slots.get(model_slot)
     if resolved is None:
         resolved = DEFAULT_MODEL_SLOTS.get(model_slot, model_slot)
 
-    async def _one_claim(claim) -> list:
+    async def _one_claim(claim) -> tuple[bool, list]:
         user_msg = (
             f"## Claim\n\n"
-            f"{json.dumps(claim.model_dump(), ensure_ascii=False)}\n\n"
+            f"{wrap_source(json.dumps(claim.model_dump(), ensure_ascii=False))}\n\n"
             f"## Instructions\n\n{prompt_body}"
         )
         try:
@@ -668,33 +1131,44 @@ async def _custom_web_search(state: PipelineState, ctx: StepContext) -> None:
                 system_prompt=system,
                 user_message=user_msg,
                 output_type=WebSearchOutput,
-                label=f"Step 9 - Web Search (uid {claim.uid})",
+                label=f"11. Web Search (uid {claim.uid})",
                 debug_log=ctx.debug_log if ctx.debug else None,
                 tools={"deep_search": deep_search_fn, "web_fetch": web_fetch_fn},
                 model=resolved,
                 request_limit=_REQUEST_LIMIT_PER_CLAIM,
             )
-            return [
+            return True, [
                 ee.model_copy(update={"claim_uid": claim.uid})
                 for ee in result.external_evidence
             ]
         except Exception:
+            # Per-claim search failures are thresholded after all tasks complete.
             logger.warning(
                 "Web search failed for claim uid %d", claim.uid,
                 exc_info=True,
             )
-            return []
+            return False, []
 
     results = await asyncio.gather(*[_one_claim(c) for c in claims_for_search])
+    failed = sum(1 for ok, _ in results if not ok)
+    if results and failed / len(results) > _MAX_ITEM_FAILURE_FRACTION:
+        raise StepError(
+            ctx._current_spec.meta.number,
+            ctx._current_spec.meta.name,
+            RuntimeError(
+                f"Web search failed for {failed}/{len(results)} claims, "
+                f"above threshold {_MAX_ITEM_FAILURE_FRACTION:.0%}."
+            ),
+        )
 
     all_evidence = list(state.external_evidence or [])
-    for batch in results:
+    for _, batch in results:
         all_evidence.extend(batch)
     state.external_evidence = all_evidence
 
 
 async def _custom_report(state: PipelineState, ctx: StepContext) -> None:
-    assert state.claims is not None
+    assert state.normative_claims is not None
     meta = await asyncio.to_thread(ctx.backend.get_meta, ctx.pid) if ctx.backend else None
     title = meta.title if meta else "Untitled"
     state.report = render_report(state, ctx.pid, title)
@@ -746,11 +1220,10 @@ def _guard_detect_patterns(state: PipelineState) -> bool:
 _HOOKS: dict[str, StepHooks] = {
     _STEP_0_READ: StepHooks(custom=_custom_read),
 
-    _STEP_1_EXTRACT: StepHooks(
-        output_type=ExtractAllOutput,
-        prepare=_prepare_extract_chunks,
-        extract=_extract_all,
-        output_validator=_validate_analysis_complete,
+    _STEP_1_EXTRACT_CLAIMS: StepHooks(
+        output_type=ExtractClaimsOutput,
+        prepare=_prepare_extract_claims_chunks,
+        extract=_extract_claims,
         parallel=True,
     ),
 
@@ -759,47 +1232,52 @@ _HOOKS: dict[str, StepHooks] = {
         custom=_custom_dedup_claims,
     ),
 
-    _STEP_3_EXTRACT_FACTUAL: StepHooks(
-        output_type=ExtractFactualOutput,
-        prepare=_prepare_extract_factual_chunks,
-        extract=_extract_factual,
-        output_validator=_validate_analysis_complete,
+    _STEP_3_EXTRACT_EVIDENCE: StepHooks(
+        output_type=ExtractEvidenceOutput,
+        prepare=_prepare_extract_evidence_chunks,
+        extract=_extract_evidence,
         parallel=True,
     ),
 
-    _STEP_4_DEDUP_FACTUAL: StepHooks(
-        output_type=DedupGroupingOutput,
-        custom=_custom_dedup_factual,
-    ),
-
-    _STEP_5_DEDUP_EVIDENCE: StepHooks(
+    _STEP_4_DEDUP_EVIDENCE: StepHooks(
         output_type=DedupGroupingOutput,
         custom=_custom_dedup_evidence,
     ),
 
-    _STEP_6_VERIFY: StepHooks(
-        output_type=VerifyOutput,
-        prepare=_prepare_verify,
-        extract=_extract_verify,
+    _STEP_5_EXTRACT_FACTUAL: StepHooks(
+        output_type=ExtractFactualOutput,
+        prepare=_prepare_extract_factual_chunks,
+        extract=_extract_factual,
+        parallel=True,
     ),
 
-    _STEP_7_LOAD_BEARING: StepHooks(
-        output_type=LoadBearingOutput,
-        prepare=_prepare_load_bearing,
-        extract=_extract_load_bearing,
+    _STEP_6_DEDUP_FACTUAL: StepHooks(
+        output_type=DedupGroupingOutput,
+        custom=_custom_dedup_factual,
     ),
 
-    _STEP_8_VERIFY_CITATIONS: StepHooks(
+    _STEP_7_EXTRACT_RHETORIC: StepHooks(
+        output_type=ExtractRhetoricOutput,
+        prepare=_prepare_extract_rhetoric_chunks,
+        extract=_extract_rhetoric,
+        parallel=True,
+    ),
+
+    _STEP_8_VERIFY: StepHooks(custom=_custom_verify),
+
+    _STEP_9_LOAD_BEARING: StepHooks(custom=_custom_load_bearing),
+
+    _STEP_10_VERIFY_CITATIONS: StepHooks(
         custom=_custom_verify_citations,
         guard=_guard_verify_citations,
     ),
 
-    _STEP_9_WEB_SEARCH: StepHooks(
+    _STEP_11_WEB_SEARCH: StepHooks(
         custom=_custom_web_search,
         guard=_guard_web_search,
     ),
 
-    _STEP_10_RESOLVE: StepHooks(
+    _STEP_12_RESOLVE: StepHooks(
         output_type=ResolveOutput,
         prepare=_prepare_resolve,
         extract=_extract_resolve,
@@ -807,21 +1285,21 @@ _HOOKS: dict[str, StepHooks] = {
         request_limit=15,
     ),
 
-    _STEP_11_CAPUT_CAUSAE: StepHooks(
+    _STEP_13_CAPUT_CAUSAE: StepHooks(
         output_type=CaputCausaeOutput,
         prepare=_prepare_caput_causae,
         extract=_extract_caput_causae,
         guard=_guard_caput_causae,
     ),
 
-    _STEP_12_DETECT_PATTERNS: StepHooks(
+    _STEP_14_DETECT_PATTERNS: StepHooks(
         output_type=PatternDetectionOutput,
         prepare=_prepare_detect_patterns,
         extract=_extract_detect_patterns,
         guard=_guard_detect_patterns,
     ),
 
-    _STEP_13_REPORT: StepHooks(custom=_custom_report),
+    _STEP_15_REPORT: StepHooks(custom=_custom_report),
 }
 
 
@@ -839,15 +1317,15 @@ def _persist_step(
     step_name = spec.meta.name
     if step_name == _STEP_0_READ and state.citations:
         ctx.backend.store_paper_citations(ctx.pid, state.citations)
-    elif step_name == _STEP_1_EXTRACT and state.rhetoric:
+    elif step_name == _STEP_2_DEDUP_CLAIMS and state.normative_claims:
+        ctx.backend.store_claims(ctx.pid, state.normative_claims)
+    elif step_name == _STEP_4_DEDUP_EVIDENCE and state.deduped_evidence:
+        ctx.backend.store_evidence(ctx.pid, state.deduped_evidence)
+    elif step_name == _STEP_7_EXTRACT_RHETORIC and state.rhetoric:
         ctx.backend.store_rhetoric(ctx.pid, state.rhetoric)
-    elif step_name == _STEP_2_DEDUP_CLAIMS and state.claims:
-        ctx.backend.store_claims(ctx.pid, state.claims)
-    elif step_name == _STEP_5_DEDUP_EVIDENCE and state.evidence:
-        ctx.backend.store_evidence(ctx.pid, state.evidence)
-    elif step_name == _STEP_6_VERIFY and state.support_map and state.claims:
-        ctx.backend.store_questions(ctx.pid, state.claims, state.support_map)
-    elif step_name == _STEP_8_VERIFY_CITATIONS and state.citation_audit:
+    elif step_name == _STEP_8_VERIFY and state.verdicts and state.normative_claims:
+        ctx.backend.store_questions(ctx.pid, state.normative_claims, state.verdicts)
+    elif step_name == _STEP_10_VERIFY_CITATIONS and state.citation_audit:
         from types import SimpleNamespace
         ctx.backend.store_citation_audit(ctx.pid, [
             SimpleNamespace(
@@ -860,9 +1338,9 @@ def _persist_step(
             )
             for e in state.citation_audit
         ])
-    elif step_name == _STEP_9_WEB_SEARCH and state.external_evidence:
+    elif step_name == _STEP_11_WEB_SEARCH and state.external_evidence:
         ctx.backend.store_external_citations(ctx.pid, state.external_evidence)
-    elif step_name == _STEP_11_CAPUT_CAUSAE and state.caput_causae:
+    elif step_name == _STEP_13_CAPUT_CAUSAE and state.caput_causae:
         ctx.backend.store_caput_causae(ctx.pid, state.caput_causae.thesis)
 
 
@@ -903,13 +1381,7 @@ async def dissect_paper(
     from dissect.pdf_extract import extract_pdf_text
 
     slots = {**DEFAULT_MODEL_SLOTS, **(model_slots or {})}
-    secs = load_sections("dissect", "dissect.md")
-
-    if "System Prompt" not in secs:
-        raise PromptFileError(
-            "'System Prompt' section not found in dissect.md. "
-            f"Available sections: {sorted(secs)}"
-        )
+    secs = dict(load_sections("dissect", "dissect.md"))
 
     pipeline = build_pipeline(secs, _HOOKS)
 
@@ -1017,7 +1489,9 @@ async def dissect_since(
             logger.info("Dissected %s -> %s", pid, out_path)
             results.append({"paper_id": pid, "status": "ok", "error": None})
         except Exception as exc:
+            # Batch mode records the failed paper and continues with later papers.
             logger.error("Failed to dissect %s: %s", pid, exc)
+            backend.fail_paper(pid, 2, str(exc))
             results.append({"paper_id": pid, "status": "error", "error": str(exc)})
 
     return results

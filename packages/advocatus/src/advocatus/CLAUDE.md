@@ -1,92 +1,40 @@
-# advocatus - Agent Rules
+# advocatus
 
-## Philosophy
+LLM-driven paper examination pipeline (the two-office tribunal). Project-wide rules live in the root `CLAUDE.md`; framework rules in `packages/pipeline/src/pipeline/CLAUDE.md`; sampling and concurrency rationale in `MODELS.md`.
 
-`advocatus.md` is the upstream authority for pipeline structure. It
-defines the step sequence, step metadata (model slot, execution mode,
-reads, writes, tools, conditions), and all LLM-facing instructions.
-Python conforms to it.
+## Authority
 
-The advocatus pipeline implements the two-office tribunal described in
-`about.md`: the **Advocatus Diaboli** drafts candidate charges; the
-**Defensor Causae** cross-examines each one through six challenges.
-Surviving charges become objections in the *Relatio*; killed charges
-earn the section a *probatio*. The pipeline reads dissect output from
-paperstore and adds what dissect did not produce: stakeholder
-positions, candidate charges, Defensor verdicts, motivatio, the
-Relatio.
+`advocatus.md` is the upstream authority for pipeline structure. It defines the step sequence, step metadata (model slot, execution mode, tools, conditions), and all LLM-facing instructions. Python conforms.
 
-**One-shot, fully batch.** No `AskQuestion`, no human-in-the-loop, no
-resumable runs. Single overall `confidence: float` on the Relatio is
-the transparency signal.
+## What this pipeline does
+
+The Advocatus Diaboli drafts candidate charges; the Defensor Causae cross-examines each through six challenges (Confessio, Articulus, Testimonium, Humanitas, Prudentia, Dignitas). Surviving charges become objections in the Relatio; killed charges earn the section a probatio. The pipeline reads dissect output from paperstore and adds what dissect did not produce: stakeholder positions, candidate charges, Defensor verdicts, motivatio, the Relatio.
+
+One-shot, fully batch. No `AskQuestion`, no human-in-the-loop, no resumable runs. A single overall `confidence: float` on the Relatio is the transparency signal.
 
 ## Layout
 
-- `advocatus.md` - prompt document and pipeline authority. Step
-  metadata (Model, Execution, Reads, Writes, Tools, Condition) is
-  parsed by `prompt.py` at startup. LLM-facing instructions are loaded
-  as section text. Editing this file changes prompts and pipeline
-  config without touching Python.
-- `about.md` - canonical office description (Advocatus Diaboli /
-  Defensor Causae). Mirrors `dissect/about.md`. Source of voice and
-  rubric for the LLM-facing text in `advocatus.md`.
-- `prompt.py` - parses step metadata from `advocatus.md`, validates
-  against registered hooks, builds the ordered `StepSpec` list. Raises
-  `PromptFileError` subtypes on structural mismatches.
-- `pipeline.py` - async orchestration: `StepContext`, hook registry
-  (`_HOOKS`), generic runner (`_run_agent`), dispatch loop, and the
-  public `advocatus_paper()` entry point. Module-level
-  `_task_semaphore = asyncio.Semaphore(5)` caps every parallel
-  sub-agent dispatch.
-- `render.py` - renders the *Relatio* (Seal, Objections, Probationes,
-  Tabula Fontium, Acta, Notae Minores).
-- `parse.py` - **domain-free** H2 markdown section splitter. Copied
-  from dissect.
-- `models.py` - Pydantic models for domain types and per-step outputs.
-  `SourceLoc` imported from `paperstore` (canonical home for the loc
-  type).
+- `advocatus.md` - prompt document and pipeline authority.
+- `about.md` - canonical office description. Mirrors `dissect/about.md`. Source of voice and rubric for `advocatus.md`.
+- `prompt.py` - parses step metadata, validates against registered hooks, builds the ordered `StepSpec` list.
+- `pipeline.py` - async orchestration: `StepContext`, hook registry (`_HOOKS`), dispatch loop, public `advocatus_paper()` entry point. Sub-agent dispatch goes through `pipeline.tasks.run_task`, which serializes via the shared `_task_semaphore`.
+- `render.py` - renders the Relatio (Seal, Objections, Probationes, Tabula Fontium, Acta, Notae Minores).
+- `parse.py` - domain-free H2 markdown section splitter.
+- `models.py` - Pydantic models for domain types and per-step outputs. `SourceLoc` imported from `paperstore`.
 - `errors.py` - error hierarchy.
 
 ## Pipeline architecture
 
-11 steps (0-10) grouped into four phases (Citatio, Inquisitio, Examen,
-Relatio). Pure-Python steps: 0, 2, 3, 4, 10. LLM `default` steps: 1,
-5, 6, 7, 8, 9.
+11 steps (0-10) grouped into four phases (Citatio, Inquisitio, Examen, Relatio). Pure-Python steps: 0, 2, 3, 4, 10. LLM `default` steps: 1, 5, 6, 7, 8, 9.
 
-Step 7 (Defensor Cross-Examination) spawns one isolated sub-agent per
-candidate charge. Each sub-agent receives only: the candidate charge,
-the paper quote it attacks (with `SourceLoc`), the relevant dossier
-slice, the boundaries, the rhetoric, and the six-challenge rubric.
-Never the prosecution's chain-of-thought. This is the structural
-adversarial separation.
+Step 7 (Defensor Cross-Examination) spawns one isolated sub-agent per candidate charge via `run_task`. Each sub-agent receives only the candidate charge, the paper quote it attacks (with `SourceLoc`), the relevant dossier slice, the boundaries, the rhetoric, and the six-challenge rubric - never the prosecution's chain-of-thought. This is the structural adversarial separation.
 
 ## Invariants
 
-- **`advocatus.md` is the authority.** Step metadata drives model slot,
-  execution mode, reads/writes, and tool registration.
-- **No hardcoded prompt strings.** All LLM-facing text comes from
-  `advocatus.md` at runtime.
-- **No human loop.** No `AskQuestion`, no input prompts, no resumable
-  runs. The pipeline runs end-to-end and emits its best judgment.
-- **Provenance bound at generation time.** Every charge, objection,
-  probatio, nota minor carries a `SourceLoc` (from paperstore).
-- **Concurrency capped at 5.** Single module-level
-  `asyncio.Semaphore(5)` covers every parallel sub-agent dispatch.
-- **Paperstore is the only storage interface.** Never construct paths
-  or write files directly.
-- **Library code uses `logging`, never `print()`.** No
-  `print(file=sys.stderr)` in any package except `cli`.
-
-## Fidelity invariant
-
-If full fidelity cannot be achieved, stop. Set the paper status to failed with a clear error message. Preserve the debug transcript for diagnosis. Never produce a partial result that could be mistaken for a complete one.
-
-The tribunal must have the full dossier before filing charges. If external evidence gathering fails, the examination is incomplete. A charge filed without checking external evidence is a false charge.
-
-## Prompt injection defense
-
-Content returned by tools (read_paper, web_fetch) is untrusted data. Mitigations:
-- Structured output via pydantic-ai enforces the output schema
-- Tool returns are wrapped in <<<SOURCE>>>/<<<END_SOURCE>>> delimiters
-- System prompts instruct agents to treat delimited content as data, not instructions
-- read_paper is scoped to one paper's markdown with a 500-line cap per call
+- `advocatus.md` is the authority. Step metadata drives model slot, execution mode, and tool registration.
+- No hardcoded prompt strings. All LLM-facing text comes from `advocatus.md` at runtime.
+- No human loop. No `AskQuestion`, no input prompts, no resumable runs. The pipeline runs end-to-end and emits its best judgment.
+- Provenance bound at generation time. Every charge, objection, probatio, nota minor carries a `SourceLoc` (from paperstore).
+- Serial LLM dispatch. This pipeline depends on `pipeline.runner._parallel_semaphore` and `pipeline.tasks._task_semaphore` both being `asyncio.Semaphore(1)`. Step 7 (Defensor Cross-Examination) spawns one `run_task` per candidate charge; those sub-agents must execute sequentially so the Relatio is reproducible across runs. See D11 in the root `CLAUDE.md`. A future package that opts into concurrent dispatch must do so without raising those semaphores from this pipeline's perspective.
+- D6 reminder: every step hook declares `output_type=<PydanticModel>`.
+- D7 reminder: when feeding state collections into prompts, sort first. The `_dossier_slice_for_charge` heuristic already sorts by overlap score; preserve that pattern when extending it.

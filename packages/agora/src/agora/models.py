@@ -34,7 +34,7 @@ PaperType = Literal["wording", "proposal", "directional"]
 HeatTier = Literal["cold", "warm", "hot", "thermonuclear"]
 InterestTier = Literal["niche", "relevant", "magnetic", "gravitational"]
 Subreddit = Literal["r/ewg", "r/lewg", "r/cwg", "r/lwg"]
-AnchorKind = Literal["load_bearing", "internally_contested", "critical_gap"]
+AnchorKind = Literal["load_bearing", "conflicted", "critical_gap"]
 ReplyRole = Literal[
     "signal",
     "noise",

@@ -43,8 +43,6 @@ def test_parse_step_meta_extracts_fields():
     body = """
 - **Model:** default
 - **Execution:** parallel
-- **Reads:** articuli, dossier
-- **Writes:** exams
 - **Tools:** web_search
 
 Some narrative.
@@ -53,24 +51,19 @@ Some narrative.
     assert meta.number == 5
     assert meta.model_slot == "default"
     assert meta.execution == "parallel"
-    assert meta.reads == ["articuli", "dossier"]
-    assert meta.writes == ["exams"]
     assert meta.tools == ["web_search"]
 
 
 def test_parse_step_meta_missing_field_raises():
     body = """
-- **Model:** default
 - **Execution:** main
-
-(no Reads/Writes)
 """
     with pytest.raises(MissingMetadataError):
         parse_step_meta("Step 1 - Foo", body)
 
 
 def test_parse_step_meta_bad_header_raises():
-    body = "- **Model:** default\n- **Execution:** main\n- **Reads:** x\n- **Writes:** y\n"
+    body = "- **Model:** default\n- **Execution:** main\n"
     with pytest.raises(MissingMetadataError):
         parse_step_meta("Not A Step", body)
 
@@ -80,8 +73,6 @@ def test_build_pipeline_orphan_hook_raises():
 
 - **Model:** none
 - **Execution:** main
-- **Reads:** x
-- **Writes:** y
 """
     secs = sections(body)
     hooks = {
@@ -97,8 +88,6 @@ def test_build_pipeline_missing_hook_raises():
 
 - **Model:** none
 - **Execution:** main
-- **Reads:** x
-- **Writes:** y
 """
     secs = sections(body)
     with pytest.raises(HookMismatchError):

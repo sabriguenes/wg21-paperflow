@@ -12,6 +12,7 @@ from __future__ import annotations
 from pipeline.errors import (
     HookMismatchError,
     MissingMetadataError,
+    MissingSystemPromptError,
     PaperNotConvertedError,
     PaperNotDissectedError,
     PaperNotFoundError,
@@ -41,7 +42,7 @@ from pipeline.session import (
 )
 from pipeline.process import ensure_paper_md, process_paper
 from pipeline.tasks import run_task
-from pipeline.tools import make_read_paper_tool
+from pipeline.tools import make_read_paper_tool, wrap_source
 
 __all__ = [
     "ensure_paper_md",
@@ -54,6 +55,7 @@ __all__ = [
     "HookMismatchError",
     "load_sections",
     "MissingMetadataError",
+    "MissingSystemPromptError",
     "PaperNotConvertedError",
     "PaperNotDissectedError",
     "parse_step_meta",
@@ -76,5 +78,6 @@ __all__ = [
     "TransientStepError",
     "ValidationStepError",
     "WebResearcher",
+    "wrap_source",
     "write_debug_file",
 ]

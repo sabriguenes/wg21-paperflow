@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from pipeline import HookMismatchError, MissingMetadataError
+from pipeline import HookMismatchError, MissingMetadataError, MissingSystemPromptError
 from pipeline import StepHooks, build_pipeline, parse_step_meta
 
 
@@ -19,15 +19,11 @@ def test_parse_step_meta_basic():
     body = (
         "- **Model:** default\n"
         "- **Execution:** main\n"
-        "- **Reads:** claims, evidence\n"
-        "- **Writes:** support_map\n"
     )
-    meta = parse_step_meta("Step 4 - Verify", body)
+    meta = parse_step_meta("4. Verify", body)
     assert meta.number == 4
     assert meta.model_slot == "default"
     assert meta.execution == "main"
-    assert meta.reads == ["claims", "evidence"]
-    assert meta.writes == ["support_map"]
     assert meta.tools == []
     assert meta.condition is None
     assert not meta.is_custom
@@ -37,10 +33,8 @@ def test_parse_step_meta_subagent():
     body = (
         "- **Model:** default\n"
         "- **Execution:** subagent\n"
-        "- **Reads:** chunks\n"
-        "- **Writes:** raw_claims\n"
     )
-    meta = parse_step_meta("Step 1 - Extract", body)
+    meta = parse_step_meta("1. Extract", body)
     assert meta.execution == "subagent"
 
 
@@ -48,10 +42,8 @@ def test_parse_step_meta_pure():
     body = (
         "- **Model:** none (pure Python)\n"
         "- **Execution:** main\n"
-        "- **Reads:** paper_source\n"
-        "- **Writes:** chunks, citations\n"
     )
-    meta = parse_step_meta("Step 0 - Read", body)
+    meta = parse_step_meta("0. Read", body)
     assert meta.is_custom
     assert meta.model_slot == "none"
 
@@ -61,10 +53,8 @@ def test_parse_step_meta_with_tools():
         "- **Model:** default\n"
         "- **Execution:** subagent\n"
         "- **Tools:** web_search, web_fetch\n"
-        "- **Reads:** claims\n"
-        "- **Writes:** external_evidence\n"
     )
-    meta = parse_step_meta("Step 6 - Web Search", body)
+    meta = parse_step_meta("6. Web Search", body)
     assert meta.tools == ["web_search", "web_fetch"]
 
 
@@ -72,32 +62,18 @@ def test_parse_step_meta_with_condition():
     body = (
         "- **Model:** default\n"
         "- **Execution:** subagent\n"
-        "- **Reads:** claims\n"
-        "- **Writes:** external_evidence\n"
         "- **Condition:** has critical gaps\n"
     )
-    meta = parse_step_meta("Step 6 - Web Search", body)
+    meta = parse_step_meta("6. Web Search", body)
     assert meta.condition == "has critical gaps"
 
 
 def test_parse_step_meta_missing_model():
     body = (
         "- **Execution:** main\n"
-        "- **Reads:** claims\n"
-        "- **Writes:** report\n"
     )
     with pytest.raises(MissingMetadataError, match="Model"):
-        parse_step_meta("Step 9 - Report", body)
-
-
-def test_parse_step_meta_missing_reads():
-    body = (
-        "- **Model:** default\n"
-        "- **Execution:** main\n"
-        "- **Writes:** report\n"
-    )
-    with pytest.raises(MissingMetadataError, match="Reads"):
-        parse_step_meta("Step 9 - Report", body)
+        parse_step_meta("9. Report", body)
 
 
 def test_parse_step_meta_bad_name():
@@ -107,12 +83,13 @@ def test_parse_step_meta_bad_name():
 
 def test_build_pipeline_sorts_by_number():
     secs = {
-        "Step 3 - B": "- **Model:** default\n- **Execution:** main\n- **Reads:** x\n- **Writes:** y\n",
-        "Step 1 - A": "- **Model:** default\n- **Execution:** main\n- **Reads:** x\n- **Writes:** y\n",
+        "System Prompt": "You are a bot.",
+        "3. B": "- **Model:** default\n- **Execution:** main\n",
+        "1. A": "- **Model:** default\n- **Execution:** main\n",
     }
     hooks = {
-        "Step 1 - A": StepHooks(),
-        "Step 3 - B": StepHooks(),
+        "1. A": StepHooks(),
+        "3. B": StepHooks(),
     }
     specs = build_pipeline(secs, hooks)
     assert specs[0].meta.number == 1
@@ -121,11 +98,12 @@ def test_build_pipeline_sorts_by_number():
 
 def test_build_pipeline_orphan_hook():
     secs = {
-        "Step 1 - A": "- **Model:** default\n- **Execution:** main\n- **Reads:** x\n- **Writes:** y\n",
+        "System Prompt": "You are a bot.",
+        "1. A": "- **Model:** default\n- **Execution:** main\n",
     }
     hooks = {
-        "Step 1 - A": StepHooks(),
-        "Step 99 - Ghost": StepHooks(),
+        "1. A": StepHooks(),
+        "99. Ghost": StepHooks(),
     }
     with pytest.raises(HookMismatchError):
         build_pipeline(secs, hooks)
@@ -133,7 +111,8 @@ def test_build_pipeline_orphan_hook():
 
 def test_build_pipeline_missing_hook():
     secs = {
-        "Step 1 - A": "- **Model:** default\n- **Execution:** main\n- **Reads:** x\n- **Writes:** y\n",
+        "System Prompt": "You are a bot.",
+        "1. A": "- **Model:** default\n- **Execution:** main\n",
     }
     hooks: dict[str, StepHooks] = {}
     with pytest.raises(HookMismatchError, match="no registered hooks"):
@@ -144,10 +123,10 @@ def test_build_pipeline_skips_non_step_sections():
     secs = {
         "System Prompt": "You are a bot.",
         "Global Directives": "Be good.",
-        "Step 0 - Read": "- **Model:** fast\n- **Execution:** main\n- **Reads:** x\n- **Writes:** y\n",
+        "0. Read": "- **Model:** fast\n- **Execution:** main\n",
     }
     hooks = {
-        "Step 0 - Read": StepHooks(),
+        "0. Read": StepHooks(),
     }
     specs = build_pipeline(secs, hooks)
     assert len(specs) == 1
@@ -157,25 +136,19 @@ def test_parse_step_meta_extract_factual():
     body = (
         "- **Model:** default\n"
         "- **Execution:** subagent\n"
-        "- **Reads:** chunks, claims\n"
-        "- **Writes:** raw_factual_claims\n"
     )
-    meta = parse_step_meta("Step 3 - Extract Factual", body)
-    assert meta.number == 3
+    meta = parse_step_meta("5. Extract Factual", body)
+    assert meta.number == 5
     assert meta.execution == "subagent"
-    assert meta.reads == ["chunks", "claims"]
-    assert meta.writes == ["raw_factual_claims"]
 
 
 def test_parse_step_meta_dedup_factual():
     body = (
         "- **Model:** default\n"
         "- **Execution:** main\n"
-        "- **Reads:** claims\n"
-        "- **Writes:** claims\n"
     )
-    meta = parse_step_meta("Step 4 - Dedup Factual Claims", body)
-    assert meta.number == 4
+    meta = parse_step_meta("6. Dedup Factual Claims", body)
+    assert meta.number == 6
 
 
 def test_parse_step_meta_verify_citations():
@@ -183,12 +156,10 @@ def test_parse_step_meta_verify_citations():
         "- **Model:** default\n"
         "- **Execution:** main\n"
         "- **Tools:** web_fetch\n"
-        "- **Reads:** citations, claims\n"
-        "- **Writes:** citation_audit, external_evidence\n"
         "- **Condition:** has citations\n"
     )
-    meta = parse_step_meta("Step 8 - Verify Citations", body)
-    assert meta.number == 8
+    meta = parse_step_meta("10. Verify Citations", body)
+    assert meta.number == 10
     assert meta.tools == ["web_fetch"]
     assert meta.condition == "has citations"
 
@@ -197,21 +168,72 @@ def test_parse_step_meta_caput_causae():
     body = (
         "- **Model:** default\n"
         "- **Execution:** main\n"
-        "- **Reads:** load_bearing_claims, claims, evidence\n"
-        "- **Writes:** caput_causae\n"
         "- **Condition:** has anchored claims\n"
     )
-    meta = parse_step_meta("Step 11 - Caput Causae", body)
-    assert meta.number == 11
+    meta = parse_step_meta("13. Caput Causae", body)
+    assert meta.number == 13
     assert meta.condition == "has anchored claims"
-    assert "caput_causae" in meta.writes
 
 
-def test_pipeline_has_14_steps():
-    """Verify the full pipeline has steps 0-13."""
+def test_pipeline_has_16_steps():
+    """Verify the full pipeline has steps 0-15."""
     from dissect.pipeline import _HOOKS, load_sections
-    secs = load_sections("dissect", "dissect.md")
+    secs = dict(load_sections("dissect", "dissect.md"))
     specs = build_pipeline(secs, _HOOKS)
-    assert len(specs) == 14
+    assert len(specs) == 16
     assert specs[0].meta.number == 0
-    assert specs[-1].meta.number == 13
+    assert specs[-1].meta.number == 15
+
+
+def test_dissect_prompt_has_required_system_prompts():
+    from dissect.pipeline import _HOOKS, load_sections
+    secs = dict(load_sections("dissect", "dissect.md"))
+    specs = build_pipeline(secs, _HOOKS)
+    by_number = {spec.meta.number: spec for spec in specs}
+
+    assert secs["System Prompt"].strip()
+    for number in [7, 8, 9, 10, 11]:
+        assert by_number[number].meta.system_prompt
+
+
+def test_parse_step_meta_system_prompt_append():
+    body = (
+        "- **Model:** default\n"
+        "- **Execution:** main\n\n"
+        "### System Prompt\n\n"
+        "Step role."
+    )
+    meta = parse_step_meta("1. A", body)
+    assert meta.system_prompt == "Step role."
+    assert meta.system_prompt_mode == "append"
+
+
+def test_parse_step_meta_system_prompt_replace():
+    body = (
+        "- **Model:** default\n"
+        "- **Execution:** main\n"
+        "- **System prompt:** replace\n\n"
+        "### System Prompt\n\n"
+        "Replacement."
+    )
+    meta = parse_step_meta("1. A", body)
+    assert meta.system_prompt == "Replacement."
+    assert meta.system_prompt_mode == "replace"
+
+
+def test_parse_step_meta_invalid_system_prompt_mode():
+    body = (
+        "- **Model:** default\n"
+        "- **Execution:** main\n"
+        "- **System prompt:** merge\n"
+    )
+    with pytest.raises(MissingMetadataError, match="System prompt"):
+        parse_step_meta("1. A", body)
+
+
+def test_build_pipeline_requires_system_prompt_for_llm_steps():
+    secs = {
+        "1. A": "- **Model:** default\n- **Execution:** main\n",
+    }
+    with pytest.raises(MissingSystemPromptError):
+        build_pipeline(secs, {"1. A": StepHooks()})

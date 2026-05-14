@@ -731,7 +731,7 @@ async def agora_paper(
     if the prerequisite paperstore artifacts are missing.
     """
     slots = {**DEFAULT_MODEL_SLOTS, **(model_slots or {})}
-    secs = load_sections("agora", "agora.md")
+    secs = dict(load_sections("agora", "agora.md"))
 
     if "System Prompt" not in secs:
         raise PromptFileError(

@@ -21,6 +21,8 @@ from dataclasses import dataclass
 import httpx
 import trafilatura
 
+from pipeline.tools import wrap_source
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_FETCH_TIMEOUT = 15
@@ -376,7 +378,7 @@ class WebResearcher:
         expansion), merges results with Reciprocal Rank Fusion, and
         auto-fetches the top ``max_fetch`` unique URLs. Returns a
         digest with search results and fetched content wrapped in
-        ``<<<SOURCE>>>`` delimiters.
+        configured source delimiters.
 
         ``fan_out=1`` collapses to a simple search + auto-fetch.
 
@@ -438,7 +440,7 @@ class WebResearcher:
                 total_chars += len(content)
                 title = url_to_result.get(url)
                 label = title.title if title else url
-                parts.append(f"\n### {label}\n<<<SOURCE>>>\n{content}\n<<<END_SOURCE>>>\n")
+                parts.append(f"\n### {label}\n{wrap_source(content)}\n")
 
         return "\n".join(parts)
 

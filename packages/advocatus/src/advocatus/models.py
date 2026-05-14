@@ -358,7 +358,7 @@ class PipelineState(BaseModel):
     # Step 0 (Load) - dissect data converted to domain models
     dissect_articuli_seed: Optional[list[Articulus]] = None
     dissect_evidence: Optional[list[DossierEntry]] = None
-    dissect_markers: Optional[list[Articulus]] = None
+    dissect_rhetoric: Optional[list[Articulus]] = None
     dissect_caput_causae: Optional[str] = None
     dissect_citation_audit: Optional[list[TabulaFontiumEntry]] = None
     dissect_external_evidence: Optional[list[DossierEntry]] = None

@@ -8,10 +8,10 @@
 """Parse step metadata from a prompt file and build the pipeline.
 
 The prompt file is the upstream authority for pipeline structure. Each
-step section declares metadata (model slot, execution mode, reads,
-writes, tools, conditions). This module parses that metadata, validates
-it, and combines it with registered Python hooks to produce an ordered
-list of ``StepSpec`` instances.
+step section declares metadata (model slot, execution mode, tools,
+conditions). This module parses that metadata, validates it, and
+combines it with registered Python hooks to produce an ordered list
+of ``StepSpec`` instances.
 
 Raises ``PromptFileError`` subtypes on any structural mismatch so the
 user knows to go fix the prompt file.
@@ -25,10 +25,18 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from pipeline.errors import HookMismatchError, MissingMetadataError
+from pipeline.errors import (
+    HookMismatchError,
+    MissingMetadataError,
+    MissingSystemPromptError,
+)
 
-_STEP_RE = re.compile(r"^Step\s+(\d+)")
-_META_RE = re.compile(r"^-\s+\*\*(\w+):\*\*\s*(.+)$", re.MULTILINE)
+_STEP_RE = re.compile(r"^(?:Step\s+)?(\d+)")
+_META_RE = re.compile(r"^-\s+\*\*([\w ]+):\*\*\s*(.+)$", re.MULTILINE)
+_STEP_SYSTEM_RE = re.compile(
+    r"^### System Prompt\s*\n(?P<body>.*?)(?=^### |\Z)",
+    re.MULTILINE | re.DOTALL,
+)
 
 
 @dataclass(frozen=True)
@@ -51,17 +59,17 @@ class StepMeta:
     execution: str
     """``'main'`` (sequential) or ``'subagent'`` (parallel)."""
 
-    reads: list[str]
-    """``PipelineState`` field names this step reads."""
-
-    writes: list[str]
-    """``PipelineState`` field names this step writes."""
-
     tools: list[str] = field(default_factory=list)
     """Tool names to register on the Agent. Empty for most steps."""
 
     condition: str | None = None
     """Guard condition text from ``**Condition:**``, or ``None``."""
+
+    system_prompt: str = ""
+    """Step-specific system prompt override from ``### System Prompt``."""
+
+    system_prompt_mode: str = "append"
+    """How the step prompt combines with the pipeline prompt: append or replace."""
 
     @property
     def is_custom(self) -> bool:
@@ -73,7 +81,7 @@ class StepMeta:
 class StepHooks:
     """Python-side hooks registered for a single step.
 
-    The hooks control HOW to format the reads into a user message
+    The hooks control HOW to format state into a user message
     (``prepare``) and HOW to store the LLM output into state
     (``extract``). The metadata controls WHAT.
     """
@@ -94,10 +102,9 @@ class StepSpec:
 
     The prompt file is the upstream authority for pipeline structure.
     Each step section declares its metadata: model slot, execution
-    mode, which state fields it reads and writes, tools, and guard
-    conditions. Python provides the bespoke hooks: how to format
-    the reads into a user message (prepare), and how to store the
-    LLM output into the writes (extract).
+    mode, tools, and guard conditions. Python provides the bespoke
+    hooks: how to format state into a user message (prepare), and
+    how to store the LLM output into state (extract).
 
     The prompt file controls WHAT each step does. The hooks
     control HOW. The runner handles everything common.
@@ -110,13 +117,15 @@ class StepSpec:
 def parse_step_meta(name: str, body: str) -> StepMeta:
     """Parse step metadata from a section body.
 
-    Raises ``MissingMetadataError`` if Model, Execution, Reads, or
-    Writes is absent.
+    Raises ``MissingMetadataError`` if **Model** is absent. When
+    ``Model: none``, all other metadata fields are optional and
+    default to empty/main -- the step is pure Python and the
+    section body is free-form documentation.
     """
     m = _STEP_RE.match(name)
     if not m:
         raise MissingMetadataError(
-            f"Section '{name}' does not match expected 'Step N' format."
+            f"Section '{name}' does not match expected 'N. Name' or 'Step N' format."
         )
     number = int(m.group(1))
 
@@ -124,7 +133,40 @@ def parse_step_meta(name: str, body: str) -> StepMeta:
     for match in _META_RE.finditer(body):
         fields[match.group(1).lower()] = match.group(2).strip()
 
-    required = ["model", "execution", "reads", "writes"]
+    system_prompt = _parse_step_system_prompt(body)
+    system_prompt_mode = fields.get("system prompt", "append").split()[0].strip().lower()
+    if system_prompt_mode not in {"append", "replace"}:
+        raise MissingMetadataError(
+            f"Step '{name}' has invalid '**System prompt:**' value "
+            f"'{fields.get('system prompt')}'. Expected 'append' or 'replace'."
+        )
+    if system_prompt_mode == "replace" and not system_prompt:
+        raise MissingMetadataError(
+            f"Step '{name}' sets '**System prompt:** replace' but has no "
+            f"'### System Prompt' body."
+        )
+
+    if "model" not in fields:
+        raise MissingMetadataError(
+            f"Step '{name}' is missing required metadata field "
+            f"'**Model:**'. Expected format: '- **Model:** value'"
+        )
+
+    model_slot = fields["model"].split("(")[0].strip().lower()
+
+    if model_slot == "none":
+        return StepMeta(
+            name=name,
+            number=number,
+            model_slot="none",
+            execution=fields.get("execution", "main").strip().lower(),
+            tools=[],
+            condition=fields.get("condition"),
+            system_prompt=system_prompt,
+            system_prompt_mode=system_prompt_mode,
+        )
+
+    required = ["execution"]
     for req in required:
         if req not in fields:
             raise MissingMetadataError(
@@ -139,13 +181,26 @@ def parse_step_meta(name: str, body: str) -> StepMeta:
     return StepMeta(
         name=name,
         number=number,
-        model_slot=fields["model"].split("(")[0].strip().lower(),
+        model_slot=model_slot,
         execution=fields["execution"].strip().lower(),
-        reads=_split_list(fields["reads"]),
-        writes=_split_list(fields["writes"]),
         tools=_split_list(fields.get("tools", "")),
         condition=fields.get("condition"),
+        system_prompt=system_prompt,
+        system_prompt_mode=system_prompt_mode,
     )
+
+
+def _parse_step_system_prompt(body: str) -> str:
+    """Extract the optional per-step ``### System Prompt`` body."""
+    match = _STEP_SYSTEM_RE.search(body)
+    return match.group("body").strip() if match else ""
+
+
+def _strip_step_system_prompt(body: str) -> str:
+    """Remove per-step system prompt and metadata from user-facing step instructions."""
+    body = _STEP_SYSTEM_RE.sub("", body)
+    body = _META_RE.sub("", body)
+    return body.strip()
 
 
 def build_pipeline(
@@ -165,8 +220,15 @@ def build_pipeline(
     for key, body in sections.items():
         if _STEP_RE.match(key):
             metas.append(parse_step_meta(key, body))
+            sections[key] = _strip_step_system_prompt(body)
 
     metas.sort(key=lambda m: m.number)
+
+    if any(not m.is_custom for m in metas):
+        if not sections.get("System Prompt", "").strip():
+            raise MissingSystemPromptError(
+                "Prompt file is missing required non-empty '## System Prompt' section."
+            )
 
     step_names = {m.name for m in metas}
     hook_names = set(hooks)

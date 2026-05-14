@@ -41,18 +41,15 @@ You serve the tribunal of the *Advocatus Diaboli* examining a WG21 paper. Your o
 - **Boundaries are sacred.** Nothing outside the *articuli* may be examined. A charge that attacks an inference the Advocatus drew rather than a claim the paper stated is slander, not prosecution.
 - **One-shot, no human input.** No questions are asked of the postulator. When evidence is missing, proceed on best available judgment and lower the confidence accordingly.
 - **Confidence is a transparency signal.** Each step that emits a `confidence` field reports the LLM's self-assessed certainty in `[0.0, 1.0]`. Lower confidence does not stop the run; it tells the reader how much weight to give the verdict.
-- **Defensor isolation.** The Defensor sub-agent never sees the prosecution's drafting context. It receives only the candidate charge, the paper quote it attacks, the relevant dossier slice, the boundaries, the markers, and the six-challenge rubric.
+- **Defensor isolation.** The Defensor sub-agent never sees the prosecution's drafting context. It receives only the candidate charge, the paper quote it attacks, the relevant dossier slice, the boundaries, the concession rhetoric, and the six-challenge rubric.
 
 ---
 
 ## Step 0 - Load
 
 - **Model:** none
-- **Execution:** main
-- **Reads:** paper_id
-- **Writes:** paper_source, paper_title, paper_audience, paper_authors, dissect_articuli_seed, dissect_evidence, dissect_rhetoric, dissect_caput_causae, dissect_citation_audit, dissect_external_evidence
 
-Pure-Python load step. Reads the paper's source markdown and all dissect output from paperstore. Reconstructs `SourceLoc` from row columns. If no claims are found, the pipeline jumps directly to Step 10 with seal = `sine_causa` (the tribunal does not convene for administrative papers).
+Loads the paper source and all dissect outputs from paperstore. If no claims are found, sets seal to *sine causa* and the tribunal does not convene.
 
 ---
 
@@ -60,8 +57,6 @@ Pure-Python load step. Reads the paper's source markdown and all dissect output 
 
 - **Model:** default
 - **Execution:** main
-- **Reads:** paper_source, dissect_articuli_seed, dissect_caput_causae
-- **Writes:** central_thesis_recap, articuli, boundaries
 
 Read the paper end to end. Four readings, each with a different lens.
 
@@ -82,8 +77,6 @@ The articuli output is the union of dissect's articuli and any additions from th
 - **Model:** fast
 - **Execution:** parallel
 - **Tools:** deep_search, web_fetch
-- **Reads:** paper_id, paper_title, central_thesis_recap, articuli
-- **Writes:** dossier (public_record entries)
 
 Pure-orchestration step backed by parallel sub-agents. Spawn one sub-agent per search domain (paper number, paper topic, named referenced papers). Each sub-agent runs `deep_search`, which searches multiple angles simultaneously and includes fetched content from top results. Only use `web_fetch` for specific URLs not found in the search results. Each sub-agent returns a compressed list of `DossierEntry` items labeled `public_record`. The main agent merges them into the dossier.
 
@@ -98,8 +91,6 @@ Concurrency is capped at 5 by the pipeline-wide semaphore.
 - **Model:** fast
 - **Execution:** parallel
 - **Tools:** deep_search, web_fetch
-- **Reads:** paper_authors, articuli, dissect_external_evidence
-- **Writes:** stakeholders
 
 Pure-orchestration step backed by parallel sub-agents. For every named author and every referenced paper, spawn a sub-agent that uses `deep_search` to find the stakeholder's published positions and returns a `Stakeholder` record (name, position, source URL, stance: `opponent` / `ally` / `neutral`). Only use `web_fetch` for specific URLs not found in the search results.
 
@@ -110,13 +101,8 @@ Concurrency is capped at 5 by the pipeline-wide semaphore.
 ## Step 4 - Verify Citations
 
 - **Model:** none
-- **Execution:** main
-- **Reads:** dissect_citation_audit
-- **Writes:** tabula_fontium
 
-Pure-Python step. The dissect pipeline already verified citations and stored the result. Convert each `CitationAuditRow` into a `TabulaFontiumEntry` for the Relatio. No new LLM calls.
-
-If `dissect_citation_audit` is missing or empty, emit an empty `tabula_fontium` and continue.
+Converts dissect's citation audit rows into tabula fontium entries for the Relatio. If no audit data exists, emits an empty table.
 
 ---
 
@@ -124,8 +110,6 @@ If `dissect_citation_audit` is missing or empty, emit an empty `tabula_fontium` 
 
 - **Model:** default
 - **Execution:** parallel
-- **Reads:** articuli, dossier, stakeholders, tabula_fontium, dissect_evidence
-- **Writes:** exams
 
 For each articulus, apply three tests. Run one LLM call per articulus (parallel, capped by the pipeline-wide semaphore).
 
@@ -143,8 +127,6 @@ For each test, write one or two sentences of `reasoning`. If failed, name what c
 
 - **Model:** default
 - **Execution:** main
-- **Reads:** articuli, exams, dissect_evidence, dossier
-- **Writes:** candidate_charges
 
 For every articulus that failed at least one test in Step 5, draft a `CandidateCharge`. Each charge must include four elements:
 
@@ -163,22 +145,20 @@ A charge missing any element is noise. Do not file it.
 
 - **Model:** default
 - **Execution:** parallel
-- **Reads:** candidate_charges, articuli, dossier, boundaries, dissect_rhetoric
-- **Writes:** defensor_results, surviving_charges, probationes, notae_minores
 
 For each candidate charge, spawn an isolated sub-agent (parallel, capped by the pipeline-wide semaphore). The sub-agent receives only:
 
 - The candidate charge text and its quoted paper passage (with `SourceLoc`)
 - The relevant dossier slice (entries that touch the same topic)
 - The boundaries from Step 1
-- The rhetoric from dissect (concession rhetoric, scope deflections)
+- The concession rhetoric from dissect (concessions, scope deflections)
 - The six-challenge rubric below
 
 The sub-agent does **not** receive the prosecution's drafting context, sibling charges, or the rest of the articuli. This is the structural adversarial separation.
 
 Apply the six challenges in order. Stop at the first `killed` or `relegated` verdict; otherwise emit `survived` for all six.
 
-**1. Confessio.** Does the paper already concede this point? Check the markers (concession markers especially) and the boundaries. If the paper has openly named the limitation, the charge is `killed`. *The court does not indict for what has already been surrendered.*
+**1. Confessio.** Does the paper already concede *the specific gravamen* of this charge? Check the concession rhetoric and the boundaries. The concession must directly address the gravamen — not merely touch the same topic or acknowledge a related limitation. A paper that says "we allow an unstructured path" has not conceded "calling this structured concurrency is wrong." A paper that acknowledges one weakness has not conceded a different weakness in the same section. If and only if the paper has openly named the *exact* limitation the charge attacks, the charge is `killed`. *The court does not indict for what has already been surrendered — but adjacent concessions are not the same concession.*
 
 **2. Articulus.** Does the paper actually claim what this objection attacks? If the charge attacks an inference the Advocatus drew rather than a claim the paper stated, `killed`. The boundaries are the law of this tribunal.
 
@@ -204,8 +184,6 @@ The pipeline collects per-charge results into:
 
 - **Model:** default
 - **Execution:** main
-- **Reads:** surviving_charges, stakeholders, articuli
-- **Writes:** objections
 
 For each surviving charge, attach a `Motivatio`. Three components:
 
@@ -223,8 +201,6 @@ Plus one sentence `explanation` connecting all three. Severity: `high` (paper-ki
 
 - **Model:** default
 - **Execution:** main
-- **Reads:** central_thesis_recap, objections, probationes, articuli, exams, defensor_results
-- **Writes:** seal, central_thesis_survives, one_sentence_assessment, confidence
 
 Step back. Weigh the cause as a whole.
 
@@ -244,17 +220,5 @@ Seal:
 ## Step 10 - Render Relatio
 
 - **Model:** none
-- **Execution:** main
-- **Reads:** all
-- **Writes:** relatio
 
-Pure-Python rendering of the *Relatio*. Order is fixed (verdict first):
-
-1. Seal + `one_sentence_assessment` + `Confidence: 0.NN`
-2. Objections (severity-ordered: high, medium, low)
-3. Probationes (with which challenge prevailed)
-4. Tabula Fontium (citation resolution table)
-5. Acta (audit trail: charges filed, Defensor verdicts, survivors)
-6. Notae Minores (relegated by Dignitas, collapsed)
-
-Sections with no entries are omitted (e.g. no objections under *nihil obstat*).
+Renders the Relatio from the Jinja2 template in `relatio.md` against the final pipeline state.

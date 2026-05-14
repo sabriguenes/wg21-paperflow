@@ -132,7 +132,7 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
 
     claim_rows = await asyncio.to_thread(ctx.backend.get_claims, pid)
     evidence_rows = await asyncio.to_thread(ctx.backend.get_evidence, pid)
-    marker_rows = await asyncio.to_thread(ctx.backend.get_rhetoric, pid)
+    rhetoric_rows = await asyncio.to_thread(ctx.backend.get_rhetoric, pid)
     citation_audit_rows = await asyncio.to_thread(ctx.backend.get_citation_audit, pid)
     external_rows = await asyncio.to_thread(ctx.backend.get_external_citations, pid)
     caput = await asyncio.to_thread(ctx.backend.get_caput_causae, pid)
@@ -166,11 +166,11 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
         ))
     state.dissect_evidence = dissect_evidence
 
-    # Markers (kept as Articulus-shaped objects for convenience; the field is
+    # Rhetoric (kept as Articulus-shaped objects for convenience; the field is
     # only used by the Defensor's Confessio challenge).
-    dissect_markers: list[Articulus] = []
-    for row in marker_rows:
-        dissect_markers.append(Articulus(
+    dissect_rhetoric: list[Articulus] = []
+    for row in rhetoric_rows:
+        dissect_rhetoric.append(Articulus(
             uid=row.uid,
             loc=loc_from_row(row),
             text=row.text,
@@ -178,7 +178,7 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
             kind="normative",
             question=f"[{row.marker_type}] target: {row.target}",
         ))
-    state.dissect_markers = dissect_markers
+    state.dissect_rhetoric = dissect_rhetoric
 
     # Citation audit -> tabula fontium entries
     state.dissect_citation_audit = [
@@ -492,7 +492,36 @@ def _prepare_file_charges(state: PipelineState, ctx: StepContext) -> str:
 
 
 def _extract_file_charges(state: PipelineState, output: ChargesOutput) -> None:
-    state.candidate_charges = list(output.candidate_charges)
+    state.candidate_charges = _dedup_charges(list(output.candidate_charges))
+
+
+def _dedup_charges(charges: list[CandidateCharge]) -> list[CandidateCharge]:
+    """Deduplicate candidate charges by (quoted_text, gravamen).
+
+    Positioned after Step 6 (File Charges) and before Step 7 (Defensor)
+    because the cost asymmetry favors late dedup:
+
+    - A missed dedup at the claim stage (dissect) permanently loses a
+      claim the Advocatus can never examine. Unrecoverable.
+    - A missed dedup here costs one extra Defensor sub-agent call
+      (~tokens + seconds). Recoverable by deduping objections in the
+      Relatio if needed.
+    - A bad dedup here loses a charge before the Defensor speaks.
+      Safer than losing it before the Examen, but still a loss.
+
+    Exact-match on (quoted_text, gravamen) means only true duplicates
+    collapse. Two charges with different gravamens about the same quote
+    survive (genuinely different objections). Two charges with the same
+    gravamen about different quotes survive (different claims targeted).
+    """
+    seen: set[tuple[str, str]] = set()
+    result: list[CandidateCharge] = []
+    for c in charges:
+        key = (c.quoted_text.strip(), c.gravamen.strip())
+        if key not in seen:
+            seen.add(key)
+            result.append(c)
+    return result
 
 
 # -- Step 7 - Defensor Cross-Examination -------------------------------------
@@ -516,8 +545,8 @@ async def _pure_defensor(state: PipelineState, ctx: StepContext) -> None:
         [b.model_dump(mode="json") for b in (state.boundaries or [])],
         ensure_ascii=False, default=str,
     )
-    markers_json = json.dumps(
-        [m.model_dump(mode="json") for m in (state.dissect_markers or [])],
+    rhetoric_json = json.dumps(
+        [m.model_dump(mode="json") for m in (state.dissect_rhetoric or [])],
         ensure_ascii=False, default=str,
     )
     stakeholders_json = json.dumps(
@@ -550,7 +579,7 @@ async def _pure_defensor(state: PipelineState, ctx: StepContext) -> None:
             f"## Candidate Charge\n\n{charge_json}\n\n"
             f"## Relevant Dossier Slice\n\n{slice_json}\n\n"
             f"## Boundaries\n\n{boundaries_json}\n\n"
-            f"## Markers (concessions, scope deflections)\n\n{markers_json}\n\n"
+            f"## Concession Rhetoric\n\n{rhetoric_json}\n\n"
             f"## Stakeholders\n\n{stakeholders_json}\n\n"
             f"## Instructions\n\n{body}"
         )
@@ -805,7 +834,7 @@ async def advocatus_paper(
     if the prerequisite paperstore artifacts are missing.
     """
     slots = {**DEFAULT_MODEL_SLOTS, **(model_slots or {})}
-    secs = load_sections("advocatus", "advocatus.md")
+    secs = dict(load_sections("advocatus", "advocatus.md"))
 
     if "System Prompt" not in secs:
         raise PromptFileError(

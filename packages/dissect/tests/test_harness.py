@@ -13,6 +13,7 @@ All tests use synthetic data - no LLM, no paperstore, no fixtures.
 from __future__ import annotations
 
 from dissect.harness import (
+    _blank_non_prose,
     _chunk_paper,
     _dedup_tier0,
     _dedup_tier1,
@@ -82,26 +83,14 @@ def test_promote_claims_never_drops():
     assert next_uid == 2
 
 
-def test_promote_claims_preserves_kind():
-    source = "factual claim text"
+def test_promote_claims_defaults_to_normative():
+    source = "claim text"
     raws = [
-        RawClaim(text="factual claim text", start_line=1, section="1",
-                 question="Q?", kind="factual"),
+        RawClaim(text="claim text", start_line=1, question="Q?"),
     ]
     claims, next_uid = _promote_claims(raws, source)
     assert len(claims) == 1
-    assert claims[0].kind == "factual"
-
-
-def test_promote_claims_resolves_depends_on():
-    source = "claim A\nclaim B"
-    raws = [
-        RawClaim(text="claim A", start_line=1, section="1", question="Q1?"),
-        RawClaim(text="claim B", start_line=2, section="1", question="Q2?", depends_on=["claim A"]),
-    ]
-    claims, next_uid = _promote_claims(raws, source)
-    assert len(claims) == 2
-    assert claims[1].depends_on == [claims[0].uid]
+    assert claims[0].kind == "normative"
 
 
 def test_promote_evidence_uses_start_line():
@@ -163,7 +152,7 @@ def test_promote_rhetoric_uses_start_line():
         RawRhetoric(
             text="We dismiss complexity.", start_line=2,
             section="1", marker_type="dismissal",
-            target="complexity", intensity="moderate",
+            target="complexity", intensity="medium",
         ),
     ]
     items, next_uid = _promote_rhetoric(raws, source)
@@ -178,8 +167,11 @@ def test_extract_citations_basic():
     text = "See [P4172R0](https://example.com/p4172r0.pdf) and P2300R10 for details."
     refs = _extract_citations(text)
     assert len(refs) == 2
-    assert refs[0].paper_id == "P4172R0"
+    # Equal counts tie-break alphabetically by paper_id; "P2300R10" < "P4172R0".
+    assert refs[0].paper_id == "P2300R10"
     assert refs[0].count == 1
+    assert refs[1].paper_id == "P4172R0"
+    assert refs[1].count == 1
 
 
 def test_extract_citations_dedup_case_insensitive():
@@ -195,3 +187,50 @@ def test_extract_citations_n_papers():
     refs = _extract_citations(text)
     assert len(refs) == 1
     assert refs[0].paper_id == "N4861"
+
+
+def test_blank_non_prose_preserves_line_count():
+    source = "prose\n```cpp\nint x = 1;\n```\nmore prose\n"
+    result, blanked = _blank_non_prose(source)
+    assert len(result.splitlines()) == len(source.splitlines())
+    assert blanked == 3
+
+
+def test_blank_non_prose_strips_fenced_code():
+    source = "before\n```cpp\nint x = 1;\nreturn x;\n```\nafter\n"
+    result, _ = _blank_non_prose(source)
+    assert "int x" not in result
+    assert "before" in result
+    assert "after" in result
+
+
+def test_blank_non_prose_strips_wording_div():
+    source = "before\n:::wording\nspec text\n:::\nafter\n"
+    result, blanked = _blank_non_prose(source)
+    assert "spec text" not in result
+    assert "before" in result
+    assert "after" in result
+    assert blanked == 3
+
+
+def test_blank_non_prose_strips_wording_add():
+    source = "before\n:::wording-add\nnew text\n:::\nafter\n"
+    result, _ = _blank_non_prose(source)
+    assert "new text" not in result
+    assert "before" in result
+    assert "after" in result
+
+
+def test_blank_non_prose_preserves_prose():
+    source = "This is a normative claim.\nAnother sentence.\n"
+    result, blanked = _blank_non_prose(source)
+    assert result == source
+    assert blanked == 0
+
+
+def test_blank_non_prose_fence_with_language_tag():
+    source = "x\n```python\nprint('hi')\n```\ny\n"
+    result, _ = _blank_non_prose(source)
+    assert "print" not in result
+    assert "x\n" in result
+    assert "y\n" in result

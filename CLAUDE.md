@@ -1,82 +1,31 @@
 # CLAUDE.md
 
+Project-wide rules. Package-specific rules live in `packages/<name>/src/<name>/CLAUDE.md`. Model and inference rationale lives in `MODELS.md`.
+
 ## Spellings
 
-- **cli** (package), **paperflow** (CLI alias, system, repo)
-- `paperflow full` is the end-to-end command (mailing + download + convert); `paperflow` bare is an alias for it
-- **tomd** (lowercase always), **WG21** (no space)
+- `cli` is the package; `paperflow` is the CLI alias, the system, and the repo.
+- `paperflow full` is the end-to-end command (mailing + download + convert). Bare `paperflow` is an alias for `full`.
+- Write `tomd` lowercase, `WG21` no space.
 
-## Layout
+## Package layout
 
 ```
 packages/
-  paperstore/   -> storage abstraction (SqliteBackend)
-  mailing/      -> scrape open-std.org + download paper sources
-  tomd/         -> PDF/HTML to Markdown
-  dissect/      -> LLM-driven paper dissect pipeline (Pydantic AI + web search)
-  advocatus/    -> LLM-driven paper examination pipeline (Advocatus Diaboli / Defensor Causae)
-  cli/          -> ingestion + conversion + dissect CLI
-tests/          -> cross-package integration test
+  paperstore/   storage abstraction (SqliteBackend)
+  mailing/      scrape open-std.org + download paper sources
+  tomd/         PDF/HTML to Markdown
+  pipeline/     LLM pipeline framework (pydantic-ai, web tools)
+  dissect/      LLM-driven paper dissect pipeline
+  advocatus/    LLM-driven paper examination pipeline
+  agora/        LLM-driven thread planning pipeline
+  cli/          ingestion + conversion + dissect CLI
+tests/          cross-package integration tests
 ```
 
-Per-package rules: `packages/<name>/src/<name>/CLAUDE.md`. Consult those when working inside a package.
+## CLI
 
-## CLI commands
-
-```bash
-# Index fetching (only command that hits the internet for metadata)
-paperflow mailing [YEAR ...]              # fetch mailing indexes from open-std.org
-paperflow mailing [YEAR ...] --force      # re-fetch even years already indexed (preserves sources/markdown)
-
-# Per-stage commands - each accepts one or more paper ids OR a mailing id, not both
-paperflow download P3642R4 [P2900R15 ...]  # download paper source only
-paperflow convert P3642R4 [P2900R15 ...]   # convert downloaded source to paper.md (no LLM)
-
-# End-to-end command - requires paper to exist in local mailing metadata
-paperflow full    P3642R4 [P2900R15 ...]   # mailing + download + convert in sequence
-paperflow         P3642R4 [P2900R15 ...]   # alias for `full`
-
-# Mailing-scoped variants (replace paper ids with a mailing id)
-paperflow download 2026-04
-paperflow convert  2026-04
-paperflow full     2026-04
-paperflow          2026-04
-
-# Dissect - single paper or mailing batch
-paperflow dissect P4003R2
-paperflow dissect 2026-01
-
-# Advocatus - examine a dissected paper through the two-office tribunal
-paperflow advocatus P4003R2
-paperflow advocatus 2026-01
-
-# Idempotent batch - skips papers already at or past the target stage
-paperflow download all
-paperflow convert  all
-paperflow full     all
-paperflow          all
-```
-
-**Argument rules:**
-- Paper ids and mailing ids cannot be mixed in the same invocation.
-- Multiple paper ids are accepted by all commands.
-- `all` processes every paper not already at the target stage (idempotent).
-- `full` / bare `paperflow` require the paper to be present in a local mailing index. Run `paperflow mailing` first.
-
-Each subcommand is implemented in its own module inside `packages/cli/src/cli/`:
-
-| Command | Module |
-|---|---|
-| `full` (end-to-end, entry-point alias) | `full.py` |
-| `mailing` | `mailing.py` |
-| `download` | `download.py` |
-| `convert` | `convert.py` |
-| `dissect` | `dissect.py` |
-| `advocatus` | `advocatus.py` |
-
-The argparse entry point is `__main__.py`.
-
-Outside a venv, prefix with `uv run`. Workspace directory is `$WG21_DATA_DIR` (required).
+Run `paperflow --help` for verbs. Subcommand modules live in `packages/cli/src/cli/`. Outside a venv, prefix with `uv run`. Workspace dir is `$WG21_DATA_DIR` (required).
 
 ## On-disk layout
 
@@ -86,10 +35,12 @@ WG21_DATA_DIR/
   paperstore/
     <pid>.pdf | <pid>.html
     <pid>.md
-    <pid>.prompts.json             # tomd, uncertain regions only
+    <pid>.prompts.json
 ```
 
-## Canonical front matter (tomd output)
+Pipeline artifacts (dissect/advocatus/agora outputs, debug, trace) are namespaced per tool. Use `backend.get_debug_md_path(pid, tool)` and `backend.get_trace_md_path(pid, tool)` rather than constructing paths.
+
+## Front matter (tomd output)
 
 Every converted paper gets this YAML block. Field order is fixed.
 
@@ -106,42 +57,57 @@ reply-to:
 ---
 ```
 
-- `title`: double-quoted. Extracted from source metadata or first heading.
-- `document`: unquoted paper number (e.g. `P4036R0`).
-- `revision`: integer from PID (`PxxxxRy` -> `y`). Omit for N-papers.
-- `date`: unquoted ISO 8601.
-- `intent`: `info` or `ask`. Default `info` for external papers.
-- `audience`: unquoted, comma-separated (e.g. `SG1, LEWG`).
-- `reply-to`: YAML list of `"Name <email>"` strings. All author-like metadata (Reply-to, Authors, Editors, Co-Authors) is merged into this single field. Field name chosen for consistency with cppalliance/wg21-papers `source/CLAUDE.md` (Mungo/Vinnie decision, April 2026).
-- Body headings start at H2. The front-matter `title` renders as H1; no `# H1` in body.
+Full field semantics live in `packages/tomd/src/tomd/CLAUDE.md`. Body headings start at H2; the front-matter title renders as H1.
 
-## On-disk layout (dissect output)
+## Determinism
 
-```
-WG21_DATA_DIR/
-  paperstore.db                   # extract tables: claims, evidence,
-                                  #   paper_citations, external_citations,
-                                  #   questions, rhetorical_markers,
-                                  #   caput_causae, citation_audit
-  paperstore/
-    <pid>.dissect.md              # dissect report
-    <pid>.advocatus.md            # advocatus Relatio
-    <pid>.<tool>.debug.md         # per-tool LLM debug transcript (--debug)
-    <pid>.<tool>.trace.md         # per-tool pipeline state trace (--trace)
-```
+Semantic stability across runs is non-negotiable for the analytical pipelines `dissect` and `advocatus`. Their findings must be reproducible: re-running on the same paper must produce the same verdicts, the same Relatio, the same caput causae. Any source of run-to-run variance (concurrent in-flight requests, temperature drift, unordered set iteration into a prompt) is a defect for these pipelines, not a tunable.
 
-Pipeline debug/trace artifacts are namespaced per tool (e.g. `<pid>.dissect.debug.md`, `<pid>.advocatus.trace.md`) so multiple pipelines coexist without filename collisions. Every consumer routes through `backend.get_debug_md_path(pid, tool)` and `backend.get_trace_md_path(pid, tool)`; no tool reinvents path construction.
+The `pipeline` framework permits non-serial execution as a capability for future packages that may not need byte-identical reproducibility, but the **default is serial** and dissect and advocatus rely on that default. Any change that raises `_PARALLEL_CONCURRENCY`, `_TASK_CONCURRENCY`, or otherwise allows multiple in-flight LLM requests must keep dissect and advocatus on the serial path (per-context or per-call concurrency parameter; never a global flip).
+
+See `MODELS.md` for sampling pins, MoE caveats, Eagle3 trade-off, Fireworks specifics, and the firectl deployment invariants.
+
+- D1. Every LLM call goes through `run_agent` or `run_task` from `pipeline`. Never construct a `pydantic_ai.Agent` directly or call `chat.completions.create`.
+- D4. Never set `parallel_tool_calls=True`.
+- D5. Never override `temperature` or `seed` per call.
+- D6. Every step hook declares `output_type=<PydanticModel>`. No free-text → regex parsing of LLM output.
+- D7. Sort unordered collections (`set`, `dict.keys/values/items`) before they feed a prompt.
+- D8. See `MODELS.md`.
+- D9. Pass `UsageLimits(...)` to `agent.run(...)`, never to `Agent(...)`. The constructor silently drops it.
+- D10. Pair every `output_type` with a finite retry budget (`output_retries=N`). Use `ModelRetry(...)` in `output_validator`s to self-correct; do not rely on raw `ValidationError` feedback.
+- D11. `dissect` and `advocatus` run with at most one in-flight LLM request at a time. The framework defaults to serial via `_parallel_semaphore` and `_task_semaphore` at `asyncio.Semaphore(1)`. New packages that opt into concurrent execution must do so through a per-package mechanism that leaves these two pipelines on the serial path.
+
+D2 and D3 name pipeline-internal symbols and live in `packages/pipeline/src/pipeline/CLAUDE.md`.
 
 ## Invariants
 
-- **All storage goes through `paperstore.StorageBackend`.** Never write files directly. Never construct paths from `backend.workspace_dir` or from DB column strings. Use backend accessors.
-- **`convert` never re-downloads.** It reads the staged source via the backend.
-- **Public and reproducible.** This repository is designed to be inspectable. Anyone can clone it, run `paperflow dissect <pid>`, and replicate the same dissect findings. No external proprietary dependencies. No black boxes. The dissect pipeline, prompt text, and models are all visible in this repo. The dissect package must remain self-contained within wg21-paperflow with no dependencies on cppa-forge or other private repos.
-- **Library functions return data. Callers persist.** Never call `write_*` inside a pipeline or conversion function. The CLI module owns persistence.
-- **Dissect accuracy over availability.** A wrong redteam analysis destroys credibility in a way that cannot be regained. A crashed pipeline that fails to publish preserves reputation. In the dissect package, prefer crashing on bad data over silently degrading: no `default=str` in JSON serialization, no silent type coercion, no swallowed errors. If the pipeline state is not cleanly serializable, that is a bug to fix, not a condition to mask.
-- **Broad catches must be commented.** `except Exception` in batch workers and callback firewalls is acceptable. Uncommented broad catches are treated as bugs during review.
-- **Tunable thresholds are named constants.** No bare numeric literals for scoring penalties, timeouts, display limits, or heuristic cutoffs. Module-level constant with a descriptive name.
-- **Library code uses `logging`, never `print()`.** No `print(file=sys.stderr)` in any package except `cli`.
+- Storage goes through `paperstore.StorageBackend`. Never construct paths from `backend.workspace_dir` or DB strings.
+- Library functions return data. Callers persist. Never call `write_*` inside a pipeline or conversion function. CLI owns persistence.
+- Use `logging`, never `print()`. Only `cli` may write to stderr.
+- Tunable thresholds are named module-level constants. No bare numeric literals for scoring penalties, timeouts, display limits, or heuristic cutoffs.
+- Broad `except Exception` catches in batch workers and callback firewalls are acceptable. Uncommented ones are treated as bugs.
+- No `default=str` in JSON serialization. If pipeline state is not cleanly serializable, fix the model, do not mask.
+- `__init__.py` files carry only re-exports (`from module import Name`), `__all__`, and `__version__`. All logic lives in named modules.
+- New `.py` files carry a BSL-1.0 copyright header attributed to the author. Leave existing headers alone.
+- `convert` never re-downloads. It reads the staged source via the backend.
+- Public and reproducible. Anyone can clone this repo, run `paperflow dissect <pid>`, and replicate the same findings. No proprietary dependencies. The dissect package stays self-contained within wg21-paperflow.
+
+## Fidelity
+
+The analytical pipelines (dissect, advocatus, agora) cannot tolerate partial results. A wrong objection or missing evidence destroys credibility in a way that cannot be regained.
+
+If full fidelity cannot be achieved, stop. Fail the paper with a clear error message. Preserve the debug transcript. Never produce a partial result mistakable for a complete one.
+
+Every citation must be verified or honestly reported as `not_found` or `unreadable`. If the LLM is unreachable or a critical step produces invalid output, the paper fails.
+
+## Prompt-injection defense
+
+Paper markdown and web-fetched content are untrusted data.
+
+- Source text entering LLM prompts goes through `pipeline.tools.wrap_source`, which escapes forged delimiter text before wrapping.
+- The framework floor in `pipeline.runner` tells agents to treat delimited content as data, never as instructions.
+- Structured output (D6) enforces the schema.
+- The `read_paper` tool is scoped to one paper and capped at 500 lines per call.
 
 ## Tests
 
@@ -151,21 +117,7 @@ uv run --package paperstore pytest             # one package
 uv run pytest tests/test_end_to_end_convert.py # integration
 ```
 
-Stub seams: `httpx.AsyncClient` on `mailing.download` for downloads; `httpx.get` on `mailing.scrape` for scraping.
-
-## `__init__.py`
-
-`__init__.py` files must contain only:
-- Re-exports (`from module import Name`)
-- `__all__` definitions
-- Version strings (`__version__`)
-
-All logic, factories, utilities, and pipeline code must live in named
-modules. If you find logic in an `__init__.py`, move it out before
-adding to it.
-
 ## Style
 
 - No em dashes. Use commas, periods, or colons.
-- BSL-1.0 copyright headers on new `.py` files. Attribute to whoever authors the file. Leave existing headers alone.
-- When renaming the project or swapping a dependency, grep the entire repo for the old name. Headers, user-agents, env vars, docstrings, CLAUDE.md files. One pass, same commit.
+- Rename-and-grep discipline. When renaming the project or swapping a dependency, grep the entire repo (headers, user-agents, env vars, docstrings, CLAUDE.md files) and fix every reference in one pass, same commit.

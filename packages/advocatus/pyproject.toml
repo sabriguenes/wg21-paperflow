@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 license = {text = "BSL-1.0"}
 authors = [{name = "Vinnie Falco", email = "vinnie.falco@gmail.com"}]
 dependencies = [
+    "jinja2",
     "paperstore",
     "pipeline",
     "pydantic-ai",

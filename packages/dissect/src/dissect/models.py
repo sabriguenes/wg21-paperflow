@@ -15,15 +15,15 @@ AI's ``output_type``. Frozen domain models are updated via
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal, Optional, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from pydantic_ai import ModelRetry
 
 from paperstore import SourceLoc
 
 Stance = Literal["supports", "contradicts"]
 ClaimKind = Literal["normative", "factual"]
-ContradictionKind = Literal["evidence_vs_claim", "claim_vs_claim"]
 
 
 # -- Domain models -----------------------------------------------------------
@@ -75,6 +75,11 @@ class Claim(BaseModel, frozen=True):
         description="Uids of claims whose truth this claim requires. "
         "Resolved from text references in RawClaim.depends_on.",
     )
+    chunk_index: int = Field(
+        default=0,
+        description="0-based index of the chunk that produced this claim. "
+        "In-memory only; not persisted to the database.",
+    )
     merged_into: int | None = Field(
         default=None,
         description="Tombstone: uid of the survivor that absorbed this claim. "
@@ -110,6 +115,11 @@ class Evidence(BaseModel, frozen=True):
         description="True if the evidence states a requirement or obligation, "
         "not merely an observation.",
     )
+    chunk_index: int = Field(
+        default=0,
+        description="0-based index of the chunk that produced this evidence. "
+        "In-memory only; not persisted to the database.",
+    )
     merged_into: int | None = Field(
         default=None,
         description="Tombstone: uid of the survivor that absorbed this evidence. "
@@ -117,36 +127,26 @@ class Evidence(BaseModel, frozen=True):
     )
 
 
-class SupportLink(BaseModel, frozen=True):
-    """Maps a claim to the evidence that supports or fails to support it."""
+class ClaimVerdict(BaseModel, frozen=True):
+    """A single finding from the verify step.
 
-    claim_uid: int
-    evidence_uids: list[int]
-    status: Literal["directly_supported", "transitively_supported", "unsupported"] = Field(
-        description="'directly_supported': evidence explicitly addresses the claim. "
-        "'transitively_supported': evidence supports a dependency of the claim. "
-        "'unsupported': no matching evidence found.",
-    )
-
-
-class InternalContradiction(BaseModel, frozen=True):
-    """A contradiction detected within the paper.
-
-    When ``kind`` is ``evidence_vs_claim``, an evidence item undermines
-    a claim. When ``kind`` is ``claim_vs_claim``, two claims assert
-    incompatible things about the same or analogous subjects.
+    Multiple verdicts per claim are expected. A claim can be ``proven``
+    by one evidence item and ``disproven`` by another. The full list is
+    the record; consumers decide what the combination means.
     """
 
-    source_uid: int = Field(
-        description="Uid of the contradicting item. "
-        "An evidence uid when kind is evidence_vs_claim, "
-        "a claim uid when kind is claim_vs_claim.",
-    )
     claim_uid: int
-    kind: ContradictionKind = Field(
-        default="evidence_vs_claim",
-        description="'evidence_vs_claim': evidence undermines a claim. "
-        "'claim_vs_claim': two claims assert incompatible things.",
+    related_uid: int = Field(
+        default=-1,
+        description="Evidence uid for proven/disproven, claim uid for "
+        "implied/disclaimed, -1 for unproven.",
+    )
+    status: Literal["proven", "implied", "unproven", "disproven", "disclaimed"] = Field(
+        description="'proven': evidence answers the claim affirmatively. "
+        "'implied': supported through dependency chain. "
+        "'unproven': no evidence addresses the claim. "
+        "'disproven': evidence, if correct, would falsify the claim. "
+        "'disclaimed': another claim in the paper contradicts this one.",
     )
 
 
@@ -158,7 +158,7 @@ class LoadBearingResult(BaseModel, frozen=True):
         description="Uids of claims that depend on this one (directly or transitively).",
     )
     classification: Literal[
-        "internally_contested",
+        "conflicted",
         "externally_contested",
         "externally_anchored",
         "critical_gap",
@@ -166,7 +166,7 @@ class LoadBearingResult(BaseModel, frozen=True):
         "depends_on_contested",
         "peripheral",
     ] = Field(
-        description="'internally_contested': load-bearing + contradicted by internal evidence. "
+        description="'conflicted': load-bearing + contradicted by internal evidence. "
         "'externally_contested': load-bearing + contradicted by external evidence. "
         "'externally_anchored': load-bearing + confirmed by external evidence. "
         "'critical_gap': load-bearing + unsupported. "
@@ -195,7 +195,7 @@ MarkerType = Literal[
     "dismissal",
     "concession",
     "provocation",
-    "scope_deflection",
+    "scope_boundary",
     "political_signal",
 ]
 
@@ -209,7 +209,12 @@ class Rhetoric(BaseModel, frozen=True):
     section: str = Field(description="Section header where the marker appears.")
     marker_type: MarkerType
     target: str = Field(description="What is being dismissed/conceded/deflected.")
-    intensity: Literal["mild", "moderate", "strong"]
+    intensity: Literal["low", "medium", "high"]
+    chunk_index: int = Field(
+        default=0,
+        description="0-based index of the chunk that produced this marker. "
+        "In-memory only; not persisted to the database.",
+    )
 
 
 class WebResolution(BaseModel, frozen=True):
@@ -281,18 +286,13 @@ class RawClaim(BaseModel, frozen=True):
         description="Line number reported by the LLM. 0 means unreported; "
         "the harness clamps to 1.",
     )
-    original_quotes: list[str] = []
-    section: str = ""
     question: str = ""
-    kind: str = Field(
-        default="normative",
-        description="'normative' or 'factual'. Validated on promotion to Claim.",
-    )
-    depends_on: list[str] = Field(
-        default=[],
-        description="Quoted text of claims this one depends on. "
-        "Resolved to SourceLocs by promote_claims.",
-    )
+    # Constrained decoding stability: Qwen 30B produces non-deterministic
+    # output with fewer than 5 schema fields (20-28 claims across runs).
+    # At 5 fields, output stabilizes (19 claims in 9/10 runs). These
+    # fields exist solely to anchor the generation; values are discarded.
+    unused1: str = ""
+    unused2: str = ""
 
 
 class RawEvidence(BaseModel, frozen=True):
@@ -303,8 +303,6 @@ class RawEvidence(BaseModel, frozen=True):
         default=0,
         description="Line number reported by the LLM. 0 means unreported.",
     )
-    original_quotes: list[str] = []
-    section: str = ""
     supports: list[str] = []
     quantitative: bool = False
     cited: bool = False
@@ -323,34 +321,64 @@ class RawRhetoric(BaseModel, frozen=True):
     section: str = ""
     marker_type: str = ""
     target: str = ""
-    intensity: str = "moderate"
+    intensity: str = "medium"
 
 
 # -- Per-step output models --------------------------------------------------
 
 
-class ExtractAllOutput(BaseModel, frozen=True):
-    """Extract Normative step output: combined per-chunk extraction."""
+class ExtractClaimsOutput(BaseModel, frozen=True):
+    """Extract Claims step output: normative claims from a single chunk."""
 
     claims: list[RawClaim] = []
+
+    # @model_validator(mode="after")
+    # def _reject_empty(self) -> Self:
+    #     if not self.claims:
+    #         raise ModelRetry(
+    #             "Empty claim output is rejected. Re-read the chunk and extract "
+    #             "every statement that argues something should be true, ought "
+    #             "to be true, or is better or worse than an alternative."
+    #         )
+    #     return self
+
+
+class ExtractEvidenceOutput(BaseModel, frozen=True):
+    """Extract Evidence step output: supporting evidence from a single chunk."""
+
     evidence: list[RawEvidence] = []
+
+    # @model_validator(mode="after")
+    # def _reject_empty(self) -> Self:
+    #     if not self.evidence:
+    #         raise ModelRetry(
+    #             "Empty evidence output is rejected. Re-read the chunk and "
+    #             "extract statements offered in support of another assertion, "
+    #             "including concessions and cited or verifiable support."
+    #         )
+    #     return self
+
+
+class ExtractRhetoricOutput(BaseModel, frozen=True):
+    """Extract Rhetoric step output: rhetorical markers from a single chunk."""
+
     markers: list[RawRhetoric] = []
-    analysis_complete: bool = Field(
-        default=False,
-        description="Set to true when the chunk has been fully analyzed, "
-        "even if no claims or evidence were found.",
-    )
+
+    # @model_validator(mode="after")
+    # def _reject_empty(self) -> Self:
+    #     if not self.markers:
+    #         raise ModelRetry(
+    #             "Empty rhetoric output is rejected. Re-read the chunk and "
+    #             "extract statements that dismiss, concede, provoke, deflect "
+    #             "scope, or signal committee politics."
+    #         )
+    #     return self
 
 
 class ExtractFactualOutput(BaseModel, frozen=True):
     """Extract Factual step output: factual claims from a single chunk."""
 
     claims: list[RawClaim] = []
-    analysis_complete: bool = Field(
-        default=False,
-        description="Set to true when the chunk has been fully analyzed, "
-        "even if no factual claims were found.",
-    )
 
 
 class DedupGroupingOutput(BaseModel, frozen=True):
@@ -359,17 +387,53 @@ class DedupGroupingOutput(BaseModel, frozen=True):
     groups: list[list[int]] = []
 
 
-class VerifyOutput(BaseModel, frozen=True):
-    """Verify step output: support map, internal contradictions, and cross-chunk dependencies."""
+class VerifyProposition(BaseModel, frozen=True):
+    """One (claim, evidence) judgement for the batched verify sub-prompt.
 
-    support_map: list[SupportLink] = []
-    internal_contradictions: list[InternalContradiction] = []
+    Step 8 packs a small number of these into each LLM call. The model
+    returns three-valued verdicts; ``_custom_verify`` translates them
+    into the canonical ``ClaimVerdict`` statuses (``support`` →
+    ``proven``, ``contradict`` → ``disproven``, ``unrelated`` → drop).
+    """
+
+    claim_uid: int
+    evidence_uid: int
+    verdict: Literal["support", "contradict", "unrelated"]
 
 
-class LoadBearingOutput(BaseModel, frozen=True):
-    """Load-Bearing step output: classification of each claim by structural importance."""
+class BatchVerifyOutput(BaseModel, frozen=True):
+    """One LLM call's worth of batched verify judgements.
 
-    results: list[LoadBearingResult] = []
+    ``judgements`` is order-preserving for diagnostic readability; the
+    custom hook re-sorts before writing ``state.verdicts``.
+    """
+
+    judgements: list[VerifyProposition] = []
+
+
+class DisclaimPairOutput(BaseModel, frozen=True):
+    """Result of one disclaim-detection LLM call over a single claim pair.
+
+    The four-valued relation lets the hook record a directional
+    disclaim, a mutual contradiction, or no relationship at all. Only
+    propositional opposition counts; shared topic alone is ``none``.
+    """
+
+    claim_a_uid: int
+    claim_b_uid: int
+    relation: Literal["a_disclaims_b", "b_disclaims_a", "mutual", "none"]
+
+
+class LoadBearingBinaryOutput(BaseModel, frozen=True):
+    """Result of one per-claim load-bearing decision.
+
+    ``reason`` is free text retained for the trace; it never influences
+    downstream classification.
+    """
+
+    claim_uid: int
+    load_bearing: bool
+    reason: str = ""
 
 
 class CitationTaskOutput(BaseModel, frozen=True):
@@ -446,25 +510,34 @@ class PipelineState(BaseModel):
     # Read
     chunks: Optional[list[Chunk]] = None
     citations: Optional[list[CitationRef]] = None
+    blanked_lines: int = 0
 
-    # Extract Normative
+    # Extract
     raw_claims: Optional[list[RawClaim]] = None
     raw_evidence: Optional[list[RawEvidence]] = None
     raw_rhetoric: Optional[list[RawRhetoric]] = None
     rhetoric: Optional[list[Rhetoric]] = None
 
     # Dedup Claims
-    claims: Optional[list[Claim]] = None
+    normative_claims: Optional[list[Claim]] = None
 
     # Extract Factual
-    raw_factual_claims: Optional[list[RawClaim]] = None
+    raw_factual: Optional[list[RawClaim]] = None
 
     # Dedup Evidence
-    evidence: Optional[list[Evidence]] = None
+    deduped_evidence: Optional[list[Evidence]] = None
+
+    # Verify triage (populated by _custom_verify before any LLM call so
+    # the trace can show what the embedding pre-filter handed to the
+    # LLM). None until Step 8 has run.
+    centrality_scores: Optional[dict[int, float]] = None
+    triaged_evidence: Optional[dict[int, list[int]]] = None
+    disclaim_candidates: Optional[list[tuple[int, int]]] = None
+    verify_batch_count: int = 0
+    self_pair_dropped: int = 0
 
     # Verify
-    support_map: Optional[list[SupportLink]] = None
-    internal_contradictions: Optional[list[InternalContradiction]] = None
+    verdicts: Optional[list[ClaimVerdict]] = None
 
     # Load-Bearing
     load_bearing_claims: Optional[list[LoadBearingResult]] = None
@@ -483,6 +556,13 @@ class PipelineState(BaseModel):
 
     # Caput Causae
     caput_causae: Optional[CaputCausae] = None
+
+    # Embedding shadow (observational, never applied). Each list is a
+    # candidate semantic merge group of survivor uids. None until the
+    # corresponding dedup step has run; ``[]`` after if no candidate
+    # clusters cleared the threshold.
+    shadow_claim_groups: Optional[list[list[int]]] = None
+    shadow_evidence_groups: Optional[list[list[int]]] = None
 
     # Report
     report: Optional[str] = None

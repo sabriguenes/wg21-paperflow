@@ -19,12 +19,44 @@ we gave it.
 
 from __future__ import annotations
 
+import os
 from typing import Callable
 
 from paperstore.backend import StorageBackend
 
-_SOURCE_START = "<<<SOURCE>>>"
-_SOURCE_END = "<<<END_SOURCE>>>"
+_SOURCE_TAG = os.environ.get("WG21_SOURCE_TAG", "AX9K7P")
+_SOURCE_START = f"<<<{_SOURCE_TAG}>>>"
+_SOURCE_END = f"<<<END_{_SOURCE_TAG}>>>"
+
+
+def source_tag() -> str:
+    """Return the configured stable source tag."""
+    return _SOURCE_TAG
+
+
+def source_start() -> str:
+    """Return the configured source start delimiter."""
+    return _SOURCE_START
+
+
+def source_end() -> str:
+    """Return the configured source end delimiter."""
+    return _SOURCE_END
+
+
+def _escape_source_delimiters(content: str) -> str:
+    """Prevent source content from forging framework delimiters."""
+    return (
+        content
+        .replace(_SOURCE_START, f"<<\\<{_SOURCE_TAG}>>>")
+        .replace(_SOURCE_END, f"<<\\<END_{_SOURCE_TAG}>>>")
+    )
+
+
+def wrap_source(content: str) -> str:
+    """Wrap untrusted source material in configured source delimiters."""
+    escaped = _escape_source_delimiters(content)
+    return f"{_SOURCE_START}\n{escaped}\n{_SOURCE_END}"
 
 
 def make_read_paper_tool(
@@ -61,7 +93,7 @@ def make_read_paper_tool(
         end_line = start_idx + len(chunk)
         header = f"[lines {start_idx + 1}-{end_line} of {total}]"
         content = "\n".join(chunk)
-        return f"{header}\n{_SOURCE_START}\n{content}\n{_SOURCE_END}"
+        return f"{header}\n{wrap_source(content)}"
 
     read_paper.__name__ = f"read_paper_{pid.lower()}"
     return read_paper

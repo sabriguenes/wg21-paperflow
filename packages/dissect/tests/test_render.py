@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from dissect.models import (
     Claim,
+    ClaimVerdict,
     Evidence,
     PipelineState,
     SourceLoc,
-    SupportLink,
 )
 from paperstore.backend import PaperRow
 from dissect.render import render_report, render_trace
@@ -57,12 +57,12 @@ def test_sanitize_md_mixed_code_span_and_prose():
 
 def test_render_report_unsupported():
     state = PipelineState(
-        claims=[
+        normative_claims=[
             Claim(uid=1, loc=_loc(1), text="X is fast", original_quotes=["X is fast"],
                   section="3", question="How fast?", depends_on=[]),
         ],
-        support_map=[
-            SupportLink(claim_uid=1, evidence_uids=[], status="unsupported"),
+        verdicts=[
+            ClaimVerdict(claim_uid=1, status="unproven"),
         ],
     )
     report = render_report(state, "P0001R0", "Test Paper")
@@ -72,18 +72,17 @@ def test_render_report_unsupported():
 
 def test_render_report_supported():
     state = PipelineState(
-        claims=[
+        normative_claims=[
             Claim(uid=1, loc=_loc(1), text="X is fast", original_quotes=["X is fast"],
                   section="3", question="How fast?", depends_on=[]),
         ],
-        evidence=[
+        deduped_evidence=[
             Evidence(uid=2, loc=_loc(2), text="measured 5ns", original_quotes=["measured 5ns"],
                      section="4", supports=["X is fast"], quantitative=True,
                      cited=False, verifiable=True, normative=False),
         ],
-        support_map=[
-            SupportLink(claim_uid=1, evidence_uids=[2],
-                        status="directly_supported"),
+        verdicts=[
+            ClaimVerdict(claim_uid=1, related_uid=2, status="proven"),
         ],
     )
     report = render_report(state, "P0001R0", "Test Paper")
@@ -93,7 +92,7 @@ def test_render_report_supported():
 
 
 def test_render_report_empty():
-    state = PipelineState(claims=[], support_map=[])
+    state = PipelineState(normative_claims=[], verdicts=[])
     report = render_report(state, "P0001R0", "Test")
     assert "None identified" in report
 
@@ -112,16 +111,15 @@ def test_render_trace_step6():
         chunks=[],
         citations=[],
         raw_claims=[],
-        claims=[],
+        normative_claims=[],
         raw_evidence=[],
-        raw_factual_claims=[],
-        evidence=[],
-        support_map=[],
-        internal_contradictions=[],
+        raw_factual=[],
+        deduped_evidence=[],
+        verdicts=[],
     )
     trace = render_trace(state, PaperRow(title="T", paper_id="P0001R0"), 6)
     assert "0. Read" in trace
-    assert "1. Extract Normative" in trace
-    assert "3. Extract Factual" in trace
-    assert "5. Dedup Evidence" in trace
-    assert "6. Verify" in trace
+    assert "1. Extract Claims" in trace
+    assert "3. Extract Evidence" in trace
+    assert "5. Extract Factual" in trace
+    assert "6. Dedup Factual" in trace

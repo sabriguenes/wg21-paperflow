@@ -35,6 +35,7 @@ def run_process_command(
     debug = getattr(args, "debug", False)
     trace_val = getattr(args, "trace", None)
     trace = trace_val is not None
+    stop_after = trace_val if isinstance(trace_val, int) and trace_val >= 0 else None
     force = getattr(args, "force", False)
 
     verb = STAGE_NAMES.get(through - 1, "process")
@@ -84,6 +85,7 @@ def run_process_command(
                         through=through,
                         debug=debug,
                         trace=trace,
+                        stop_after=stop_after,
                         force=force,
                         on_progress=on_progress,
                     )

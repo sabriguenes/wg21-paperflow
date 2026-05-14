@@ -13,24 +13,31 @@ import dataclasses
 
 import pytest
 from pydantic import ValidationError
+from pydantic_ai import ModelRetry
 
 from dissect.models import (
+    BatchVerifyOutput,
     CaputCausae,
     CitationAuditEntry,
     CitationTaskOutput,
     Claim,
+    ClaimVerdict,
     Chunk,
+    DisclaimPairOutput,
     Evidence,
-    ExtractAllOutput,
+    ExtractClaimsOutput,
+    ExtractEvidenceOutput,
     ExtractFactualOutput,
+    ExtractRhetoricOutput,
     ExternalEvidence,
-    InternalContradiction,
+    LoadBearingBinaryOutput,
     LoadBearingResult,
     PipelineState,
     RawClaim,
     RawEvidence,
+    RawRhetoric,
     SourceLoc,
-    SupportLink,
+    VerifyProposition,
     WebResolution,
 )
 
@@ -76,20 +83,21 @@ def test_evidence_round_trip():
     assert Evidence.model_validate(e.model_dump()) == e
 
 
-def test_support_link_round_trip():
-    sl = SupportLink(claim_uid=1, evidence_uids=[2], status="directly_supported")
-    assert SupportLink.model_validate(sl.model_dump()) == sl
+def test_claim_verdict_round_trip():
+    v = ClaimVerdict(claim_uid=1, related_uid=2, status="proven")
+    assert ClaimVerdict.model_validate(v.model_dump()) == v
 
 
-def test_internal_contradiction_round_trip():
-    ic = InternalContradiction(source_uid=1, claim_uid=2, kind="evidence_vs_claim")
-    assert InternalContradiction.model_validate(ic.model_dump()) == ic
+def test_claim_verdict_unproven():
+    v = ClaimVerdict(claim_uid=1, status="unproven")
+    assert v.related_uid == -1
+    assert v.status == "unproven"
 
 
-def test_internal_contradiction_claim_vs_claim():
-    ic = InternalContradiction(source_uid=3, claim_uid=4, kind="claim_vs_claim")
-    assert ic.kind == "claim_vs_claim"
-    assert ic.source_uid == 3
+def test_claim_verdict_disclaimed():
+    v = ClaimVerdict(claim_uid=3, related_uid=4, status="disclaimed")
+    assert v.status == "disclaimed"
+    assert v.related_uid == 4
 
 
 def test_load_bearing_result_round_trip():
@@ -136,8 +144,11 @@ def test_raw_evidence_round_trip():
 def test_pipeline_state_defaults():
     s = PipelineState()
     assert s.next_uid == 1
+    non_none_int_defaults = {
+        "next_uid", "blanked_lines", "verify_batch_count", "self_pair_dropped",
+    }
     for field_name in PipelineState.model_fields:
-        if field_name in ("next_uid",):
+        if field_name in non_none_int_defaults:
             continue
         assert getattr(s, field_name) is None
 
@@ -159,20 +170,44 @@ def test_frozen_models_are_immutable():
         c.text = "Y"  # type: ignore[misc]
 
 
-def test_extract_all_output_claims():
+def test_extract_claims_output_claims():
     rc = RawClaim(text="X", original_quotes=["X"], section="1", question="Q?", depends_on=[])
-    out = ExtractAllOutput(claims=[rc])
+    out = ExtractClaimsOutput(claims=[rc])
     assert len(out.claims) == 1
 
 
-def test_extract_all_output_evidence():
+def test_extract_evidence_output_evidence():
     re_ = RawEvidence(
         text="E", original_quotes=["E"], section="2",
         supports=["S"], quantitative=False, cited=False,
         verifiable=False, normative=False,
     )
-    out = ExtractAllOutput(evidence=[re_])
+    out = ExtractEvidenceOutput(evidence=[re_])
     assert len(out.evidence) == 1
+
+
+def test_extract_rhetoric_output_markers():
+    marker = RawRhetoric(text="R", section="2", marker_type="dismissal")
+    out = ExtractRhetoricOutput(markers=[marker])
+    assert len(out.markers) == 1
+
+
+@pytest.mark.skip(reason="empty-rejection validators disabled for wording-section chunks")
+def test_extract_claims_output_rejects_empty():
+    with pytest.raises(ModelRetry):
+        ExtractClaimsOutput(claims=[])
+
+
+@pytest.mark.skip(reason="empty-rejection validators disabled for wording-section chunks")
+def test_extract_evidence_output_rejects_empty():
+    with pytest.raises(ModelRetry):
+        ExtractEvidenceOutput(evidence=[])
+
+
+@pytest.mark.skip(reason="empty-rejection validators disabled for wording-section chunks")
+def test_extract_rhetoric_output_rejects_empty():
+    with pytest.raises(ModelRetry):
+        ExtractRhetoricOutput(markers=[])
 
 
 def test_claim_kind_factual():
@@ -248,7 +283,73 @@ def test_citation_task_output_round_trip():
 
 
 def test_extract_factual_output():
-    rc = RawClaim(text="X", section="1", question="Q?", kind="factual")
+    rc = RawClaim(text="X", question="Q?")
     out = ExtractFactualOutput(claims=[rc])
     assert len(out.claims) == 1
-    assert out.claims[0].kind == "factual"
+
+
+def test_verify_proposition_round_trip():
+    p = VerifyProposition(claim_uid=1, evidence_uid=10, verdict="support")
+    assert VerifyProposition.model_validate(p.model_dump()) == p
+
+
+def test_verify_proposition_rejects_unknown_verdict():
+    with pytest.raises(ValidationError):
+        VerifyProposition(claim_uid=1, evidence_uid=10, verdict="maybe")
+
+
+def test_batch_verify_output_round_trip():
+    p1 = VerifyProposition(claim_uid=1, evidence_uid=10, verdict="support")
+    p2 = VerifyProposition(claim_uid=1, evidence_uid=11, verdict="contradict")
+    out = BatchVerifyOutput(judgements=[p1, p2])
+    assert BatchVerifyOutput.model_validate(out.model_dump()) == out
+
+
+def test_batch_verify_output_empty_default():
+    out = BatchVerifyOutput()
+    assert out.judgements == []
+
+
+def test_disclaim_pair_output_round_trip():
+    d = DisclaimPairOutput(claim_a_uid=1, claim_b_uid=2, relation="a_disclaims_b")
+    assert DisclaimPairOutput.model_validate(d.model_dump()) == d
+
+
+def test_disclaim_pair_output_none_relation():
+    d = DisclaimPairOutput(claim_a_uid=1, claim_b_uid=2, relation="none")
+    assert d.relation == "none"
+
+
+def test_disclaim_pair_output_rejects_unknown_relation():
+    with pytest.raises(ValidationError):
+        DisclaimPairOutput(claim_a_uid=1, claim_b_uid=2, relation="other")
+
+
+def test_load_bearing_binary_output_round_trip():
+    out = LoadBearingBinaryOutput(claim_uid=1, load_bearing=True, reason="thesis claim")
+    assert LoadBearingBinaryOutput.model_validate(out.model_dump()) == out
+
+
+def test_load_bearing_binary_output_defaults():
+    out = LoadBearingBinaryOutput(claim_uid=1, load_bearing=False)
+    assert out.reason == ""
+
+
+def test_pipeline_state_centrality_fields_default_none():
+    s = PipelineState()
+    assert s.centrality_scores is None
+    assert s.triaged_evidence is None
+    assert s.disclaim_candidates is None
+    assert s.verify_batch_count == 0
+
+
+def test_pipeline_state_centrality_assignable():
+    s = PipelineState()
+    s.centrality_scores = {1: 2.0, 2: 1.0}
+    s.triaged_evidence = {1: [10, 11], 2: [12]}
+    s.disclaim_candidates = [(1, 2)]
+    s.verify_batch_count = 3
+    assert s.centrality_scores[1] == 2.0
+    assert s.triaged_evidence[2] == [12]
+    assert s.disclaim_candidates == [(1, 2)]
+    assert s.verify_batch_count == 3

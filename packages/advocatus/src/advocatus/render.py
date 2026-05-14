@@ -11,6 +11,11 @@ Verdict first, not last. A reader who must wade through twenty findings
 to discover the outcome has been subjected to a punishment, not a
 hearing.
 
+The Relatio is rendered from a Jinja2 template (``relatio.md``) loaded
+at runtime via ``importlib.resources``. The template controls section
+ordering, per-item layout, and prose style. This module provides the
+template context and custom Jinja2 filters.
+
 This module also renders the diagnostic outputs:
 - ``render_debug_md`` - a single agent run as a debug section
 - ``render_trace``    - per-step state dump up to a chosen step
@@ -18,8 +23,12 @@ This module also renders the diagnostic outputs:
 
 from __future__ import annotations
 
+import importlib.resources
 import json
+import re
 from typing import Any
+
+from jinja2 import Environment
 
 from pipeline import sanitize_md
 
@@ -60,119 +69,94 @@ _DAMAGE_LABELS = {
     "capital_cost": "costs political capital",
 }
 
-def _seal_label(seal: Seal) -> str:
+
+def _seal_label(seal: str) -> str:
     return _SEAL_HEADERS.get(seal, seal)
 
 
-def render_relatio(state: PipelineState) -> str:
-    """Render the Relatio markdown from the final pipeline state."""
-    pid = state.paper_id or "?"
-    title = state.paper_title or "Untitled"
-    lines: list[str] = [f"# Relatio: {pid} - {title}\n"]
+def _truncate(text: str, length: int = 80) -> str:
+    if len(text) <= length:
+        return text
+    return text[:length].rsplit(" ", 1)[0] + "..."
 
-    # 1. Seal
+
+def _load_template_source() -> str:
+    resource = importlib.resources.files("advocatus").joinpath("relatio.md")
+    return resource.read_text(encoding="utf-8")
+
+
+def _build_env() -> Environment:
+    env = Environment(
+        keep_trailing_newline=True,
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    env.filters["sanitize_md"] = sanitize_md
+    env.filters["seal_label"] = _seal_label
+    env.filters["forum_label"] = lambda v: _FORUM_LABELS.get(v, v)
+    env.filters["damage_label"] = lambda v: _DAMAGE_LABELS.get(v, v)
+    env.filters["challenge_label"] = lambda v: _CHALLENGE_LABELS.get(v, v)
+    env.filters["truncate"] = _truncate
+    return env
+
+
+def _template_context(state: PipelineState) -> dict[str, Any]:
+    """Build the rendering context dict from pipeline state."""
     seal = state.seal or "sine_causa"
-    assessment = state.one_sentence_assessment or ""
-    confidence = state.confidence
-    lines.append(f"## *{_seal_label(seal)}*\n")
-    if assessment:
-        lines.append(f"{sanitize_md(assessment)}\n")
-    if confidence is not None:
-        lines.append(f"**Confidence:** {confidence:.2f}\n")
+    objections_raw = state.objections or []
+    objections_sorted = sorted(
+        objections_raw, key=lambda o: _SEVERITY_ORDER.get(o.severity, 99)
+    )
 
-    if seal == "sine_causa":
-        lines.append("The tribunal does not convene. The paper contains no claims to examine.\n")
-        return "\n".join(lines).rstrip() + "\n"
+    objections = []
+    for obj in objections_sorted:
+        charge = obj.charge.charge
+        objections.append({
+            "severity": obj.severity,
+            "gravamen": charge.gravamen,
+            "quoted_text": charge.quoted_text,
+            "failed_test": charge.failed_test,
+            "contradicting_evidence": charge.contradicting_evidence,
+            "adversary": obj.motivatio.adversary,
+            "forum": obj.motivatio.forum,
+            "damage": obj.motivatio.damage,
+            "explanation": obj.motivatio.explanation,
+        })
 
-    # 2. Objections
-    objections = state.objections or []
-    if objections:
-        ordered = sorted(objections, key=lambda o: _SEVERITY_ORDER.get(o.severity, 99))
-        lines.append("## Objections\n")
-        for i, obj in enumerate(ordered, start=1):
-            charge = obj.charge.charge
-            forum = _FORUM_LABELS.get(obj.motivatio.forum, obj.motivatio.forum)
-            damage = _DAMAGE_LABELS.get(obj.motivatio.damage, obj.motivatio.damage)
-            lines.append(
-                f"### {i}. [{obj.severity.upper()}] uid {obj.articulus_uid}\n"
-            )
-            lines.append(f"> {sanitize_md(charge.quoted_text)}\n")
-            lines.append(f"**Gravamen.** {sanitize_md(charge.gravamen)}\n")
-            lines.append(
-                f"**Motivatio.** {sanitize_md(obj.motivatio.adversary)} "
-                f"would raise this in {forum}; it {damage}. "
-                f"{sanitize_md(obj.motivatio.explanation)}\n"
-            )
+    probationes = []
+    for p in (state.probationes or []):
+        section = ""
+        for a in (state.articuli or []):
+            if a.uid == p.articulus_uid:
+                section = a.section
+                break
+        probationes.append({
+            "section": section or f"Articulus {p.articulus_uid}",
+            "killing_challenge": p.killing_challenge,
+            "explanation": p.explanation,
+            "charge_summary": p.killed_charge.gravamen if p.killed_charge else "",
+        })
 
-    # 3. Probationes
-    probationes = state.probationes or []
-    if probationes:
-        lines.append("## Probationes\n")
-        for p in probationes:
-            challenge = _CHALLENGE_LABELS.get(p.killing_challenge, p.killing_challenge)
-            lines.append(
-                f"- **uid {p.articulus_uid}** - "
-                f"the *{challenge}* challenge prevailed. "
-                f"{sanitize_md(p.explanation)}"
-            )
-        lines.append("")
+    notae_minores = [{"text": n.text} for n in (state.notae_minores or [])]
 
-    # 4. Tabula Fontium
-    tabula = state.tabula_fontium or []
-    if tabula:
-        lines.append("## Tabula Fontium\n")
-        lines.append("| Paper | Resolved | Quote Match | Discrepancy |")
-        lines.append("|---|---|---|---|")
-        for entry in tabula:
-            resolved = "Yes" if entry.resolved else "No"
-            disc = sanitize_md(entry.discrepancy) if entry.discrepancy else "-"
-            lines.append(
-                f"| {entry.paper_id} | {resolved} | {entry.quote_match} | {disc} |"
-            )
-        lines.append("")
+    tabula_fontium = [
+        {
+            "paper_id": t.paper_id,
+            "resolved": t.resolved,
+            "quote_match": t.quote_match,
+            "discrepancy": t.discrepancy,
+        }
+        for t in (state.tabula_fontium or [])
+    ]
 
-    # 5. Acta
-    lines.append("## Acta\n")
-    lines.extend(_render_acta(state))
-
-    # 6. Notae Minores
-    notae = state.notae_minores or []
-    if notae:
-        lines.append("\n## Notae Minores\n")
-        lines.append("<details><summary>Editorial observations</summary>\n")
-        for n in notae:
-            uid_part = f" (uid {n.uid})" if n.uid is not None else ""
-            lines.append(f"- {sanitize_md(n.text)}{uid_part}")
-        lines.append("\n</details>\n")
-
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _render_acta(state: PipelineState) -> list[str]:
-    """Audit trail: charges filed, Defensor verdicts, what survived."""
-    lines: list[str] = []
+    # Acta counts
     articuli = state.articuli or []
     candidates = state.candidate_charges or []
     survivors = state.surviving_charges or []
-    probationes = state.probationes or []
-    notae = state.notae_minores or []
-    objections = state.objections or []
+    prob_list = state.probationes or []
+    notae_list = state.notae_minores or []
 
-    lines.append(
-        f"- {len(articuli)} articuli examined."
-    )
-    lines.append(
-        f"- {len(candidates)} candidate charges filed."
-    )
-    lines.append(
-        f"- Defensor cross-examination: {len(probationes)} killed, "
-        f"{len(notae)} relegated, {len(survivors)} survived."
-    )
-    lines.append(
-        f"- {len(objections)} objections in the final record after motivatio review."
-    )
-
-    # Defensor breakdown by challenge
+    kill_attribution = ""
     defensor_results = state.defensor_results or []
     if defensor_results:
         kill_counts: dict[str, int] = {}
@@ -181,13 +165,46 @@ def _render_acta(state: PipelineState) -> list[str]:
                 last = r.challenges[-1].challenge
                 kill_counts[last] = kill_counts.get(last, 0) + 1
         if kill_counts:
-            parts = ", ".join(
+            kill_attribution = ", ".join(
                 f"{_CHALLENGE_LABELS.get(k, k)}: {v}"
                 for k, v in sorted(kill_counts.items(), key=lambda kv: -kv[1])
             )
-            lines.append(f"- Kill attribution by challenge: {parts}.")
 
-    return lines
+    return {
+        "paper_id": state.paper_id or "?",
+        "paper_title": state.paper_title or "Untitled",
+        "authors": state.paper_authors or [],
+        "audience": state.paper_audience or "Unknown",
+        "seal": seal,
+        "assessment": state.one_sentence_assessment or "",
+        "confidence": state.confidence if state.confidence is not None else 0.0,
+        "objections": objections,
+        "probationes": probationes,
+        "notae_minores": notae_minores,
+        "tabula_fontium": tabula_fontium,
+        "n_articuli": len(articuli),
+        "n_candidates": len(candidates),
+        "n_killed": len(prob_list),
+        "n_relegated": len(notae_list),
+        "n_survived": len(survivors),
+        "n_objections": len(objections_raw),
+        "kill_attribution": kill_attribution,
+    }
+
+
+def render_relatio(state: PipelineState) -> str:
+    """Render the Relatio markdown from the final pipeline state.
+
+    Loads the Jinja2 template from ``relatio.md`` and renders it
+    against a context dict derived from the pipeline state.
+    """
+    env = _build_env()
+    tmpl = env.from_string(_load_template_source())
+    ctx = _template_context(state)
+    rendered = tmpl.render(ctx)
+    # Collapse runs of 3+ blank lines to 2 (template whitespace artifacts)
+    rendered = re.sub(r"\n{3,}", "\n\n", rendered)
+    return rendered.rstrip() + "\n"
 
 
 # -- Debug + trace renderers ------------------------------------------------
@@ -254,12 +271,12 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
         lines.append("## 0. Load\n")
         articuli_seed = state.dissect_articuli_seed or []
         evidence = state.dissect_evidence or []
-        markers = state.dissect_markers or []
+        rhetoric = state.dissect_rhetoric or []
         cit_audit = state.dissect_citation_audit or []
         ext_evidence = state.dissect_external_evidence or []
         lines.append(f"- {len(articuli_seed)} dissect claims loaded as articuli seed")
         lines.append(f"- {len(evidence)} dissect evidence items")
-        lines.append(f"- {len(markers)} dissect markers")
+        lines.append(f"- {len(rhetoric)} dissect rhetoric items")
         lines.append(f"- {len(cit_audit)} citation audit entries")
         lines.append(f"- {len(ext_evidence)} external evidence items")
         if state.dissect_caput_causae:

@@ -40,7 +40,7 @@ Each paper has an integer `status` on the `papers` table:
 
 Status means "the next action needed." Pipeline is linear: download -> convert -> dissect -> advocatus -> agora -> herald -> ready.
 
-Failed status encodes which stage failed: `failed_status = -(stage + 1)`, recovery: `retry_stage = abs(status) - 1`.
+Failed status encodes which stage failed: `failed_status = -(stage + 1)`, recovery: `retry_stage = abs(status) - 1`. The `error` column stores the diagnostic message.
 
 Constants live in `paperstore.stages.STAGES` and `STAGE_NAMES`.
 
@@ -111,7 +111,7 @@ Rule: if full fidelity cannot be achieved, stop. Set paper status to failed. Pre
 
 Paper markdown and web-fetched content are untrusted data:
 - Structured output via pydantic-ai enforces the output schema
-- Tool returns wrapped in <<<SOURCE>>>/<<<END_SOURCE>>> delimiters
+- Tool returns wrapped in configured source delimiters via `pipeline.tools.wrap_source`
 - System prompts instruct agents to treat delimited content as data
 - read_paper tool is scoped to one paper, capped at 500 lines per call
 

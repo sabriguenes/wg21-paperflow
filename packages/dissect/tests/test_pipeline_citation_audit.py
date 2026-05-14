@@ -44,8 +44,8 @@ async def test_successful_pdf_fetch_yields_resolved_audit_row(monkeypatch):
     state = PipelineState(
         paper_source="dummy",
         citations=[CitationRef(paper_id="N5032", count=2)],
-        claims=[],
-        evidence=[],
+        normative_claims=[],
+        deduped_evidence=[],
     )
 
     # The post-fix happy path: web_fetch returns extracted PDF text. The
@@ -67,9 +67,11 @@ async def test_successful_pdf_fetch_yields_resolved_audit_row(monkeypatch):
 
     spec = MagicMock()
     spec.meta.model_slot = "default"
+    spec.meta.system_prompt = ""
+    spec.meta.system_prompt_mode = "append"
 
     ctx = StepContext(
-        sections={"Step 8 - Verify Citations": "stub instructions"},
+        sections={"10. Verify Citations": "stub instructions"},
         model_slots={"default": "test:stub"},
         researcher=None,
         backend=None,

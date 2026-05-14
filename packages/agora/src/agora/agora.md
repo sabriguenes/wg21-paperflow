@@ -86,8 +86,6 @@ authority for tone, calibration tiers, and structural rules.
 
 - **Model:** none
 - **Execution:** main
-- **Reads:** paper_id
-- **Writes:** paper_source, paper_title, paper_authors, paper_audience, paper_date, paper_url, paper_number, paper_revision, subreddit, prior_revision, revision_case, dissect_claims, dissect_evidence, dissect_rhetoric, dissect_caput_causae, dissect_citation_audit, dissect_external_citations
 
 Pure-Python load step. Reads paper metadata and converted markdown
 from paperstore. Loads every dissect artifact (claims, evidence,
@@ -112,8 +110,6 @@ can call out the delta.
 
 - **Model:** default
 - **Execution:** main
-- **Reads:** paper_source, paper_title, paper_authors, paper_audience, paper_date, dissect_claims, dissect_evidence, dissect_rhetoric, dissect_caput_causae
-- **Writes:** paper_type, technical_anchors, hot_takes, tangent_magnets, misconception_traps, design_tensions
 
 Read the dissected paper end to end. Decide what makes this paper
 worth a thread.
@@ -134,7 +130,7 @@ the anchors a real committee thread would cluster around. Three
 kinds:
 
 - ``load_bearing`` - if this claim is wrong, the paper collapses.
-- ``internally_contested`` - the paper itself signals ambivalence
+- ``conflicted`` - the paper itself signals ambivalence
   (concession markers, deferred questions, "open issues").
 - ``critical_gap`` - the paper does not address something the
   audience will immediately ask about.
@@ -171,8 +167,6 @@ sections), 1.4g (feature test macro relevance).
 - **Model:** default
 - **Execution:** parallel
 - **Tools:** deep_search, web_fetch
-- **Reads:** paper_id, paper_title, paper_authors, paper_audience, paper_number, paper_revision, technical_anchors
-- **Writes:** research_summary
 
 Pure orchestration: dispatch three sub-agents in parallel and merge
 their results into a ``ResearchSummary``. The three sub-agents are:
@@ -205,8 +199,6 @@ relevant | magnetic | gravitational`` ladder from section 2.2.
 
 - **Model:** default
 - **Execution:** main
-- **Reads:** paper_type, technical_anchors, hot_takes, design_tensions, research_summary, paper_authors, paper_audience
-- **Writes:** heat, interest, target_comment_count, encounter_count, signal_count, noise_count
 
 Decide the heat and interest tiers for this thread, then derive the
 slot budget.
@@ -244,8 +236,6 @@ tiers; the rationale is captured in the debug transcript when
 
 - **Model:** default
 - **Execution:** main
-- **Reads:** paper_source, paper_title, paper_authors, paper_audience, paper_date, paper_url, paper_number, paper_revision, prior_revision, revision_case, subreddit, paper_type, heat, interest, technical_anchors, hot_takes, research_summary
-- **Writes:** submission_title, submission_body, submission_link, submission_flair
 
 Write the submission post per the-mod.md section 3.
 
@@ -280,8 +270,6 @@ string if unsure.
 
 - **Model:** default
 - **Execution:** main
-- **Reads:** paper_type, technical_anchors, hot_takes, tangent_magnets, misconception_traps, design_tensions, heat, interest, target_comment_count, encounter_count, signal_count, noise_count, subreddit
-- **Writes:** replies, encounter_slot_groups
 
 Plan every reply slot. The output is a list of ``Reply`` objects with
 ``content=None`` and a populated ``brief`` plus the structural
@@ -335,8 +323,6 @@ id of the parent; top-level slots have ``parent_slot_id=None``.
 - **Model:** default
 - **Execution:** main
 - **Condition:** encounter_count > 0
-- **Reads:** design_tensions, technical_anchors, heat, interest, encounter_count, replies, encounter_slot_groups
-- **Writes:** encounters
 
 For each pre-allocated encounter chain (each entry in
 ``encounter_slot_groups``), produce one ``EncounterPlan``:
@@ -368,8 +354,6 @@ and Step 7 leaves ``Thread.encounters`` as an empty list.
 
 - **Model:** none
 - **Execution:** main
-- **Reads:** paper_id, paper_title, paper_authors, paper_audience, paper_date, paper_number, paper_revision, subreddit, prior_revision, revision_case, paper_type, technical_anchors, tangent_magnets, hot_takes, misconception_traps, design_tensions, research_summary, heat, interest, target_comment_count, encounter_count, signal_count, noise_count, submission_title, submission_body, submission_link, submission_flair, replies, encounters
-- **Writes:** thread
 
 Pure-Python serialisation step. Assemble the final ``Thread`` from
 ``PipelineState`` fields. Validate:

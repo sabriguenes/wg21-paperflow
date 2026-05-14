@@ -344,7 +344,7 @@ class StorageBackend(ABC):
 
     @abstractmethod
     def fail_paper(self, paper_id: str, stage: int, error: str) -> None:
-        """Mark paper as failed at the given stage."""
+        """Mark paper as failed at the given stage and store the error."""
 
     @abstractmethod
     def get_setting(self, key: str) -> str | None:
@@ -373,8 +373,8 @@ class StorageBackend(ABC):
         """Replace external citations for ``paper_id``."""
 
     @abstractmethod
-    def store_questions(self, paper_id: str, claims, support_map) -> None:
-        """Store questions for unsupported claims of ``paper_id``."""
+    def store_questions(self, paper_id: str, claims, verdicts) -> None:
+        """Store questions for unproven claims of ``paper_id``."""
 
     @abstractmethod
     def store_rhetoric(self, paper_id: str, rhetoric) -> None:

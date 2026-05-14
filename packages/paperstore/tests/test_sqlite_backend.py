@@ -115,6 +115,23 @@ def test_upsert_year_and_list_papers(store: SqliteBackend):
     assert ids == {"P1", "P2"}
 
 
+def test_fail_paper_sets_failed_status_and_error(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1", "title": "One"}])
+
+    before = store._conn.execute(
+        "SELECT updated_at FROM papers WHERE paper_id = ?", ("P1",)
+    ).fetchone()["updated_at"]
+    store.fail_paper("P1", 2, "boom")
+    row = store.get_meta("P1")
+    after = store._conn.execute(
+        "SELECT updated_at FROM papers WHERE paper_id = ?", ("P1",)
+    ).fetchone()["updated_at"]
+
+    assert row.status == -3
+    assert row.error == "boom"
+    assert after != before
+
+
 def test_upsert_year_preserves_source_file(store: SqliteBackend):
     """Re-upsert must not clobber source_file set by download."""
     store.upsert_year("2026", [{"paper_id": "P1", "title": "T"}])
@@ -642,8 +659,8 @@ def _make_claim_real_loc(text="x", section="s", question="q", line=1, kind="norm
     )
 
 
-def _make_support_link(claim_uid, status="unsupported"):
-    return SimpleNamespace(claim_uid=claim_uid, evidence_uids=[], status=status)
+def _make_verdict(claim_uid, status="unproven"):
+    return SimpleNamespace(claim_uid=claim_uid, related_uid=-1, status=status)
 
 
 def test_store_questions_keeps_distinct_uids_with_identical_text(store: SqliteBackend):
@@ -653,7 +670,7 @@ def test_store_questions_keeps_distinct_uids_with_identical_text(store: SqliteBa
     b = _make_claim_real_loc(text="X is fast", section="design", question="why X?", line=42, uid=2)
     store.store_questions(
         "P1", [a, b],
-        [_make_support_link(a.uid), _make_support_link(b.uid)],
+        [_make_verdict(a.uid), _make_verdict(b.uid)],
     )
     rows = store.get_questions("P1")
     assert len(rows) == 2
@@ -667,7 +684,7 @@ def test_store_questions_keeps_distinct_text(store: SqliteBackend):
     b = _make_claim_real_loc(text="Y is slow", section="design", question="why Y?", line=10, uid=2)
     store.store_questions(
         "P1", [a, b],
-        [_make_support_link(a.uid), _make_support_link(b.uid)],
+        [_make_verdict(a.uid), _make_verdict(b.uid)],
     )
     rows = store.get_questions("P1")
     assert {r.claim_text for r in rows} == {"X is fast", "Y is slow"}
@@ -676,11 +693,11 @@ def test_store_questions_keeps_distinct_text(store: SqliteBackend):
 def test_store_questions_replaces_previous(store: SqliteBackend):
     """A re-run replaces all rows for the paper; no leftovers from prior runs."""
     a = _make_claim_real_loc(text="old", section="intro", question="old?", line=1, uid=1)
-    store.store_questions("P1", [a], [_make_support_link(a.uid)])
+    store.store_questions("P1", [a], [_make_verdict(a.uid)])
     assert len(store.get_questions("P1")) == 1
 
     b = _make_claim_real_loc(text="new", section="design", question="new?", line=5, uid=2)
-    store.store_questions("P1", [b], [_make_support_link(b.uid)])
+    store.store_questions("P1", [b], [_make_verdict(b.uid)])
     rows = store.get_questions("P1")
     assert len(rows) == 1
     assert rows[0].claim_text == "new"

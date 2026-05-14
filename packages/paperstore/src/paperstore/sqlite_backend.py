@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS rhetoric (
     section          TEXT DEFAULT '',
     marker_type      TEXT DEFAULT '',
     target           TEXT DEFAULT '',
-    intensity        TEXT DEFAULT 'moderate',
+    intensity        TEXT DEFAULT 'medium',
     PRIMARY KEY (paper_id, uid)
 );
 
@@ -931,7 +931,7 @@ class SqliteBackend(StorageBackend):
             return cur.rowcount == 1
 
     def fail_paper(self, paper_id: str, stage: int, error: str) -> None:
-        """Mark paper as failed at the given stage."""
+        """Mark paper as failed at the given stage with the latest error."""
         with self._conn:
             self._conn.execute(
                 "UPDATE papers SET status = ?, error = ?, updated_at = ? WHERE paper_id = ?",
@@ -1015,10 +1015,10 @@ class SqliteBackend(StorageBackend):
                 rows,
             )
 
-    def store_questions(self, paper_id: str, claims, support_map) -> None:
+    def store_questions(self, paper_id: str, claims, verdicts) -> None:
         pid = paper_id.strip().upper()
         unsupported_uids = {
-            s.claim_uid for s in support_map if s.status == "unsupported"
+            v.claim_uid for v in verdicts if v.status == "unproven"
         }
         rows = [
             (

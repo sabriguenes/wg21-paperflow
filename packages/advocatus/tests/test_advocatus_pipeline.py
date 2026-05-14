@@ -172,7 +172,7 @@ def test_dispatch_stop_after_halts_after_step_n():
     def _spec(n: int) -> StepSpec:
         meta = StepMeta(
             name=f"Step {n} - X", number=n, model_slot="none",
-            execution="main", reads=[], writes=[],
+            execution="main",
         )
 
         async def _pure(state, ctx):

@@ -36,6 +36,7 @@ async def process_paper(
     through: int = STAGES["ready"],
     debug: bool = False,
     trace: bool = False,
+    stop_after: int | None = None,
     force: bool = False,
     on_progress: object = None,
 ) -> int:
@@ -89,7 +90,7 @@ async def process_paper(
 
         try:
             await _run_stage(pid, status, backend, debug=debug, trace=trace,
-                             on_progress=on_progress)
+                             stop_after=stop_after, on_progress=on_progress)
         except Exception as exc:
             logger.error("%s failed at %s: %s", pid, stage_name, exc)
             backend.fail_paper(pid, status, str(exc))
@@ -146,6 +147,7 @@ async def _run_stage(
     *,
     debug: bool = False,
     trace: bool = False,
+    stop_after: int | None = None,
     on_progress: object = None,
 ) -> Any:
     """Execute a single pipeline stage for one paper."""
@@ -154,7 +156,8 @@ async def _run_stage(
     elif stage == STAGES["convert"]:
         await _stage_convert(pid, backend)
     elif stage == STAGES["dissect"]:
-        await _stage_dissect(pid, backend, debug=debug, trace=trace, on_progress=on_progress)
+        await _stage_dissect(pid, backend, debug=debug, trace=trace,
+                             stop_after=stop_after, on_progress=on_progress)
     elif stage == STAGES["advocatus"]:
         await _stage_advocatus(pid, backend, debug=debug, trace=trace, on_progress=on_progress)
     elif stage == STAGES["agora"]:
@@ -216,13 +219,13 @@ async def _stage_convert(pid: str, backend: StorageBackend) -> None:
 
 async def _stage_dissect(
     pid: str, backend: StorageBackend, *, debug: bool = False, trace: bool = False,
-    on_progress: object = None,
+    stop_after: int | None = None, on_progress: object = None,
 ) -> None:
     """Run dissect pipeline on the paper."""
     from dissect import dissect_paper
 
     report = await dissect_paper(pid, backend, debug=debug, trace=trace,
-                                   on_progress=on_progress)
+                                   stop_after=stop_after, on_progress=on_progress)
     backend.write_dissect_md(pid, report)
 
 
