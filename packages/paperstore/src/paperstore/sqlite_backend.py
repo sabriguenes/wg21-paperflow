@@ -40,6 +40,7 @@ from paperstore.extract_rows import (
 )
 from paperstore.errors import (
     MissingAdvocatusError,
+    MissingAgoraError,
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
@@ -62,6 +63,7 @@ CREATE TABLE IF NOT EXISTS papers (
     markdown_path  TEXT DEFAULT '',
     dissect_path   TEXT DEFAULT '',
     advocatus_path TEXT DEFAULT '',
+    agora_path     TEXT DEFAULT '',
     line_count     INTEGER DEFAULT 0
 );
 
@@ -173,6 +175,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE papers ADD COLUMN dissect_path TEXT DEFAULT ''")
     if "advocatus_path" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN advocatus_path TEXT DEFAULT ''")
+    if "agora_path" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN agora_path TEXT DEFAULT ''")
     if "line_count" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN line_count INTEGER DEFAULT 0")
 
@@ -334,6 +338,7 @@ class SqliteBackend(StorageBackend):
             markdown_path=d.get("markdown_path", ""),
             dissect_path=d.get("dissect_path", ""),
             advocatus_path=d.get("advocatus_path", ""),
+            agora_path=d.get("agora_path", ""),
             line_count=d.get("line_count", 0),
         )
 
@@ -508,6 +513,44 @@ class SqliteBackend(StorageBackend):
                 (pid,),
             )
 
+    def write_agora_json(self, paper_id: str, payload: Any) -> Path:
+        """Write the agora thread blueprint as JSON atomically; record the path."""
+        pid = paper_id.strip().upper()
+        final_path = self._atomic_write_text(
+            self._papers_dir / f"{pid.lower()}.agora.json",
+            json.dumps(payload, indent=2, ensure_ascii=False),
+        )
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
+            )
+            self._conn.execute(
+                "UPDATE papers SET agora_path = ? WHERE paper_id = ?",
+                (str(final_path), pid),
+            )
+        return final_path
+
+    def read_agora_json(self, paper_id: str) -> Any:
+        """Read the agora JSON for ``paper_id`` and return parsed Python objects."""
+        path = self.get_agora_path(paper_id)
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def clear_agora(self, paper_id: str) -> None:
+        """Delete the agora file and clear ``agora_path`` in the DB."""
+        pid = paper_id.strip().upper()
+        row = self._conn.execute(
+            "SELECT agora_path FROM papers WHERE paper_id = ?", (pid,)
+        ).fetchone()
+        if row and row["agora_path"]:
+            path = Path(row["agora_path"])
+            if path.exists():
+                path.unlink()
+        with self._conn:
+            self._conn.execute(
+                "UPDATE papers SET agora_path = '' WHERE paper_id = ?",
+                (pid,),
+            )
+
     def write_intermediate(self, paper_id: str, name: str, payload: Any) -> Path:
         """Write an intermediate artifact JSON to disk atomically."""
         pid = paper_id.strip().upper()
@@ -564,12 +607,16 @@ class SqliteBackend(StorageBackend):
         markdowns: list[tuple[str, Path]] = []
         dissections: list[tuple[str, Path]] = []
         advocati: list[tuple[str, Path]] = []
+        agorae: list[tuple[str, Path]] = []
 
         for path in sorted(self._papers_dir.iterdir()):
             if not path.is_file():
                 continue
             name = path.name
             if name.endswith(".partial"):
+                continue
+            if name.endswith(".agora.json"):
+                agorae.append((name[: -len(".agora.json")].upper(), path))
                 continue
             if name.endswith(".json"):
                 continue
@@ -598,6 +645,7 @@ class SqliteBackend(StorageBackend):
             "markdowns": 0,
             "dissections": 0,
             "advocati": 0,
+            "agorae": 0,
             "line_counts": 0,
         }
         with self._conn:
@@ -645,6 +693,17 @@ class SqliteBackend(StorageBackend):
                 )
                 if cursor.rowcount > 0:
                     counts["advocati"] += 1
+            for pid, path in agorae:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
+                )
+                cursor = self._conn.execute(
+                    "UPDATE papers SET agora_path = ? "
+                    "WHERE paper_id = ? AND agora_path = ''",
+                    (str(path), pid),
+                )
+                if cursor.rowcount > 0:
+                    counts["agorae"] += 1
 
             # Backfill line_count for rows with markdown but no count
             rows_needing_count = self._conn.execute(
@@ -749,6 +808,24 @@ class SqliteBackend(StorageBackend):
             raise MissingAdvocatusError(
                 f"Advocatus file missing for {paper_id!r}: {path}. "
                 f"Run 'paperflow advocatus {paper_id}' again."
+            )
+        return path
+
+    def get_agora_path(self, paper_id: str) -> Path:
+        row = self._conn.execute(
+            "SELECT agora_path FROM papers WHERE paper_id = ?",
+            (paper_id.strip().upper(),),
+        ).fetchone()
+        if row is None or not row["agora_path"]:
+            raise MissingAgoraError(
+                f"No agora JSON for {paper_id!r}. "
+                f"Run 'paperflow agora {paper_id}' first."
+            )
+        path = Path(row["agora_path"])
+        if not path.exists():
+            raise MissingAgoraError(
+                f"Agora file missing for {paper_id!r}: {path}. "
+                f"Run 'paperflow agora {paper_id}' again."
             )
         return path
 

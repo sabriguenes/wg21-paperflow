@@ -45,5 +45,9 @@ class MissingAdvocatusError(MissingPaperError):
     """Raised when no advocatus file (Relatio) is stored for the paper."""
 
 
+class MissingAgoraError(MissingPaperError):
+    """Raised when no agora JSON (planned Reddit thread) is stored for the paper."""
+
+
 class MissingMailingIndexError(PaperstoreError):
     """Raised when the requested mailing index has never been upserted."""

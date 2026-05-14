@@ -25,11 +25,12 @@ import cli.convert as _convert_mod
 import cli.full as _full_mod
 import cli.dissect as _dissect_mod
 import cli.advocatus as _advocatus_mod
+import cli.agora as _agora_mod
 from cli.logutil import configure_console_logging
 from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
 
 _VERB_NAMES = {
-    "mailing", "download", "convert", "full", "dissect", "advocatus",
+    "mailing", "download", "convert", "full", "dissect", "advocatus", "agora",
 }
 
 _VERB_HELP = {
@@ -39,6 +40,7 @@ _VERB_HELP = {
     "full":      "Run all three stages: mailing + download + convert",
     "dissect":   "Run an LLM-driven dissection of a WG21 paper",
     "advocatus": "Examine a dissected paper through the Advocatus / Defensor tribunal",
+    "agora":     "Plan a fake r/wg21 Reddit thread for a dissected paper",
 }
 
 _VERB_DESCRIPTION = {
@@ -67,6 +69,13 @@ _VERB_DESCRIPTION = {
         "Advocatus Diaboli drafts charges, Defensor Causae cross-examines them. "
         "Requires the paper to be dissected first."
     ),
+    "agora": (
+        "Plan a fake r/wg21 Reddit thread for a dissected paper. "
+        "Produces a structural blueprint (anchors, calibration, submission, "
+        "every reply slot with a brief) as JSON; reply text and characters "
+        "are filled by a later generation phase. Requires the paper to be "
+        "dissected first."
+    ),
 }
 
 _VERB_TARGETS_HELP = {
@@ -76,6 +85,7 @@ _VERB_TARGETS_HELP = {
     "full":      'Year (2026), paper id(s) (P3642R4 ...), or "all".',
     "dissect":   "Paper ID (P4003R2) or year-month (2026-01) for batch dissection.",
     "advocatus": "Paper ID (P4003R2) or year-month (2026-01) for batch examination.",
+    "agora":     "Paper ID (P4003R2) or year-month (2026-01) for batch planning.",
 }
 
 _COMMANDS = {
@@ -85,6 +95,7 @@ _COMMANDS = {
     "full":      _full_mod,
     "dissect":   _dissect_mod,
     "advocatus": _advocatus_mod,
+    "agora":     _agora_mod,
 }
 
 _VERB_FLAGS: dict[str, set[str]] = {
@@ -95,6 +106,7 @@ _VERB_FLAGS: dict[str, set[str]] = {
     "full":      {"force", "verify", "concurrency"},
     "dissect":   {"debug", "trace"},
     "advocatus": {"debug", "trace"},
+    "agora":     {"debug", "trace"},
 }
 
 _FLAG_DEFS: list[dict] = [
@@ -138,6 +150,8 @@ Examples:
   paperflow dissect 2026-01        batch dissect papers from Jan 2026 onward
   paperflow advocatus P4003R2      examine a dissected paper through the tribunal
   paperflow advocatus 2026-01      batch advocatus for a month
+  paperflow agora P4003R2          plan a fake r/wg21 thread for a dissected paper
+  paperflow agora 2026-01          batch agora for a month
 """
 
 
@@ -214,6 +228,20 @@ def _validate_targets(verb: str, targets: list[str]) -> None:
         if len(targets) != 1:
             print(
                 f"paperflow advocatus: accepts exactly one target, got {len(targets)}.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    if verb == "agora":
+        if "year" in kinds or "all" in kinds:
+            print(
+                "paperflow agora: accepts a paper ID or year-month, not years or 'all'.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if len(targets) != 1:
+            print(
+                f"paperflow agora: accepts exactly one target, got {len(targets)}.",
                 file=sys.stderr,
             )
             sys.exit(1)

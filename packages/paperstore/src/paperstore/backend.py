@@ -89,6 +89,7 @@ class PaperRow:
     markdown_path: str = ""
     dissect_path: str = ""
     advocatus_path: str = ""
+    agora_path: str = ""
     line_count: int = 0
 
 
@@ -177,6 +178,31 @@ class StorageBackend(ABC):
 
         Called at the start of an advocatus run so a crash does not leave
         a stale Relatio from a previous run.
+        """
+
+    @abstractmethod
+    def write_agora_json(self, paper_id: str, payload: Any) -> Path:
+        """Persist the agora thread blueprint as JSON. Atomic write. Returns path.
+
+        ``payload`` is serialised with ``json.dumps(..., indent=2,
+        ensure_ascii=False)``. Pass a ``Thread.model_dump(mode='json')``
+        dict.
+        """
+
+    @abstractmethod
+    def read_agora_json(self, paper_id: str) -> Any:
+        """Return the agora JSON as a parsed Python object.
+
+        Raises:
+            paperstore.MissingAgoraError: no agora JSON stored.
+        """
+
+    @abstractmethod
+    def clear_agora(self, paper_id: str) -> None:
+        """Delete the agora file and clear its path in the store.
+
+        Called at the start of an agora run so a crash does not leave
+        a stale thread blueprint from a previous run.
         """
 
     @abstractmethod
@@ -273,6 +299,14 @@ class StorageBackend(ABC):
 
         Raises:
             paperstore.MissingAdvocatusError: no advocatus for ``paper_id``.
+        """
+
+    @abstractmethod
+    def get_agora_path(self, paper_id: str) -> Path:
+        """Return the local path to the agora JSON (thread blueprint).
+
+        Raises:
+            paperstore.MissingAgoraError: no agora JSON for ``paper_id``.
         """
 
     @abstractmethod

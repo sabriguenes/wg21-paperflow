@@ -12,6 +12,7 @@ from __future__ import annotations
 from paperstore.backend import PaperRow, StorageBackend, parse_authors_raw
 from paperstore.errors import (
     MissingAdvocatusError,
+    MissingAgoraError,
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperError,
@@ -50,6 +51,7 @@ __all__ = [
     "MissingPaperMdError",
     "MissingDissectError",
     "MissingAdvocatusError",
+    "MissingAgoraError",
     "MissingMailingIndexError",
     "from_uri",
     "default_workspace_dir",

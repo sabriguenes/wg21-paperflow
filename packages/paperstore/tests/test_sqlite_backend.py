@@ -227,6 +227,7 @@ def test_reconcile_empty_workspace(store: SqliteBackend):
         "markdowns": 0,
         "dissections": 0,
         "advocati": 0,
+        "agorae": 0,
         "line_counts": 0,
     }
 
@@ -246,6 +247,7 @@ def test_reconcile_backfills_orphan_artifacts(
         "markdowns": 1,
         "dissections": 0,
         "advocati": 0,
+        "agorae": 0,
         "line_counts": 1,
     }
     assert store.get_source_path("P1") == papers_dir / "p1.pdf"
@@ -277,6 +279,7 @@ def test_reconcile_skips_intermediates_partials_and_db(
         "markdowns": 0,
         "dissections": 0,
         "advocati": 0,
+        "agorae": 0,
         "line_counts": 0,
     }
     assert store.list_all_paper_ids() == []
@@ -291,6 +294,7 @@ def test_reconcile_is_idempotent(store: SqliteBackend, tmp_path: Path):
         "markdowns": 0,
         "dissections": 0,
         "advocati": 0,
+        "agorae": 0,
         "line_counts": 0,
     }
     assert second == {
@@ -298,6 +302,7 @@ def test_reconcile_is_idempotent(store: SqliteBackend, tmp_path: Path):
         "markdowns": 0,
         "dissections": 0,
         "advocati": 0,
+        "agorae": 0,
         "line_counts": 0,
     }
 
