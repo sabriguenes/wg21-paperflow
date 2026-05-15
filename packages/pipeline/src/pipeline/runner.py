@@ -44,7 +44,7 @@ from pipeline.errors import (
     ValidationStepError,
 )
 from pipeline.markdown import sections
-from pipeline.prompt import StepHooks, StepSpec
+from pipeline.prompt import StepSpec
 from pipeline.tasks import render_debug_md
 
 logger = logging.getLogger(__name__)

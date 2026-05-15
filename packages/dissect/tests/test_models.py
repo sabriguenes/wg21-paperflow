@@ -29,7 +29,6 @@ from dissect.models import (
     PipelineState,
     RawClaim,
     RawEvidence,
-    RawRhetoric,
     SourceLoc,
     SupportLink,
     WebResolution,

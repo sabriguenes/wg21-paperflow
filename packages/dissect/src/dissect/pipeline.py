@@ -39,13 +39,11 @@ from pipeline import (
     make_read_paper_tool,
     run_agent,
     run_task,
-    sanitize_md,
 )
 from pipeline.errors import (
     PaperNotConvertedError,
     PaperNotFoundError,
     PromptFileError,
-    StepError,
 )
 from dissect.harness import (
     _chunk_paper,
