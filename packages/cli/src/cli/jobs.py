@@ -25,12 +25,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from paperstore import parse_authors_raw
 from paperstore.backend import PaperRow, StorageBackend
 from paperstore.errors import (
     MissingMailingIndexError,
-    MissingPaperMdError,
     MissingSourceError,
 )
 from paperstore.progress import ProgressCallback, ProgressEvent
@@ -405,52 +403,6 @@ async def run_convert(
                 on_progress = None
 
     return {"succeeded": succeeded, "skipped": skipped, "failed": failed}
-
-
-# ---------------------------------------------------------------------------
-# run_qa
-# ---------------------------------------------------------------------------
-
-def run_qa(
-    targets: list[str],
-    backend: StorageBackend,
-    *,
-    json_path: Path | None = None,
-    workers: int = 1,
-    timeout: int = 120,
-) -> dict:
-    """Score quality of converted markdown for the given targets.
-
-    Synchronous. ``run_qa_report`` does its own ProcessPoolExecutor
-    parallelism, so there is no per-row async work to overlap. Returns
-    ``{"succeeded": [paper_ids], "skipped": [{paper_id, reason}], "failed": []}``.
-    """
-    from tomd.lib.pdf.qa import run_qa_report
-
-    workers = max(1, workers)
-    target_type = _validate_targets(targets)
-    rows = _papers_from_scope(targets, target_type, backend)
-
-    items: list[tuple[str, str]] = []
-    skipped: list[dict] = []
-    for row in rows:
-        pid = row.paper_id
-        try:
-            md = backend.get_paper_md(pid)
-        except MissingPaperMdError:
-            skipped.append({"paper_id": pid, "reason": "no_markdown"})
-            continue
-        items.append((pid, md))
-
-    if not items:
-        return {"succeeded": [], "skipped": skipped, "failed": []}
-
-    run_qa_report(items, json_path=json_path, workers=workers, timeout=timeout)
-    return {
-        "succeeded": [pid for pid, _ in items],
-        "skipped": skipped,
-        "failed": [],
-    }
 
 
 # ---------------------------------------------------------------------------
