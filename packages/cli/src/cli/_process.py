@@ -14,6 +14,7 @@ import asyncio
 import sys
 
 from paperstore.backend import StorageBackend
+from paperstore.errors import MissingMetaError
 from paperstore.stages import STAGE_NAMES
 
 from cli.targets import MONTH_RE, resolve_pid
@@ -36,13 +37,19 @@ def run_process_command(
     trace = trace_val is not None
     force = getattr(args, "force", False)
 
+    verb = STAGE_NAMES.get(through - 1, "process")
+
     if MONTH_RE.match(target):
         papers = backend.list_papers_since(target)
     elif target.isdigit() and len(target) == 4:
         papers = backend.list_papers_for_year(target)
     else:
         pid = resolve_pid(target, backend)
-        paper = backend.get_meta(pid)
+        try:
+            paper = backend.get_meta(pid)
+        except MissingMetaError as exc:
+            print(f"{verb} failed: {exc}", file=sys.stderr)
+            return 1
         papers = [paper]
 
     if not force:
@@ -55,7 +62,6 @@ def run_process_command(
     papers.sort(key=lambda p: (p.mailing_date or ""), reverse=True)
     papers.sort(key=lambda p: -(p.status or 0))
 
-    verb = STAGE_NAMES.get(through - 1, "process")
     progress_ctx, on_progress = make_progress_handler(verb.capitalize())
 
     from paperstore.progress import ProgressEvent

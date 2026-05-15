@@ -45,7 +45,7 @@ def test_verb_in_constants_module():
 
     assert "advocatus" in _VERB_NAMES
     assert "advocatus" in _COMMANDS
-    assert _VERB_FLAGS["advocatus"] == {"debug", "trace"}
+    assert _VERB_FLAGS["advocatus"] == {"debug", "trace", "force"}
 
 
 def test_advocatus_rejects_year_target():
@@ -82,7 +82,7 @@ def test_advocatus_accepts_paper_id_target_shape():
             text=True,
         )
     # Exit 1 because the paper isn't in the (empty) store; but the message
-    # should be the AdvocatusError-style "Advocatus failed", not a target
-    # validation rejection.
+    # is the verb-stamped failure, not a target validation rejection.
     assert result.returncode == 1
     assert "advocatus failed" in result.stderr.lower()
+    assert "no metadata" in result.stderr.lower()
