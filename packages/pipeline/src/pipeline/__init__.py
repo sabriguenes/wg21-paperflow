@@ -9,6 +9,13 @@
 
 from __future__ import annotations
 
+from pipeline.agents import AgentBackend
+from pipeline.classifier_backends import (
+    CLASSIFIER_BACKEND_REGISTRY,
+    ClassifierBackend,
+    NliCrossEncoderBackend,
+    ZeroShotV2Backend,
+)
 from pipeline.errors import (
     HookMismatchError,
     MissingMetadataError,
@@ -23,15 +30,21 @@ from pipeline.errors import (
     ValidationStepError,
 )
 from pipeline.markdown import sanitize_md, sections
+from pipeline.model_backends import ModelBackend
 from pipeline.prompt import StepHooks, StepMeta, StepSpec, build_pipeline, parse_step_meta
 from pipeline.runner import (
-    DEFAULT_MODEL_SLOTS,
     StepContext,
     StepMetrics,
     dispatch,
     load_sections,
     run_agent,
     write_debug_file,
+)
+from pipeline.services import (
+    load_classifiers,
+    load_services,
+    resolve_classifier_slots,
+    resolve_slots,
 )
 from pipeline.session import (
     FetchResponse,
@@ -40,20 +53,33 @@ from pipeline.session import (
     SearchResult,
     WebResearcher,
 )
+from pipeline.postconditions import (
+    ProcessResult,
+    postcondition_satisfied,
+    truthful_status,
+)
 from pipeline.process import ensure_paper_md, process_paper
 from pipeline.tasks import run_task
 from pipeline.tools import make_read_paper_tool, wrap_source
 
 __all__ = [
+    "AgentBackend",
+    "CLASSIFIER_BACKEND_REGISTRY",
+    "ClassifierBackend",
     "ensure_paper_md",
+    "load_classifiers",
     "make_read_paper_tool",
+    "ModelBackend",
+    "NliCrossEncoderBackend",
+    "resolve_classifier_slots",
+    "ZeroShotV2Backend",
     "process_paper",
     "build_pipeline",
-    "DEFAULT_MODEL_SLOTS",
     "dispatch",
     "FetchResponse",
     "HookMismatchError",
     "load_sections",
+    "load_services",
     "MissingMetadataError",
     "MissingSystemPromptError",
     "PaperNotConvertedError",
@@ -61,7 +87,10 @@ __all__ = [
     "parse_step_meta",
     "PaperNotFoundError",
     "PipelineError",
+    "postcondition_satisfied",
+    "ProcessResult",
     "PromptFileError",
+    "resolve_slots",
     "run_agent",
     "run_task",
     "sanitize_md",
@@ -76,6 +105,7 @@ __all__ = [
     "StepMeta",
     "StepSpec",
     "TransientStepError",
+    "truthful_status",
     "ValidationStepError",
     "WebResearcher",
     "wrap_source",

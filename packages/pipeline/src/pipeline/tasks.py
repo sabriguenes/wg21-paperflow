@@ -7,10 +7,9 @@
 
 """Standalone sub-agent runner and debug rendering.
 
-``run_task`` creates an isolated pydantic-ai Agent for a focused
-mission (web search, citation verification, per-item analysis). It
-handles concurrency limiting, debug transcript capture, and optional
-output validation via pydantic-ai's native ``ModelRetry`` mechanism.
+``run_task`` dispatches a focused LLM call through an ``AgentBackend``
+with serial concurrency control. Used by custom hooks (Steps 8, 9,
+10, 11) that fan out many small calls per step.
 
 ``render_debug_md`` serializes an agent run result into a markdown
 debug section for diagnostic transcripts.
@@ -23,83 +22,47 @@ import json
 from typing import Any, Callable, TypeVar
 
 from pydantic import BaseModel
-from pydantic_ai import Agent
-from pydantic_ai.usage import UsageLimits
+
+from pipeline.agents import AgentBackend
 
 T = TypeVar("T", bound=BaseModel)
 
 _TASK_CONCURRENCY = 1
 """Serial sub-task dispatch.
 
-See ``MODELS.md`` at repo root. One in-flight ``run_task`` request at a
-time eliminates cross-request batch interference at the inference layer.
-Cost: longer wall clock on dissect Steps 10 (verify citations) and 11
-(web search). Benefit: zero variance from concurrent KV-cache or expert
-routing contention. Raising this requires a documented variance budget
-per determinism rule D3."""
+One in-flight ``run_task`` request at a time eliminates cross-request
+batch interference at the inference layer. Raising this requires a
+documented variance budget per determinism rule D3.
+"""
 
 _task_semaphore = asyncio.Semaphore(_TASK_CONCURRENCY)
 
 
 async def run_task(
+    agent: AgentBackend,
     system_prompt: str,
     user_message: str,
     output_type: type[T],
     *,
+    tools: dict[str, Any] | None = None,
     label: str = "run_task",
     debug_log: list[str] | None = None,
-    tools: dict[str, Callable] | None = None,
-    model: Any = None,
-    request_limit: int = 10,
-    output_validator: Callable | None = None,
-    output_retries: int = 1,
 ) -> T:
-    """Run an isolated sub-agent and return structured output.
+    """Run an isolated sub-agent call and return structured output.
 
-    Focused mission, tight budget, one-way data flow. Raw content
-    stays inside the task. Serial by design: ``_task_semaphore`` is
-    ``asyncio.Semaphore(1)`` so callers fan out via ``asyncio.gather``
-    without inducing concurrent in-flight LLM requests. See
-    ``MODELS.md`` at repo root for the variance rationale.
-
-    When ``output_validator`` is provided, it is registered on the
-    agent via ``@agent.output_validator``. The validator should raise
-    ``ModelRetry("reason")`` for incomplete output - pydantic-ai
-    retries within the same conversation so the LLM sees its previous
-    attempt and the rejection reason.
-
-    When ``debug_log`` is provided, the rendered debug transcript is
-    appended under the given ``label``. Serial dispatch makes
-    transcript ordering deterministic.
+    Serial by design: ``_task_semaphore`` is ``asyncio.Semaphore(1)``
+    so callers fan out via ``asyncio.gather`` without inducing
+    concurrent in-flight LLM requests.
     """
-    from pipeline.runner import (
-        DEFAULT_MODEL_SLOTS,
-        MODEL_SETTINGS_BY_SLOT,
-        _DEFAULT_MODEL_SETTINGS,
-    )
-
     async with _task_semaphore:
-        agent: Agent[None, T] = Agent(
-            model or DEFAULT_MODEL_SLOTS["default"],
-            output_type=output_type,
-            system_prompt=system_prompt,
-            output_retries=output_retries,
-            model_settings=MODEL_SETTINGS_BY_SLOT.get(
-                "default", _DEFAULT_MODEL_SETTINGS,
-            ),
-        )
-        if tools:
-            for name, fn in tools.items():
-                agent.tool_plain(fn)
-        if output_validator:
-            agent.output_validator(output_validator)
-        result = await agent.run(
+        return await agent.run(
+            system_prompt,
             user_message,
-            usage_limits=UsageLimits(request_limit=request_limit),
+            output_type,
+            tools=tools,
+            label=label,
+            debug_log=debug_log,
         )
-        if debug_log is not None:
-            debug_log.append(render_debug_md(result, label))
-        return result.output
 
 
 def _comment(text: str) -> str:

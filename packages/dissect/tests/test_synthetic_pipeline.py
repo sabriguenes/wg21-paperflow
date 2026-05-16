@@ -155,42 +155,42 @@ async def test_synthetic_paper_full_pipeline(tmp_path: Path) -> None:
     # ----- Step 0: Read --------------------------------------------------
     assert state.chunks, "Step 0 must populate state.chunks"
 
-    # ----- Step 1: Extract Claims ---------------------------------------
-    assert state.raw_claims is not None, "Step 1 must populate state.raw_claims"
+    # ----- Step 2: Extract Claims ---------------------------------------
+    assert state.raw_claims is not None, "Step 2 must populate state.raw_claims"
     assert len(state.raw_claims) >= 3, (
         f"Expected at least 3 raw normative claims from the synthetic paper; "
         f"got {len(state.raw_claims)}. Visited steps: {visited}"
     )
 
-    # ----- Step 2: Dedup Claims -----------------------------------------
+    # ----- Step 3: Dedup Claims -----------------------------------------
     normative_survivors = _normative_alive(state)
     assert len(normative_survivors) >= 2, (
         f"Expected at least 2 normative survivors after dedup; "
         f"got {len(normative_survivors)}."
     )
 
-    # ----- Step 5: Extract Factual --------------------------------------
-    assert state.raw_factual is not None, "Step 5 must populate state.raw_factual"
+    # ----- Step 6: Extract Factual --------------------------------------
+    assert state.raw_factual is not None, "Step 6 must populate state.raw_factual"
     assert len(state.raw_factual) >= 2, (
         f"Expected at least 2 raw factual claims; got {len(state.raw_factual)}."
     )
 
-    # ----- Step 6: Dedup Factual ----------------------------------------
+    # ----- Step 7: Dedup Factual ----------------------------------------
     factual_survivors = _factual_alive(state)
     assert len(factual_survivors) >= 2, (
         f"Expected at least 2 factual survivors after dedup; "
         f"got {len(factual_survivors)}."
     )
 
-    # ----- Step 7: Extract Rhetoric -------------------------------------
-    assert state.rhetoric is not None, "Step 7 must populate state.rhetoric"
+    # ----- Step 8: Extract Rhetoric -------------------------------------
+    assert state.rhetoric is not None, "Step 8 must populate state.rhetoric"
     assert len(state.rhetoric) >= 2, (
         f"Expected at least 2 rhetorical markers from the synthetic paper; "
         f"got {len(state.rhetoric)}."
     )
 
-    # ----- Step 8: Verify -----------------------------------------------
-    assert state.verdicts is not None, "Step 8 must populate state.verdicts"
+    # ----- Step 9: Verify -----------------------------------------------
+    assert state.verdicts is not None, "Step 9 must populate state.verdicts"
     statuses = {v.status for v in state.verdicts}
     for required in ("unproven", "disproven", "disclaimed"):
         assert required in statuses, (
@@ -198,8 +198,8 @@ async def test_synthetic_paper_full_pipeline(tmp_path: Path) -> None:
             f"engineered to have one. Statuses seen: {sorted(statuses)}."
         )
 
-    # ----- Step 9: Load-Bearing -----------------------------------------
-    assert state.load_bearing_claims is not None, "Step 9 must populate load_bearing_claims"
+    # ----- Step 10: Load-Bearing ----------------------------------------
+    assert state.load_bearing_claims is not None, "Step 10 must populate load_bearing_claims"
     classifications = {lb.classification for lb in state.load_bearing_claims}
     for required in ("anchored", "conflicted"):
         assert required in classifications, (
@@ -207,7 +207,7 @@ async def test_synthetic_paper_full_pipeline(tmp_path: Path) -> None:
             f"on a paper engineered to have one. "
             f"Classifications seen: {sorted(classifications)}."
         )
-    # Step 11/12 may upgrade ``critical_gap`` to ``externally_anchored`` or
+    # Step 12/13 may upgrade ``critical_gap`` to ``externally_anchored`` or
     # ``externally_contested`` when web search finds backing or counter
     # evidence, and a claim that depends on a contested claim becomes
     # ``depends_on_contested``. Any of these four indicate the load-bearing
@@ -222,7 +222,7 @@ async def test_synthetic_paper_full_pipeline(tmp_path: Path) -> None:
         f"{sorted(classifications)}."
     )
 
-    # ----- Step 10: Verify Citations ------------------------------------
+    # ----- Step 11: Verify Citations ------------------------------------
     # The synthetic paper cites P9001R0 (fictional; should be not_found)
     # and N4860 (real; may resolve via the local paperstore index or
     # report not_found depending on what is staged).
@@ -233,5 +233,5 @@ async def test_synthetic_paper_full_pipeline(tmp_path: Path) -> None:
             f"got {sorted(audited_pids)}."
         )
 
-    # ----- Step 15: Report ----------------------------------------------
-    assert state.report, "Step 15 must populate a non-empty report"
+    # ----- Step 16: Report ----------------------------------------------
+    assert state.report, "Step 16 must populate a non-empty report"

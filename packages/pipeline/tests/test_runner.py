@@ -34,8 +34,21 @@ def _spec(
     )
 
 
+def test_step_context_classifiers_defaults_to_empty():
+    """StepContext gains a classifiers slot parallel to agents."""
+    ctx = StepContext(sections={})
+    assert ctx.classifiers == {}
+
+
+def test_step_context_classifiers_populated_from_orchestrator():
+    """Smoke: pass a resolved classifier dict; it lands keyed by slot name."""
+    sentinel = object()
+    ctx = StepContext(sections={}, classifiers={"selector": sentinel})
+    assert ctx.classifiers["selector"] is sentinel
+
+
 def test_compose_system_prompt_append():
-    ctx = StepContext(sections={"System Prompt": "Pipeline role."}, model_slots={})
+    ctx = StepContext(sections={"System Prompt": "Pipeline role."}, agents={})
     prompt = _compose_system_prompt(_spec(system_prompt="Step role."), ctx)
 
     assert "Pipeline role." in prompt
@@ -44,7 +57,7 @@ def test_compose_system_prompt_append():
 
 
 def test_compose_system_prompt_replace():
-    ctx = StepContext(sections={"System Prompt": "Pipeline role."}, model_slots={})
+    ctx = StepContext(sections={"System Prompt": "Pipeline role."}, agents={})
     prompt = _compose_system_prompt(
         _spec(system_prompt="Step role.", system_prompt_mode="replace"),
         ctx,
@@ -59,7 +72,7 @@ def test_step_failure_propagates_as_step_error():
     async def boom(state, ctx):
         raise RuntimeError("boom")
 
-    ctx = StepContext(sections={}, model_slots={})
+    ctx = StepContext(sections={}, agents={})
 
     with pytest.raises(StepError, match="Step 0"):
         import asyncio
@@ -71,7 +84,7 @@ def test_failed_step_does_not_call_on_step_complete():
         raise RuntimeError("boom")
 
     completed = []
-    ctx = StepContext(sections={}, model_slots={})
+    ctx = StepContext(sections={}, agents={})
 
     with pytest.raises(StepError):
         import asyncio
@@ -92,7 +105,7 @@ def test_step_failure_flushes_trace(tmp_path):
         state["seen"] = True
         raise RuntimeError("boom")
 
-    ctx = StepContext(sections={}, model_slots={})
+    ctx = StepContext(sections={}, agents={})
     trace_path = tmp_path / "trace.md"
 
     with pytest.raises(StepError):

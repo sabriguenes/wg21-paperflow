@@ -176,7 +176,7 @@ def _render_shadow_section(
     """Render an embedding shadow sub-section after a Dedup section.
 
     ``section_label`` is the section number prefix (e.g. ``"2a"`` for
-    the shadow that follows ``## 2. Dedup Claims``). ``groups`` carries
+    the shadow that follows ``## 3. Dedup Claims``). ``groups`` carries
     uid lists from PipelineState; an empty list means no candidates
     above the threshold; ``None`` means the step that would have
     populated this group has not run yet (only fires for partial
@@ -228,8 +228,22 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append(f"- Paper citations: {cit_list}")
         lines.append("")
 
-    if stop_step >= 1:
-        lines.append("## 1. Extract Claims\n")
+    if stop_step >= 1 and state.tagged_sentences is not None:
+        tagged = state.tagged_sentences
+        counts = {"target": 0, "context": 0, "skip": 0}
+        for ts in tagged:
+            counts[ts.tag.value] += 1
+        lines.append("## 1. Tag Sentences\n")
+        lines.append(
+            f"- {len(tagged)} sentences classified: "
+            f"{counts['target']} target, {counts['context']} context, "
+            f"{counts['skip']} skip"
+        )
+        lines.append("- Decision rule: TARGET if t-s>0.05, SKIP if s-t>0.40, else CONTEXT (asymmetric; biased toward TARGET/CONTEXT)")
+        lines.append("")
+
+    if stop_step >= 2:
+        lines.append("## 2. Extract Claims\n")
         raw_claims = state.raw_claims or []
         lines.append(f"{len(raw_claims)} claims extracted:\n")
 
@@ -240,8 +254,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
                     lines.append(f"  - Q: {rc.question}")
             lines.append("")
 
-    if stop_step >= 2:
-        lines.append("## 2. Dedup Claims\n")
+    if stop_step >= 3:
+        lines.append("## 3. Dedup Claims\n")
         all_claims = state.normative_claims or []
         normative = [c for c in all_claims if c.kind != "factual"]
         survivors, merged = _partition_merged(normative)
@@ -258,8 +272,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             "2a", state.shadow_claim_groups, normative,
         ))
 
-    if stop_step >= 3:
-        lines.append("## 3. Extract Evidence\n")
+    if stop_step >= 4:
+        lines.append("## 4. Extract Evidence\n")
         raw_evidence = state.raw_evidence or []
         lines.append(f"{len(raw_evidence)} evidence items extracted:\n")
         if raw_evidence:
@@ -279,8 +293,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
                 lines.append(f'   - Supports: "{supports_str}"{flag_str}')
             lines.append("")
 
-    if stop_step >= 4:
-        lines.append("## 4. Dedup Evidence\n")
+    if stop_step >= 5:
+        lines.append("## 5. Dedup Evidence\n")
         all_ev = state.deduped_evidence or []
         survivors, merged = _partition_merged(all_ev)
         lines.append(f"{len(all_ev)} -> {len(survivors)} survivors ({len(merged)} merged):\n")
@@ -296,8 +310,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             "4a", state.shadow_evidence_groups, all_ev,
         ))
 
-    if stop_step >= 5:
-        lines.append("## 5. Extract Factual\n")
+    if stop_step >= 6:
+        lines.append("## 6. Extract Factual\n")
         raw_factual = state.raw_factual or []
         lines.append(f"{len(raw_factual)} factual claims extracted:\n")
         for i, rc in enumerate(raw_factual[:50], 1):
@@ -306,8 +320,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
                 lines.append(f"   - Q: {rc.question}")
         lines.append("")
 
-    if stop_step >= 6:
-        lines.append("## 6. Dedup Factual Claims\n")
+    if stop_step >= 7:
+        lines.append("## 7. Dedup Factual Claims\n")
         all_claims = state.normative_claims or []
         factual = [c for c in all_claims if c.kind == "factual"]
         survivors = [c for c in factual if c.merged_into is None]
@@ -315,8 +329,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
         lines.append(f"{len(factual)} -> {len(survivors)} survivors ({len(merged)} merged)")
         lines.append("")
 
-    if stop_step >= 7:
-        lines.append("## 7. Extract Rhetoric\n")
+    if stop_step >= 8:
+        lines.append("## 8. Extract Rhetoric\n")
         rhetoric = state.rhetoric or []
         lines.append(f"{len(rhetoric)} markers extracted:\n")
         for i, m in enumerate(rhetoric, 1):
@@ -329,8 +343,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
     claim_index = _build_uid_index(claims)
     ev_index = _build_uid_index(evidence)
 
-    if stop_step >= 8:
-        lines.append("## 8. Verify\n")
+    if stop_step >= 9:
+        lines.append("## 9. Verify\n")
 
         triaged = state.triaged_evidence
         centrality = state.centrality_scores
@@ -393,8 +407,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
                     lines.append(f'  - <- "{_uid_text(idx, v.related_uid)}"')
             lines.append("")
 
-    if stop_step >= 9:
-        lines.append("## 9. Load-Bearing\n")
+    if stop_step >= 10:
+        lines.append("## 10. Load-Bearing\n")
         lb = state.load_bearing_claims or []
         if lb:
             by_cls: dict[str, list[Any]] = {}
@@ -409,8 +423,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append("No classifications.")
         lines.append("")
 
-    if stop_step >= 10:
-        lines.append("## 10. Verify Citations\n")
+    if stop_step >= 11:
+        lines.append("## 11. Verify Citations\n")
         audit = state.citation_audit or []
         if audit:
             resolved_count = sum(1 for a in audit if a.resolved)
@@ -426,8 +440,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append("No citations audited.")
         lines.append("")
 
-    if stop_step >= 11:
-        lines.append("## 11. Web Search\n")
+    if stop_step >= 12:
+        lines.append("## 12. Web Search\n")
         ext = state.external_evidence or []
         lines.append(f"{len(ext)} external evidence items found:\n")
         for ex in ext[:10]:
@@ -435,8 +449,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append(f"  - {ex.finding}")
         lines.append("")
 
-    if stop_step >= 12:
-        lines.append("## 12. Resolve External\n")
+    if stop_step >= 13:
+        lines.append("## 13. Resolve External\n")
         resolutions = state.web_resolutions or []
         if resolutions:
             lines.append(f"{len(resolutions)} resolutions applied:\n")
@@ -448,8 +462,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append("No resolutions.")
         lines.append("")
 
-    if stop_step >= 13:
-        lines.append("## 13. Caput Causae\n")
+    if stop_step >= 14:
+        lines.append("## 14. Caput Causae\n")
         cc = state.caput_causae
         if cc:
             lines.append(f"**Thesis:** {cc.thesis}\n")
@@ -462,8 +476,8 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append("Not computed.")
             lines.append("")
 
-    if stop_step >= 14:
-        lines.append("## 14. Detect Patterns\n")
+    if stop_step >= 15:
+        lines.append("## 15. Detect Patterns\n")
         patterns = state.marker_patterns
         if patterns:
             if patterns.asymmetries:
@@ -487,9 +501,66 @@ def render_trace(state: PipelineState, meta: PaperRow | None, stop_step: int) ->
             lines.append("No patterns detected.")
         lines.append("")
 
-    if stop_step >= 15:
-        lines.append("## 15. Report\n")
+    if stop_step >= 16:
+        lines.append("## 16. Report\n")
         lines.append("Report rendered." if state.report else "Report not rendered.")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Step 1 (Tag Sentences) debug renderer
+# ---------------------------------------------------------------------------
+
+def render_debug_tag_sentences(
+    tagged: list[Any],
+    *,
+    classifier_name: str,
+    classifier_model: str,
+    device: str,
+    target_label: str,
+    skip_label: str,
+    target_margin: float,
+    skip_margin: float,
+    multi_label: bool,
+) -> str:
+    """Render the Step 1 (Tag Sentences) result as a debug.md section.
+
+    Mirrors the LLM-step ``render_debug_md`` channel: returns a single
+    markdown string that the caller appends to ``ctx.debug_log``. The
+    section contains a header block (classifier config + hypothesis
+    labels + margin + mode) and a per-sentence table with line / tag /
+    target score / skip score / verbatim text. Per-sentence detail
+    lives here, not in the trace; the trace shows summary counts only.
+
+    Long sentences are NOT truncated. Debug is for inspection, not
+    skimming. Pipe characters inside sentence text are escaped so they
+    do not break the table.
+    """
+    lines: list[str] = []
+    lines.append("## 1. Tag Sentences\n")
+    lines.append(f"**Classifier:** {classifier_name} (`{classifier_model}`)")
+    lines.append(f"**Device:** {device}")
+    lines.append(f"**Mode:** multi_label={multi_label}")
+    lines.append(
+        f"**Decision rule:** TARGET if t-s>{target_margin}, "
+        f"SKIP if s-t>{skip_margin}, else CONTEXT "
+        f"(asymmetric: biased toward TARGET/CONTEXT; "
+        f"SKIP requires high confidence)"
+    )
+    lines.append("**Hypothesis labels:**")
+    lines.append(f"- TARGET: \"{target_label}\"")
+    lines.append(f"- SKIP: \"{skip_label}\"")
+    lines.append("")
+    lines.append("### Per-sentence scores\n")
+    lines.append("| line | tag | target | skip | text |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for ts in tagged:
+        text = ts.span.text.replace("|", "\\|")
+        lines.append(
+            f"| {ts.span.line} | {ts.tag.name} | "
+            f"{ts.target_score:.3f} | {ts.skip_score:.3f} | {text} |"
+        )
+    lines.append("")
     return "\n".join(lines)

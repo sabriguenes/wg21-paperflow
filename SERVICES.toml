@@ -1,0 +1,110 @@
+# Infrastructure inventory.
+# API keys are NEVER stored here. Set via environment variables.
+#
+# Two parallel namespaces live in this file:
+#
+# 1. [services.NAME] declares a remote LLM endpoint with its
+#    capabilities. The `backend` field maps to a Python class in
+#    pipeline.model_backends. The `api_key_env` field names the env var
+#    holding the API key.
+#    [defaults] maps slot names to service names for interactive use.
+#    The orchestrator overrides slots via --service CLI flags.
+#
+# 2. [classifiers.NAME] declares a local zero-shot text classifier. The
+#    `backend` field maps to a Python class in
+#    pipeline.classifier_backends. No api_key_env: classifiers are
+#    local-model wrappers (HF Transformers pipeline or
+#    sentence_transformers CrossEncoder). First run downloads weights
+#    into the local HF cache; subsequent runs are fully offline.
+#    [classifier_defaults] maps classifier slot names to classifier
+#    names. The orchestrator overrides via --classifier CLI flags
+#    (e.g. `--classifier selector=zeroshot-base`).
+#
+# The two namespaces do not mix: slot resolution is independent, and
+# `--service` / `--classifier` flags target different dicts on the
+# StepContext.
+
+[services.b200-r1]
+backend = "deepseek_r1_distill_vllm021"
+base_url = "https://hdsfzi29n4xyup-8000.proxy.runpod.net/v1"
+api_key_env = "RUNPOD_API_KEY"
+model = "deepseek-r1-distill-70b"
+thinking_capable = true
+tools_capable = false
+
+# [services.b200-llama]
+# backend = "llama3"
+# base_url = "https://abc123-8000.proxy.runpod.net/v1"
+# api_key_env = "RUNPOD_API_KEY"
+# model = "llama-3.3-70b"
+# thinking_capable = false
+# tools_capable = true
+
+# [services.fireworks-405b]
+# backend = "llama3"
+# base_url = "https://api.fireworks.ai/inference/v1"
+# api_key_env = "FIREWORKS_API_KEY"
+# model = "accounts/fireworks/models/llama-v3p1-405b-instruct"
+# thinking_capable = false
+# tools_capable = true
+
+[services.anthropic-opus]
+backend = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-opus-4-6"
+thinking_capable = true
+tools_capable = true
+
+[defaults]
+fast = "anthropic-opus"
+default = "anthropic-opus"
+tool = "anthropic-opus"
+
+# ---------------------------------------------------------------------------
+# Local zero-shot classifiers (dissect Step 1 Tag Sentences)
+# ---------------------------------------------------------------------------
+
+# Default: small NLI cross-encoder. ~150MB, ~15-25ms/sentence on CPU.
+# With the cross-validated TARGET hypothesis label and structural
+# pre-filter in harness.py, this model achieves 96% TARGET recall and
+# 92% SKIP recall across three WG21 corpora -- matching or beating
+# zeroshot-large on the decisions that matter (TARGET recall) at
+# 1/85th the cost. See study/ensemble/results/final_findings.md for
+# the apples-to-apples ablation.
+[classifiers.nli-small]
+backend = "nli_cross_encoder"
+model = "cross-encoder/nli-deberta-v3-small"
+device = "cpu"
+
+# Large alternative: DeBERTa-v3-large fine-tuned for zero-shot
+# classification on 5 NLI + 28 non-NLI datasets. ~1.7GB FP32, ~1.5s
+# per sentence on CPU. Sharper raw scores than nli-small but the
+# final-decision quality is equivalent once the alt TARGET hypothesis
+# is in place. Use via `--classifier selector=zeroshot-large` when
+# you want the model's confidence numbers themselves (e.g. for the
+# Tier 3 cascade oracle slot described in study/ensemble/).
+[classifiers.zeroshot-large]
+backend = "zeroshot_v2"
+model = "MoritzLaurer/deberta-v3-large-zeroshot-v2.0"
+device = "cpu"
+
+# Mid-tier: DeBERTa-v3-base, same fine-tune family as zeroshot-large.
+# ~700MB FP32, sub-second per chunk on CPU. Use via `--classifier
+# selector=zeroshot-base` when you need a faster iteration loop than
+# zeroshot-large but want sharper scores than nli-small.
+[classifiers.zeroshot-base]
+backend = "zeroshot_v2"
+model = "MoritzLaurer/deberta-v3-base-zeroshot-v2.0"
+device = "cpu"
+
+# Example future addition: specialized claim detector. Demonstrates
+# that the abstraction makes adding a new classifier a config change,
+# not a code change. Requires registering a "claimbuster" entry in
+# CLASSIFIER_BACKEND_REGISTRY first.
+# [classifiers.claimbuster]
+# backend = "claimbuster"
+# model = "lukasgarbas/claimbuster-multilingual"  # or a local fine-tune
+# device = "cpu"
+
+[classifier_defaults]
+selector = "nli-small"

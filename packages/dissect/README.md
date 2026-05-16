@@ -20,31 +20,64 @@ actionable error before the first LLM call.
 ## Pipeline overview
 
 ```
-Step 0  Read           chunk paper, extract citations          (pure Python)
-Step 1  Extract        claims + evidence + markers per chunk   (parallel LLM)
-Step 2  Dedup Claims   deterministic tiers 0-1 + LLM tier 2    (hybrid)
-Step 3  Dedup Evidence deterministic tiers 0-1 + LLM tier 2    (hybrid)
-Step 4  Verify         cross-ref claims/evidence, map support  (single LLM)
-Step 5  Load-Bearing   graph analysis: which claims matter     (single LLM)
-Step 6  Web Search     search for evidence on critical gaps    (single LLM + tools)
-Step 7  Resolve        integrate external evidence             (single LLM)
-Step 8  Detect Patterns cross-marker pattern analysis          (single LLM)
-Step 9  Report         render final dissect markdown           (pure Python)
+Step 0  Read              chunk paper, extract citations          (pure Python)
+Step 1  Tag Sentences     decompose + classify each sentence      (pure Python + local classifier)
+Step 2  Extract Claims    normative claims per chunk              (parallel LLM)
+Step 3  Dedup Claims      deterministic tiers 0-1-2 + shadow      (pure Python)
+Step 4  Extract Evidence  supporting evidence per chunk           (parallel LLM)
+Step 5  Dedup Evidence    deterministic tiers 0-1 + shadow        (pure Python)
+Step 6  Extract Factual   factual claims per chunk                (parallel LLM)
+Step 7  Dedup Factual     deterministic tiers 0-1-2               (pure Python)
+Step 8  Extract Rhetoric  rhetoric markers per chunk              (parallel LLM)
+Step 9  Verify            triage + propositions + disclaim        (custom LLM)
+Step 10 Load-Bearing      classify + per-claim binary             (custom LLM)
+Step 11 Verify Citations  fetch and verify each cited paper       (parallel LLM + web_fetch)
+Step 12 Web Search        search for evidence on critical gaps    (parallel LLM + web_search/fetch)
+Step 13 Resolve External  integrate external evidence             (single LLM)
+Step 14 Caput Causae      identify the load-bearing root cause    (single LLM)
+Step 15 Detect Patterns   cross-rhetoric pattern analysis         (single LLM)
+Step 16 Report            render final dissect markdown           (pure Python)
 ```
 
 ## Architecture
 
 ```
-dissect.md      upstream authority: step metadata + LLM instructions (10 steps, 0-9)
+dissect.md      upstream authority: step metadata + LLM instructions (17 steps, 0-16)
 prompt.py       parse metadata, validate hooks, build StepSpec list
 pipeline.py     hook registry (_HOOKS), generic runner, dispatch loop,
                   dissect_paper() and dissect_since() entry points
 render.py       output rendering (report, trace, debug transcript)
 models.py       Pydantic domain models (sole schema authority)
-harness.py      pure Python: chunking, SourceLoc, dedup tiers 0-1, citations
+harness.py      pure Python: chunking, SourceLoc, dedup tiers 0-1, citations,
+                  pysbd sentence decomposition for Step 1
 parse.py        domain-free H2 markdown splitter
 errors.py       error hierarchy (PromptFileError, StepError, paper errors)
 ```
+
+## Classifier
+
+Step 1 (Tag Sentences) uses a local zero-shot text classifier to tag
+each sentence in each chunk as `target`, `context`, or `skip`. The
+default is `MoritzLaurer/deberta-v3-large-zeroshot-v2.0` (~1.7GB,
+~3-5s CPU per paper). First run auto-downloads weights into the local
+HF cache; subsequent runs are fully offline.
+
+Switch models via `SERVICES.toml`:
+
+```toml
+[classifier_defaults]
+selector = "zeroshot-base"  # ~700MB, sub-second per paper
+```
+
+Or from the CLI:
+
+```bash
+paperflow dissect P4003R3 --classifier selector=zeroshot-base
+```
+
+Registered alternatives: `zeroshot-base` (faster), `nli-small`
+(smallest, lowest accuracy). Add a new backend by registering a class
+in `pipeline.classifier_backends.CLASSIFIER_BACKEND_REGISTRY`.
 
 The `StepSpec` combines parsed metadata (from `dissect.md`) with
 bespoke Python hooks. Metadata provides WHAT (which model, which fields,
@@ -57,7 +90,7 @@ construction, retries, debug logging, tool registration.
 1. Add a `## Step N` section to `dissect.md` with the metadata block:
 
 ```markdown
-## Step 10 -- My New Step
+## Step 17 -- My New Step
 
 - **Model:** default
 - **Execution:** main

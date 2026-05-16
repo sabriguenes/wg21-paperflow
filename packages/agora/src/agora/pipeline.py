@@ -35,13 +35,15 @@ from paperstore.errors import MissingMetaError, MissingPaperMdError
 from paperstore.progress import ProgressCallback
 
 from pipeline import (
-    DEFAULT_MODEL_SLOTS,
+    AgentBackend,
     StepContext,
     StepHooks,
     WebResearcher,
     build_pipeline,
     dispatch,
     load_sections,
+    load_services,
+    resolve_slots,
     run_task,
 )
 from pipeline.errors import (
@@ -317,7 +319,6 @@ _RESEARCH_AGENT_PROMPTS = {
 
 async def _pure_research(state: PipelineState, ctx: StepContext) -> None:
     """Dispatch three sub-agents in parallel and gather a ResearchSummary."""
-    assert ctx._current_spec is not None
     body = ctx.sections.get(_STEP_2_RESEARCH, "")
     deep_search = ctx.tool_registry.get("deep_search")
     web_fetch = ctx.tool_registry.get("web_fetch")
@@ -327,8 +328,7 @@ async def _pure_research(state: PipelineState, ctx: StepContext) -> None:
         state.research_summary = _empty_research_summary()
         return
 
-    slot = ctx._current_spec.meta.model_slot
-    model = ctx.model_slots.get(slot) or DEFAULT_MODEL_SLOTS.get(slot, slot)
+    research_agent = ctx.agents["tool"]
     tools = {"deep_search": deep_search, "web_fetch": web_fetch}
     anchors_json = _json(
         [a.model_dump(mode="json") for a in (state.technical_anchors or [])]
@@ -345,13 +345,13 @@ async def _pure_research(state: PipelineState, ctx: StepContext) -> None:
 
     async def _one(agent_name: str) -> ResearchAgentReport:
         return await run_task(
-            system_prompt=_RESEARCH_AGENT_PROMPTS[agent_name],
-            user_message=paper_ctx,
-            output_type=ResearchAgentReport,
+            research_agent,
+            _RESEARCH_AGENT_PROMPTS[agent_name],
+            paper_ctx,
+            ResearchAgentReport,
             label=f"Step 2 - Research ({agent_name})",
             debug_log=ctx.debug_log if ctx.debug else None,
             tools=tools,
-            model=model,
         )
 
     results = await asyncio.gather(
@@ -657,38 +657,50 @@ def _json(obj: Any) -> str:
 
 # -- Hook registry -----------------------------------------------------------
 
-# Step names must match exactly the ## headers in agora.md.
-_HOOKS: dict[str, StepHooks] = {
-    _STEP_0_LOAD: StepHooks(custom=_pure_load),
-    _STEP_1_SMELL_TEST: StepHooks(
-        output_type=SmellTestOutput,
-        prepare=_prepare_smell_test,
-        extract=_extract_smell_test,
-    ),
-    _STEP_2_RESEARCH: StepHooks(custom=_pure_research),
-    _STEP_3_CALIBRATE: StepHooks(
-        output_type=CalibrationOutput,
-        prepare=_prepare_calibrate,
-        extract=_extract_calibrate,
-    ),
-    _STEP_4_SUBMISSION: StepHooks(
-        output_type=SubmissionOutput,
-        prepare=_prepare_submission,
-        extract=_extract_submission,
-    ),
-    _STEP_5_SKELETON: StepHooks(
-        output_type=SkeletonOutput,
-        prepare=_prepare_skeleton,
-        extract=_extract_skeleton,
-    ),
-    _STEP_6_ENCOUNTERS: StepHooks(
-        output_type=EncountersOutput,
-        prepare=_prepare_encounters,
-        extract=_extract_encounters,
-        guard=_guard_encounter_count_positive,
-    ),
-    _STEP_7_SERIALIZE: StepHooks(custom=_pure_serialize),
-}
+def _build_hooks(
+    synthesis_agent: AgentBackend,
+    research_agent: AgentBackend,
+) -> dict[str, StepHooks]:
+    """Build the step hooks dict with agents assigned."""
+    return {
+        _STEP_0_LOAD: StepHooks(custom=_pure_load),
+        _STEP_1_SMELL_TEST: StepHooks(
+            agent=synthesis_agent,
+            output_type=SmellTestOutput,
+            prepare=_prepare_smell_test,
+            extract=_extract_smell_test,
+        ),
+        _STEP_2_RESEARCH: StepHooks(
+            agent=research_agent,
+            custom=_pure_research,
+        ),
+        _STEP_3_CALIBRATE: StepHooks(
+            agent=synthesis_agent,
+            output_type=CalibrationOutput,
+            prepare=_prepare_calibrate,
+            extract=_extract_calibrate,
+        ),
+        _STEP_4_SUBMISSION: StepHooks(
+            agent=synthesis_agent,
+            output_type=SubmissionOutput,
+            prepare=_prepare_submission,
+            extract=_extract_submission,
+        ),
+        _STEP_5_SKELETON: StepHooks(
+            agent=synthesis_agent,
+            output_type=SkeletonOutput,
+            prepare=_prepare_skeleton,
+            extract=_extract_skeleton,
+        ),
+        _STEP_6_ENCOUNTERS: StepHooks(
+            agent=synthesis_agent,
+            output_type=EncountersOutput,
+            prepare=_prepare_encounters,
+            extract=_extract_encounters,
+            guard=_guard_encounter_count_positive,
+        ),
+        _STEP_7_SERIALIZE: StepHooks(custom=_pure_serialize),
+    }
 
 
 # -- Public API --------------------------------------------------------------
@@ -698,7 +710,7 @@ async def agora_paper(
     pid: str,
     backend: StorageBackend,
     *,
-    model_slots: dict[str, str] | None = None,
+    service_overrides: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
     stop_after: int | None = None,
     debug: bool = False,
@@ -706,31 +718,28 @@ async def agora_paper(
 ) -> Thread | str:
     """Plan a Reddit thread for a dissected WG21 paper.
 
-    Loads the paper and dissect data from paperstore, runs the 8-step
+    Loads services from SERVICES.toml, builds agents, runs the 8-step
     analysis pipeline, writes ``{pid}.agora.json`` via
     ``backend.write_agora_json``, and returns the planned
-    :class:`Thread`. Generation-phase fields stay ``None``.
-
-    With ``debug=True``, every LLM call (top-level + every sub-agent)
-    is rendered to a debug transcript at
-    ``backend.get_debug_md_path(pid)``. The file is cleared
-    before dispatch so reruns do not append to stale logs.
-
-    With ``trace=True``, a full per-step state dump is written to
-    ``backend.get_trace_md_path(pid)`` after dispatch
-    completes; the planned :class:`Thread` is still returned.
-
-    With ``stop_after=N``, dispatch halts after pipeline step ``N`` and
-    the partial trace string is **returned** in place of the
-    :class:`Thread` (the CLI is responsible for writing it).
-    ``stop_after`` and bare ``trace`` are mutually exclusive write paths.
+    :class:`Thread`. Generation-phase fields stay ``None``. Pass
+    ``service_overrides`` to bind slots to specific services.
 
     Raises :class:`PromptFileError` if ``agora.md`` has structural
     problems. Raises :class:`PaperNotFoundError`,
     :class:`PaperNotConvertedError`, or :class:`PaperNotDissectedError`
     if the prerequisite paperstore artifacts are missing.
     """
-    slots = {**DEFAULT_MODEL_SLOTS, **(model_slots or {})}
+    services, defaults = load_services()
+    slots = resolve_slots(services, defaults, service_overrides)
+
+    synthesis_agent = AgentBackend(slots["default"], thinking_budget=4096)
+    research_agent = AgentBackend(slots.get("tool", slots["default"]))
+
+    agents = {
+        "default": synthesis_agent,
+        "tool": research_agent,
+    }
+
     secs = dict(load_sections("agora", "agora.md"))
 
     if "System Prompt" not in secs:
@@ -739,12 +748,9 @@ async def agora_paper(
             f"Available sections: {sorted(secs)}"
         )
 
-    pipeline = build_pipeline(secs, _HOOKS)
+    hooks = _build_hooks(synthesis_agent, research_agent)
+    pipeline = build_pipeline(secs, hooks)
 
-    # Preflight prerequisite checks before constructing WebResearcher,
-    # which requires BRAVE_API_KEY at __init__ time. Step 0 re-runs these
-    # checks during dispatch; doing them here surfaces the actionable
-    # "missing prerequisite" error before any environment dependency.
     try:
         meta = await asyncio.to_thread(backend.get_meta, pid)
     except MissingMetaError as exc:
@@ -767,8 +773,6 @@ async def agora_paper(
 
     state = PipelineState()
 
-    # Clear any stale agora JSON so a crash partway through does not
-    # leave a phantom blueprint for the previous revision.
     if stop_after is None:
         try:
             await asyncio.to_thread(backend.clear_agora, pid)
@@ -784,7 +788,7 @@ async def agora_paper(
 
         ctx = StepContext(
             sections=secs,
-            model_slots=slots,
+            agents=agents,
             researcher=researcher,
             backend=backend,
             debug=debug,
@@ -823,7 +827,7 @@ async def agora_since(
     month: str,
     backend: StorageBackend,
     *,
-    model_slots: dict[str, str] | None = None,
+    service_overrides: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
     stop_after: int | None = None,
     debug: bool = False,
@@ -848,7 +852,7 @@ async def agora_since(
         try:
             await agora_paper(
                 pid, backend,
-                model_slots=model_slots,
+                service_overrides=service_overrides,
                 on_progress=on_progress,
                 stop_after=stop_after,
                 debug=debug,

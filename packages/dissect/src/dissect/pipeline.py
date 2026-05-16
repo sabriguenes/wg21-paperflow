@@ -27,7 +27,7 @@ from paperstore.progress import ProgressCallback
 from paperstore.errors import MissingMetaError, MissingPaperMdError
 
 from pipeline import (
-    DEFAULT_MODEL_SLOTS,
+    AgentBackend,
     StepContext,
     StepHooks,
     StepSpec,
@@ -36,7 +36,9 @@ from pipeline import (
     dispatch,
     ensure_paper_md,
     load_sections,
+    load_services,
     make_read_paper_tool,
+    resolve_slots,
     run_agent,
     run_task,
 )
@@ -76,6 +78,7 @@ from dissect.models import (
     PipelineState,
     RawClaim,
     ResolveOutput,
+    SentenceSpan,
     WebSearchOutput,
 )
 from dissect.render import render_report, render_trace
@@ -109,21 +112,22 @@ _CENTRALITY_EVIDENCE_THRESHOLD = 0.55
 _CENTRALITY_PEER_THRESHOLD = 0.55
 
 _STEP_0_READ = "0. Read"
-_STEP_1_EXTRACT_CLAIMS = "1. Extract Claims"
-_STEP_2_DEDUP_CLAIMS = "2. Dedup Claims"
-_STEP_3_EXTRACT_EVIDENCE = "3. Extract Evidence"
-_STEP_4_DEDUP_EVIDENCE = "4. Dedup Evidence"
-_STEP_5_EXTRACT_FACTUAL = "5. Extract Factual"
-_STEP_6_DEDUP_FACTUAL = "6. Dedup Factual Claims"
-_STEP_7_EXTRACT_RHETORIC = "7. Extract Rhetoric"
-_STEP_8_VERIFY = "8. Verify"
-_STEP_9_LOAD_BEARING = "9. Load-Bearing"
-_STEP_10_VERIFY_CITATIONS = "10. Verify Citations"
-_STEP_11_WEB_SEARCH = "11. Web Search"
-_STEP_12_RESOLVE = "12. Resolve External"
-_STEP_13_CAPUT_CAUSAE = "13. Caput Causae"
-_STEP_14_DETECT_PATTERNS = "14. Detect Patterns"
-_STEP_15_REPORT = "15. Report"
+_STEP_1_TAG_SENTENCES = "1. Tag Sentences"
+_STEP_2_EXTRACT_CLAIMS = "2. Extract Claims"
+_STEP_3_DEDUP_CLAIMS = "3. Dedup Claims"
+_STEP_4_EXTRACT_EVIDENCE = "4. Extract Evidence"
+_STEP_5_DEDUP_EVIDENCE = "5. Dedup Evidence"
+_STEP_6_EXTRACT_FACTUAL = "6. Extract Factual"
+_STEP_7_DEDUP_FACTUAL = "7. Dedup Factual Claims"
+_STEP_8_EXTRACT_RHETORIC = "8. Extract Rhetoric"
+_STEP_9_VERIFY = "9. Verify"
+_STEP_10_LOAD_BEARING = "10. Load-Bearing"
+_STEP_11_VERIFY_CITATIONS = "11. Verify Citations"
+_STEP_12_WEB_SEARCH = "12. Web Search"
+_STEP_13_RESOLVE = "13. Resolve External"
+_STEP_14_CAPUT_CAUSAE = "14. Caput Causae"
+_STEP_15_DETECT_PATTERNS = "15. Detect Patterns"
+_STEP_16_REPORT = "16. Report"
 
 
 # -- Output validators --------------------------------------------------------
@@ -140,38 +144,58 @@ def _chunk_block(chunk) -> str:
 
 
 def _prepare_extract_claims_chunks(state: PipelineState, ctx: StepContext) -> list[str]:
+    """Render one Step 2 (Extract Claims) prompt per chunk.
+
+    When Step 1 (Tag Sentences) has populated ``state.tagged_sentences``,
+    each chunk is rendered with inline ``[TARGET]`` / ``[CONTEXT]``
+    prefixes via ``_render_tagged_chunk`` and SKIP sentences dropped.
+    When Step 1 was skipped or produced no tags (e.g. no classifier
+    configured), fall back to the untagged ``_chunk_block`` render so
+    the pipeline still works without the classifier.
+    """
+    from dissect.harness import _render_tagged_chunk, _split_tagged_by_chunk
+
     assert state.chunks is not None
-    prompt_body = ctx.sections.get(_STEP_1_EXTRACT_CLAIMS, "")
+    prompt_body = ctx.sections.get(_STEP_2_EXTRACT_CLAIMS, "")
+
+    if state.tagged_sentences:
+        tagged_by_chunk = _split_tagged_by_chunk(state.chunks, state.tagged_sentences)
+        return [
+            f"## Instructions\n\n{prompt_body}\n\n"
+            f"## Input\n\n{wrap_source(_render_tagged_chunk(chunk, tagged))}"
+            for chunk, tagged in zip(state.chunks, tagged_by_chunk)
+        ]
+
     return [
-        f"## Input\n\n{_chunk_block(chunk)}\n\n"
-        f"## Instructions\n\n{prompt_body}"
+        f"## Instructions\n\n{prompt_body}\n\n"
+        f"## Input\n\n{_chunk_block(chunk)}"
         for chunk in state.chunks
     ]
 
 
 def _prepare_extract_evidence_chunks(state: PipelineState, ctx: StepContext) -> list[str]:
     assert state.chunks is not None
-    prompt_body = ctx.sections.get(_STEP_3_EXTRACT_EVIDENCE, "")
+    prompt_body = ctx.sections.get(_STEP_4_EXTRACT_EVIDENCE, "")
     return [
-        f"## Input\n\n{_chunk_block(chunk)}\n\n"
-        f"## Instructions\n\n{prompt_body}"
+        f"## Instructions\n\n{prompt_body}\n\n"
+        f"## Input\n\n{_chunk_block(chunk)}"
         for chunk in state.chunks
     ]
 
 
 def _prepare_extract_rhetoric_chunks(state: PipelineState, ctx: StepContext) -> list[str]:
     assert state.chunks is not None
-    prompt_body = ctx.sections.get(_STEP_7_EXTRACT_RHETORIC, "")
+    prompt_body = ctx.sections.get(_STEP_8_EXTRACT_RHETORIC, "")
     return [
-        f"## Input\n\n{_chunk_block(chunk)}\n\n"
-        f"## Instructions\n\n{prompt_body}"
+        f"## Instructions\n\n{prompt_body}\n\n"
+        f"## Input\n\n{_chunk_block(chunk)}"
         for chunk in state.chunks
     ]
 
 
 def _prepare_extract_factual_chunks(state: PipelineState, ctx: StepContext) -> list[str]:
     assert state.chunks is not None
-    prompt_body = ctx.sections.get(_STEP_5_EXTRACT_FACTUAL, "")
+    prompt_body = ctx.sections.get(_STEP_6_EXTRACT_FACTUAL, "")
     normative_questions: list[str] = []
     normative_texts: list[str] = []
     if state.normative_claims:
@@ -181,10 +205,10 @@ def _prepare_extract_factual_chunks(state: PipelineState, ctx: StepContext) -> l
     questions_text = "\n".join(f"- {q}" for q in normative_questions)
     claims_text = "\n".join(f"- {t}" for t in normative_texts)
     return [
+        f"## Instructions\n\n{prompt_body}\n\n"
         f"## Normative Claim Questions\n\n{wrap_source(questions_text)}\n\n"
         f"## Normative Claims (do not re-extract)\n\n{wrap_source(claims_text)}\n\n"
-        f"## Input\n\n{_chunk_block(chunk)}\n\n"
-        f"## Instructions\n\n{prompt_body}"
+        f"## Input\n\n{_chunk_block(chunk)}"
         for chunk in state.chunks
     ]
 
@@ -192,7 +216,7 @@ def _prepare_extract_factual_chunks(state: PipelineState, ctx: StepContext) -> l
 def _prepare_dedup_claims(state: PipelineState, ctx: StepContext) -> str:
     assert state.normative_claims is not None
     survivors = [c for c in state.normative_claims if c.merged_into is None]
-    prompt_body = ctx.sections.get(_STEP_2_DEDUP_CLAIMS, "")
+    prompt_body = ctx.sections.get(_STEP_3_DEDUP_CLAIMS, "")
     survivor_questions = json.dumps(
         [{"idx": i, "question": s.question} for i, s in enumerate(survivors)],
         ensure_ascii=False,
@@ -205,7 +229,7 @@ def _prepare_dedup_claims(state: PipelineState, ctx: StepContext) -> str:
 
 def _prepare_resolve(state: PipelineState, ctx: StepContext) -> str:
     assert state.load_bearing_claims is not None and state.normative_claims is not None
-    prompt_body = ctx.sections.get(_STEP_12_RESOLVE, "")
+    prompt_body = ctx.sections.get(_STEP_13_RESOLVE, "")
     return (
         f"## Load-Bearing Claims\n\n"
         f"{wrap_source(json.dumps([lb.model_dump() for lb in state.load_bearing_claims], ensure_ascii=False))}\n\n"
@@ -221,18 +245,37 @@ def _prepare_resolve(state: PipelineState, ctx: StepContext) -> str:
 
 
 def _extract_claims(state: PipelineState, outputs: list[Any]) -> None:
-    all_raw_claims = []
-    chunk_indices: list[int] = []
+    all_raw_claims: list[RawClaim] = []
+    claim_chunk_indices: list[int] = []
+    all_raw_facts: list[RawClaim] = []
+    fact_chunk_indices: list[int] = []
+
     for chunk_idx, output in enumerate(outputs):
         for claim in output.claims:
             all_raw_claims.append(claim)
-            chunk_indices.append(chunk_idx)
+            claim_chunk_indices.append(chunk_idx)
+        for fact in getattr(output, "facts", []):
+            all_raw_facts.append(fact)
+            fact_chunk_indices.append(chunk_idx)
+
     state.raw_claims = all_raw_claims
     assert state.paper_source is not None
+
     state.normative_claims, state.next_uid = _promote_claims(
         all_raw_claims, state.paper_source, state.next_uid,
-        chunk_indices=chunk_indices,
+        chunk_indices=claim_chunk_indices,
     )
+
+    if all_raw_facts:
+        funnel_facts, state.next_uid = _promote_claims(
+            all_raw_facts, state.paper_source, state.next_uid,
+            chunk_indices=fact_chunk_indices,
+        )
+        funnel_facts = [
+            c.model_copy(update={"kind": "factual"})
+            for c in funnel_facts
+        ]
+        state.normative_claims = list(state.normative_claims) + funnel_facts
 
 
 def _extract_evidence(state: PipelineState, outputs: list[Any]) -> None:
@@ -340,7 +383,7 @@ def _extract_resolve(state: PipelineState, output: ResolveOutput) -> None:
 
 def _prepare_caput_causae(state: PipelineState, ctx: StepContext) -> str:
     assert state.load_bearing_claims is not None and state.normative_claims is not None
-    prompt_body = ctx.sections.get(_STEP_13_CAPUT_CAUSAE, "")
+    prompt_body = ctx.sections.get(_STEP_14_CAPUT_CAUSAE, "")
     anchored_uids = {
         lb.claim_uid for lb in state.load_bearing_claims
         if lb.classification in ("anchored", "externally_anchored")
@@ -375,7 +418,7 @@ def _extract_caput_causae(state: PipelineState, output: CaputCausaeOutput) -> No
 
 def _prepare_detect_patterns(state: PipelineState, ctx: StepContext) -> str:
     assert state.rhetoric is not None and state.normative_claims is not None
-    prompt_body = ctx.sections.get(_STEP_14_DETECT_PATTERNS, "")
+    prompt_body = ctx.sections.get(_STEP_15_DETECT_PATTERNS, "")
     markers_json = json.dumps(
         [m.model_dump() for m in state.rhetoric],
         ensure_ascii=False,
@@ -407,6 +450,79 @@ async def _custom_read(state: PipelineState, ctx: StepContext) -> None:
     _, state.blanked_lines = _blank_non_prose(state.paper_source)
     state.chunks = _chunk_paper(state.paper_source)
     state.citations = _extract_citations(state.paper_source)
+
+
+async def _custom_tag_sentences(state: PipelineState, ctx: StepContext) -> None:
+    """Step 1: decompose each chunk into sentences and tag each as
+    TARGET / CONTEXT / SKIP via the configured classifier.
+
+    Reads ``ctx.classifiers["selector"]``. Writes
+    ``state.tagged_sentences``. Read by the renumbered Step 2
+    (Extract Claims) through ``_prepare_extract_claims_chunks``.
+
+    When ``--debug`` is on, appends a per-sentence detail block to
+    ``ctx.debug_log`` via ``render_debug_tag_sentences`` (parallel to
+    the LLM-step ``render_debug_md`` calls in
+    ``pipeline.model_backends``). The trace renderer emits a
+    summary-only block (counts per tag + classifier + thresholds).
+    """
+    from dissect.harness import (
+        _decompose_sentences,
+        _tag_sentences,
+        _DEFAULT_SKIP_MARGIN,
+        _DEFAULT_TARGET_MARGIN,
+        _TAG_SKIP_LABEL,
+        _TAG_TARGET_LABEL,
+    )
+
+    assert state.chunks is not None
+
+    classifier = ctx.classifiers.get("selector")
+    if classifier is None:
+        # No classifier configured. Leave tagged_sentences as None so
+        # _prepare_extract_claims_chunks falls back to untagged
+        # rendering. This is the graceful degradation path for callers
+        # that haven't migrated to the Step 1 abstraction yet.
+        return
+
+    # Honor ``--chunk N``: when the orchestrator restricts downstream
+    # parallel steps to one chunk, Step 1 must also limit work to that
+    # chunk. Otherwise interactive iteration loops on ``--step 1
+    # --chunk 0`` would still pay the cost of classifying every
+    # sentence in the paper.
+    chunks_to_tag = state.chunks
+    if ctx.chunk_index is not None:
+        if 0 <= ctx.chunk_index < len(state.chunks):
+            chunks_to_tag = [state.chunks[ctx.chunk_index]]
+        else:
+            chunks_to_tag = []
+
+    # One batched classify() over every span from every chunk. Both
+    # ClassifierBackend implementations batch internally (HF pipeline
+    # batch_size, CrossEncoder.predict batch_size), so one large call
+    # fills their batches better than N small calls. Concurrent calls
+    # would serialize at the model anyway (single instance per
+    # process). SentenceSpan carries absolute line numbers from
+    # _decompose_sentences, so cross-chunk merging is safe.
+    all_spans: list[SentenceSpan] = []
+    for chunk in chunks_to_tag:
+        all_spans.extend(_decompose_sentences(chunk))
+    state.tagged_sentences = _tag_sentences(all_spans, classifier)
+    all_tagged = state.tagged_sentences
+
+    if ctx.debug and ctx.debug_log is not None:
+        from dissect.render import render_debug_tag_sentences
+        ctx.debug_log.append(render_debug_tag_sentences(
+            all_tagged,
+            classifier_name=getattr(classifier, "_slot_name", "selector"),
+            classifier_model=getattr(classifier, "model_id", "unknown"),
+            device=getattr(classifier, "device", "cpu"),
+            target_label=_TAG_TARGET_LABEL,
+            skip_label=_TAG_SKIP_LABEL,
+            target_margin=_DEFAULT_TARGET_MARGIN,
+            skip_margin=_DEFAULT_SKIP_MARGIN,
+            multi_label=True,
+        ))
 
 
 async def _custom_dedup_claims(state: PipelineState, ctx: StepContext) -> None:
@@ -485,7 +601,7 @@ async def _custom_dedup_factual(state: PipelineState, ctx: StepContext) -> None:
     # LLM tier-2 disabled for determinism. Restore by uncommenting:
     # if len(survivors) > 1:
     #     assert ctx._current_spec is not None
-    #     prompt_body = ctx.sections.get(_STEP_6_DEDUP_FACTUAL, "")
+    #     prompt_body = ctx.sections.get(_STEP_7_DEDUP_FACTUAL, "")
     #     survivor_questions = json.dumps(
     #         [{"idx": i, "question": s.question} for i, s in enumerate(survivors)],
     #         ensure_ascii=False,
@@ -523,14 +639,9 @@ def _split_sub_prompts(section_body: str) -> dict[str, str]:
     }
 
 
-def _resolve_model_for(ctx: StepContext) -> Any:
-    """Resolve the model object for the current step inside a custom hook."""
-    assert ctx._current_spec is not None
-    model_slot = ctx._current_spec.meta.model_slot
-    resolved = ctx.model_slots.get(model_slot)
-    if resolved is None:
-        resolved = DEFAULT_MODEL_SLOTS.get(model_slot, model_slot)
-    return resolved
+def _get_agent(ctx: StepContext, slot: str = "default") -> AgentBackend:
+    """Get the agent for a named slot from the step context."""
+    return ctx.agents[slot]
 
 
 _TRAILING_PUNCT = ".,;:!?"
@@ -584,7 +695,7 @@ async def _custom_verify(state: PipelineState, ctx: StepContext) -> None:
     ``(claim_uid, evidence_uid)`` whose normalized text is identical:
     upstream Steps 3 and 5 sometimes capture the same source sentence
     as both an Evidence item and a Factual claim, which would otherwise
-    produce a self-prove verdict at Step 8. ``self_pair_dropped``
+    produce a self-prove verdict at Step 9. ``self_pair_dropped``
     counts the drops; ``dissect.md`` carries a model-side backstop for
     near-identical wording the normalizer cannot reduce to identity.
     """
@@ -633,14 +744,14 @@ async def _custom_verify(state: PipelineState, ctx: StepContext) -> None:
     tier1_set = set(tier1_uids)
 
     # Phase 3: Batched Verify.
-    sub_prompts = _split_sub_prompts(ctx.sections.get(_STEP_8_VERIFY, ""))
+    sub_prompts = _split_sub_prompts(ctx.sections.get(_STEP_9_VERIFY, ""))
     verify_prompt = sub_prompts.get("Batched Verify", "")
     disclaim_prompt = sub_prompts.get("Detect Disclaim", "")
 
     claim_by_uid = {c.uid: c for c in alive_claims}
     evid_by_uid = {e.uid: e for e in alive_evidence}
     system = ctx.system_prompt_for(ctx._current_spec) if ctx._current_spec else ""
-    resolved_model = _resolve_model_for(ctx)
+    synthesis_agent = _get_agent(ctx, "default")
 
     pairs: list[tuple[int, int]] = []
     for cuid in sorted(tier1_set):
@@ -680,13 +791,12 @@ async def _custom_verify(state: PipelineState, ctx: StepContext) -> None:
         )
         try:
             batch_out = await run_task(
-                system_prompt=system,
-                user_message=user_msg,
-                output_type=BatchVerifyOutput,
-                label=f"8. Verify (batch {batch_idx + 1}/{len(batches)})",
+                synthesis_agent,
+                system,
+                user_msg,
+                BatchVerifyOutput,
+                label=f"9. Verify (batch {batch_idx + 1}/{len(batches)})",
                 debug_log=ctx.debug_log if ctx.debug else None,
-                model=resolved_model,
-                request_limit=_REQUEST_LIMIT_PER_TASK,
             )
         except Exception:
             logger.warning(
@@ -718,13 +828,12 @@ async def _custom_verify(state: PipelineState, ctx: StepContext) -> None:
         )
         try:
             pair_out = await run_task(
-                system_prompt=system,
-                user_message=user_msg,
-                output_type=DisclaimPairOutput,
-                label=f"8. Detect Disclaim ({a_uid} vs {b_uid})",
+                synthesis_agent,
+                system,
+                user_msg,
+                DisclaimPairOutput,
+                label=f"9. Detect Disclaim ({a_uid} vs {b_uid})",
                 debug_log=ctx.debug_log if ctx.debug else None,
-                model=resolved_model,
-                request_limit=_REQUEST_LIMIT_PER_TASK,
             )
         except Exception:
             logger.warning(
@@ -818,7 +927,7 @@ def _classify_provisional(
 async def _custom_load_bearing(state: PipelineState, ctx: StepContext) -> None:
     """Classify each claim deterministically, then per-claim LLM binary.
 
-    Phase 1: provisional classification from Step 8 verdicts plus
+    Phase 1: provisional classification from Step 9 verdicts plus
     ``depends_on`` chains (pure Python).
     Phase 2: per-claim LLM call (Tier 1 only) deciding whether the
     claim is structurally load-bearing. Tier 2 claims auto-classified
@@ -847,8 +956,8 @@ async def _custom_load_bearing(state: PipelineState, ctx: StepContext) -> None:
     }
 
     # Re-derive Tier 1 deterministically from the centrality scores
-    # written by Step 8 so Step 9 sees the exact same partition. When
-    # Step 8 ran in fallback mode (no embeddings), every claim falls
+    # written by Step 9 so Step 10 sees the exact same partition. When
+    # Step 9 ran in fallback mode (no embeddings), every claim falls
     # into Tier 1 by the generous-cutoff rule.
     tier1_uids, _tier2 = triage.tier_split(
         state.centrality_scores or {c.uid: 1.0 for c in alive_claims},
@@ -863,11 +972,11 @@ async def _custom_load_bearing(state: PipelineState, ctx: StepContext) -> None:
             if dep_uid in dependents_by_uid:
                 dependents_by_uid[dep_uid].append(c.uid)
 
-    sub_prompts = _split_sub_prompts(ctx.sections.get(_STEP_9_LOAD_BEARING, ""))
+    sub_prompts = _split_sub_prompts(ctx.sections.get(_STEP_10_LOAD_BEARING, ""))
     binary_prompt = sub_prompts.get("Load-Bearing Binary", "")
 
     system = ctx.system_prompt_for(ctx._current_spec) if ctx._current_spec else ""
-    resolved_model = _resolve_model_for(ctx)
+    synthesis_agent = _get_agent(ctx, "default")
     caput_hint = ""
     if state.caput_causae is not None:
         caput_hint = state.caput_causae.thesis
@@ -897,13 +1006,12 @@ async def _custom_load_bearing(state: PipelineState, ctx: StepContext) -> None:
         )
         try:
             out = await run_task(
-                system_prompt=system,
-                user_message=user_msg,
-                output_type=LoadBearingBinaryOutput,
-                label=f"9. Load-Bearing Binary (uid {c.uid})",
+                synthesis_agent,
+                system,
+                user_msg,
+                LoadBearingBinaryOutput,
+                label=f"10. Load-Bearing Binary (uid {c.uid})",
                 debug_log=ctx.debug_log if ctx.debug else None,
-                model=resolved_model,
-                request_limit=_REQUEST_LIMIT_PER_TASK,
             )
         except Exception:
             # Bias toward load-bearing on failure so a missing per-claim
@@ -978,12 +1086,9 @@ async def _custom_verify_citations(state: PipelineState, ctx: StepContext) -> No
     web_fetch_fn = ctx.tool_registry["web_fetch"]
 
     assert ctx._current_spec is not None
-    prompt_body = ctx.sections.get(_STEP_10_VERIFY_CITATIONS, "")
+    prompt_body = ctx.sections.get(_STEP_11_VERIFY_CITATIONS, "")
     system = ctx.system_prompt_for(ctx._current_spec)
-    model_slot = ctx._current_spec.meta.model_slot
-    resolved = ctx.model_slots.get(model_slot)
-    if resolved is None:
-        resolved = DEFAULT_MODEL_SLOTS.get(model_slot, model_slot)
+    research_agent = _get_agent(ctx, "tool")
 
     alive_claims = [c for c in state.normative_claims if c.merged_into is None]
     alive_evidence = [e for e in (state.deduped_evidence or []) if e.merged_into is None]
@@ -1041,14 +1146,13 @@ async def _custom_verify_citations(state: PipelineState, ctx: StepContext) -> No
         )
         try:
             return await run_task(
-                system_prompt=system,
-                user_message=user_msg,
-                output_type=CitationTaskOutput,
-                label=f"10. Verify Citations ({cit.paper_id})",
-                debug_log=ctx.debug_log if ctx.debug else None,
+                research_agent,
+                system,
+                user_msg,
+                CitationTaskOutput,
                 tools=tools,
-                model=resolved,
-                request_limit=_REQUEST_LIMIT_PER_CITATION,
+                label=f"11. Verify Citations ({cit.paper_id})",
+                debug_log=ctx.debug_log if ctx.debug else None,
             )
         except Exception:
             # Per-citation failures are thresholded after all tasks complete.
@@ -1113,12 +1217,9 @@ async def _custom_web_search(state: PipelineState, ctx: StepContext) -> None:
     web_fetch_fn = ctx.tool_registry["web_fetch"]
 
     assert ctx._current_spec is not None
-    prompt_body = ctx.sections.get(_STEP_11_WEB_SEARCH, "")
+    prompt_body = ctx.sections.get(_STEP_12_WEB_SEARCH, "")
     system = ctx.system_prompt_for(ctx._current_spec)
-    model_slot = ctx._current_spec.meta.model_slot
-    resolved = ctx.model_slots.get(model_slot)
-    if resolved is None:
-        resolved = DEFAULT_MODEL_SLOTS.get(model_slot, model_slot)
+    research_agent = _get_agent(ctx, "tool")
 
     async def _one_claim(claim) -> tuple[bool, list]:
         user_msg = (
@@ -1128,14 +1229,13 @@ async def _custom_web_search(state: PipelineState, ctx: StepContext) -> None:
         )
         try:
             result = await run_task(
-                system_prompt=system,
-                user_message=user_msg,
-                output_type=WebSearchOutput,
-                label=f"11. Web Search (uid {claim.uid})",
-                debug_log=ctx.debug_log if ctx.debug else None,
+                research_agent,
+                system,
+                user_msg,
+                WebSearchOutput,
                 tools={"deep_search": deep_search_fn, "web_fetch": web_fetch_fn},
-                model=resolved,
-                request_limit=_REQUEST_LIMIT_PER_CLAIM,
+                label=f"12. Web Search (uid {claim.uid})",
+                debug_log=ctx.debug_log if ctx.debug else None,
             )
             return True, [
                 ee.model_copy(update={"claim_uid": claim.uid})
@@ -1217,90 +1317,108 @@ def _guard_detect_patterns(state: PipelineState) -> bool:
 
 # -- Hook registry ------------------------------------------------------------
 
-_HOOKS: dict[str, StepHooks] = {
-    _STEP_0_READ: StepHooks(custom=_custom_read),
 
-    _STEP_1_EXTRACT_CLAIMS: StepHooks(
-        output_type=ExtractClaimsOutput,
-        prepare=_prepare_extract_claims_chunks,
-        extract=_extract_claims,
-        parallel=True,
-    ),
+def _build_hooks(
+    extraction_agent: AgentBackend,
+    synthesis_agent: AgentBackend,
+    research_agent: AgentBackend,
+) -> dict[str, StepHooks]:
+    """Build the step hooks dict with agents assigned."""
+    return {
+        _STEP_0_READ: StepHooks(custom=_custom_read),
 
-    _STEP_2_DEDUP_CLAIMS: StepHooks(
-        output_type=DedupGroupingOutput,
-        custom=_custom_dedup_claims,
-    ),
+        _STEP_1_TAG_SENTENCES: StepHooks(custom=_custom_tag_sentences),
 
-    _STEP_3_EXTRACT_EVIDENCE: StepHooks(
-        output_type=ExtractEvidenceOutput,
-        prepare=_prepare_extract_evidence_chunks,
-        extract=_extract_evidence,
-        parallel=True,
-    ),
+        _STEP_2_EXTRACT_CLAIMS: StepHooks(
+            agent=extraction_agent,
+            output_type=ExtractClaimsOutput,
+            prepare=_prepare_extract_claims_chunks,
+            extract=_extract_claims,
+            parallel=True,
+        ),
 
-    _STEP_4_DEDUP_EVIDENCE: StepHooks(
-        output_type=DedupGroupingOutput,
-        custom=_custom_dedup_evidence,
-    ),
+        _STEP_3_DEDUP_CLAIMS: StepHooks(
+            output_type=DedupGroupingOutput,
+            custom=_custom_dedup_claims,
+        ),
 
-    _STEP_5_EXTRACT_FACTUAL: StepHooks(
-        output_type=ExtractFactualOutput,
-        prepare=_prepare_extract_factual_chunks,
-        extract=_extract_factual,
-        parallel=True,
-    ),
+        _STEP_4_EXTRACT_EVIDENCE: StepHooks(
+            agent=extraction_agent,
+            output_type=ExtractEvidenceOutput,
+            prepare=_prepare_extract_evidence_chunks,
+            extract=_extract_evidence,
+            parallel=True,
+        ),
 
-    _STEP_6_DEDUP_FACTUAL: StepHooks(
-        output_type=DedupGroupingOutput,
-        custom=_custom_dedup_factual,
-    ),
+        _STEP_5_DEDUP_EVIDENCE: StepHooks(
+            output_type=DedupGroupingOutput,
+            custom=_custom_dedup_evidence,
+        ),
 
-    _STEP_7_EXTRACT_RHETORIC: StepHooks(
-        output_type=ExtractRhetoricOutput,
-        prepare=_prepare_extract_rhetoric_chunks,
-        extract=_extract_rhetoric,
-        parallel=True,
-    ),
+        _STEP_6_EXTRACT_FACTUAL: StepHooks(
+            agent=extraction_agent,
+            output_type=ExtractFactualOutput,
+            prepare=_prepare_extract_factual_chunks,
+            extract=_extract_factual,
+            parallel=True,
+        ),
 
-    _STEP_8_VERIFY: StepHooks(custom=_custom_verify),
+        _STEP_7_DEDUP_FACTUAL: StepHooks(
+            output_type=DedupGroupingOutput,
+            custom=_custom_dedup_factual,
+        ),
 
-    _STEP_9_LOAD_BEARING: StepHooks(custom=_custom_load_bearing),
+        _STEP_8_EXTRACT_RHETORIC: StepHooks(
+            agent=extraction_agent,
+            output_type=ExtractRhetoricOutput,
+            prepare=_prepare_extract_rhetoric_chunks,
+            extract=_extract_rhetoric,
+            parallel=True,
+        ),
 
-    _STEP_10_VERIFY_CITATIONS: StepHooks(
-        custom=_custom_verify_citations,
-        guard=_guard_verify_citations,
-    ),
+        _STEP_9_VERIFY: StepHooks(agent=synthesis_agent, custom=_custom_verify),
 
-    _STEP_11_WEB_SEARCH: StepHooks(
-        custom=_custom_web_search,
-        guard=_guard_web_search,
-    ),
+        _STEP_10_LOAD_BEARING: StepHooks(agent=synthesis_agent, custom=_custom_load_bearing),
 
-    _STEP_12_RESOLVE: StepHooks(
-        output_type=ResolveOutput,
-        prepare=_prepare_resolve,
-        extract=_extract_resolve,
-        guard=_guard_resolve,
-        request_limit=15,
-    ),
+        _STEP_11_VERIFY_CITATIONS: StepHooks(
+            agent=research_agent,
+            custom=_custom_verify_citations,
+            guard=_guard_verify_citations,
+        ),
 
-    _STEP_13_CAPUT_CAUSAE: StepHooks(
-        output_type=CaputCausaeOutput,
-        prepare=_prepare_caput_causae,
-        extract=_extract_caput_causae,
-        guard=_guard_caput_causae,
-    ),
+        _STEP_12_WEB_SEARCH: StepHooks(
+            agent=research_agent,
+            custom=_custom_web_search,
+            guard=_guard_web_search,
+        ),
 
-    _STEP_14_DETECT_PATTERNS: StepHooks(
-        output_type=PatternDetectionOutput,
-        prepare=_prepare_detect_patterns,
-        extract=_extract_detect_patterns,
-        guard=_guard_detect_patterns,
-    ),
+        _STEP_13_RESOLVE: StepHooks(
+            agent=synthesis_agent,
+            output_type=ResolveOutput,
+            prepare=_prepare_resolve,
+            extract=_extract_resolve,
+            guard=_guard_resolve,
+            request_limit=15,
+        ),
 
-    _STEP_15_REPORT: StepHooks(custom=_custom_report),
-}
+        _STEP_14_CAPUT_CAUSAE: StepHooks(
+            agent=synthesis_agent,
+            output_type=CaputCausaeOutput,
+            prepare=_prepare_caput_causae,
+            extract=_extract_caput_causae,
+            guard=_guard_caput_causae,
+        ),
+
+        _STEP_15_DETECT_PATTERNS: StepHooks(
+            agent=synthesis_agent,
+            output_type=PatternDetectionOutput,
+            prepare=_prepare_detect_patterns,
+            extract=_extract_detect_patterns,
+            guard=_guard_detect_patterns,
+        ),
+
+        _STEP_16_REPORT: StepHooks(custom=_custom_report),
+    }
 
 
 # -- Persistence callback -----------------------------------------------------
@@ -1317,15 +1435,15 @@ def _persist_step(
     step_name = spec.meta.name
     if step_name == _STEP_0_READ and state.citations:
         ctx.backend.store_paper_citations(ctx.pid, state.citations)
-    elif step_name == _STEP_2_DEDUP_CLAIMS and state.normative_claims:
+    elif step_name == _STEP_3_DEDUP_CLAIMS and state.normative_claims:
         ctx.backend.store_claims(ctx.pid, state.normative_claims)
-    elif step_name == _STEP_4_DEDUP_EVIDENCE and state.deduped_evidence:
+    elif step_name == _STEP_5_DEDUP_EVIDENCE and state.deduped_evidence:
         ctx.backend.store_evidence(ctx.pid, state.deduped_evidence)
-    elif step_name == _STEP_7_EXTRACT_RHETORIC and state.rhetoric:
+    elif step_name == _STEP_8_EXTRACT_RHETORIC and state.rhetoric:
         ctx.backend.store_rhetoric(ctx.pid, state.rhetoric)
-    elif step_name == _STEP_8_VERIFY and state.verdicts and state.normative_claims:
+    elif step_name == _STEP_9_VERIFY and state.verdicts and state.normative_claims:
         ctx.backend.store_questions(ctx.pid, state.normative_claims, state.verdicts)
-    elif step_name == _STEP_10_VERIFY_CITATIONS and state.citation_audit:
+    elif step_name == _STEP_11_VERIFY_CITATIONS and state.citation_audit:
         from types import SimpleNamespace
         ctx.backend.store_citation_audit(ctx.pid, [
             SimpleNamespace(
@@ -1338,9 +1456,9 @@ def _persist_step(
             )
             for e in state.citation_audit
         ])
-    elif step_name == _STEP_11_WEB_SEARCH and state.external_evidence:
+    elif step_name == _STEP_12_WEB_SEARCH and state.external_evidence:
         ctx.backend.store_external_citations(ctx.pid, state.external_evidence)
-    elif step_name == _STEP_13_CAPUT_CAUSAE and state.caput_causae:
+    elif step_name == _STEP_14_CAPUT_CAUSAE and state.caput_causae:
         ctx.backend.store_caput_causae(ctx.pid, state.caput_causae.thesis)
 
 
@@ -1351,39 +1469,47 @@ async def dissect_paper(
     pid: str,
     backend: StorageBackend,
     *,
-    model_slots: dict[str, str] | None = None,
+    service_overrides: dict[str, str] | None = None,
+    classifier_overrides: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
     stop_after: int | None = None,
+    chunk_index: int | None = None,
     debug: bool = False,
     trace: bool = False,
 ) -> str:
     """Extract structural questions from a WG21 paper.
 
-    Loads the paper from paperstore via ``pid``, runs the multi-step
-    extractor pipeline, and returns the final report string (two
-    bulleted question lists).
-
-    Pass ``on_progress`` to receive
-    :class:`~paperstore.progress.ProgressEvent` notifications at each
-    step transition.
-
-    Pass ``debug=True`` to write a single markdown transcript of every
-    LLM interaction to paperstore as ``<pid>.debug.md``.
-
-    Pass ``trace=True`` to write a pipeline state summary to
-    ``<pid>.trace.md`` alongside the dissection. Shows intermediate state
-    at every step (claims, evidence, support map, etc.).
-
-    Raises :class:`PromptFileError` if ``dissect.md`` has structural
-    problems. Raises :class:`PaperNotFoundError` or
-    :class:`PaperNotConvertedError` if the paper is missing.
+    Loads services and classifiers from SERVICES.toml, builds agents,
+    runs the multi-step extractor pipeline, and returns the final
+    report string. Pass ``service_overrides`` to bind LLM slots to
+    specific services (e.g. ``{"default": "fireworks-405b"}``); pass
+    ``classifier_overrides`` to bind classifier slots (e.g.
+    ``{"selector": "zeroshot-base"}``) for Step 1 Tag Sentences.
     """
     from dissect.pdf_extract import extract_pdf_text
+    from pipeline import load_classifiers, resolve_classifier_slots
 
-    slots = {**DEFAULT_MODEL_SLOTS, **(model_slots or {})}
+    services, defaults = load_services()
+    slots = resolve_slots(services, defaults, service_overrides)
+
+    classifiers, classifier_defaults = load_classifiers()
+    classifier_slots = resolve_classifier_slots(
+        classifiers, classifier_defaults, classifier_overrides,
+    )
+
+    extraction_agent = AgentBackend(slots.get("fast", slots["default"]), thinking_budget=2048)
+    synthesis_agent = AgentBackend(slots["default"], thinking_budget=4096)
+    research_agent = AgentBackend(slots.get("tool", slots["default"]))
+
+    agents = {
+        "fast": extraction_agent,
+        "default": synthesis_agent,
+        "tool": research_agent,
+    }
+
     secs = dict(load_sections("dissect", "dissect.md"))
-
-    pipeline = build_pipeline(secs, _HOOKS)
+    hooks = _build_hooks(extraction_agent, synthesis_agent, research_agent)
+    pipeline = build_pipeline(secs, hooks)
 
     try:
         meta = backend.get_meta(pid)
@@ -1422,7 +1548,8 @@ async def dissect_paper(
 
         ctx = StepContext(
             sections=secs,
-            model_slots=slots,
+            agents=agents,
+            classifiers=classifier_slots,
             researcher=researcher,
             backend=backend,
             debug=debug,
@@ -1440,6 +1567,7 @@ async def dissect_paper(
         await dispatch(
             pipeline, state, ctx,
             stop_after=stop_after,
+            chunk_index=chunk_index,
             on_progress=on_progress,
             on_step_complete=lambda spec, st: _persist_step(spec, st, ctx),
             trace_path=trace_path,
@@ -1457,7 +1585,8 @@ async def dissect_since(
     month: str,
     backend: StorageBackend,
     *,
-    model_slots: dict[str, str] | None = None,
+    service_overrides: dict[str, str] | None = None,
+    classifier_overrides: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
     stop_after: int | None = None,
     debug: bool = False,
@@ -1479,7 +1608,8 @@ async def dissect_since(
         try:
             report = await dissect_paper(
                 pid, backend,
-                model_slots=model_slots,
+                service_overrides=service_overrides,
+                classifier_overrides=classifier_overrides,
                 on_progress=on_progress,
                 stop_after=stop_after,
                 debug=debug,

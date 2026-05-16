@@ -4,42 +4,33 @@ How the analytical pipelines (`dissect`, `advocatus`, `agora`) configure LLMs fo
 
 ## Goal
 
-Same paper in, semantically equivalent trace out, run after run. Not bit-exact. Bit-exact reproducibility on hosted endpoints is impossible without server-side batch-invariant kernels (see Fireworks notes below). We aim for "no random extra/missing items, no decision boundaries flipping" because each downstream step consumes the previous one's output.
+Same paper in, semantically equivalent trace out, run after run. Not bit-exact. Bit-exact reproducibility on hosted endpoints is impossible without server-side batch-invariant kernels. We aim for "no random extra/missing items, no decision boundaries flipping" because each downstream step consumes the previous one's output.
+
+## Two-layer abstraction
+
+Model-specific concerns are isolated in backend classes. Each backend encapsulates the full mechanical contract for one model family on one infrastructure stack.
+
+| Backend class | Registry key | Capabilities | Workarounds |
+|---|---|---|---|
+| `DeepSeekR1DistillVllm021Backend` | `deepseek_r1_distill_vllm021` | thinking, no tools | `<think>` strip, BPE cleanup, schema-in-prompt, JSON extract + retry |
+| `Llama3Backend` | `llama3` | tools, no thinking | pydantic-ai Agent with `ModelProfile(supports_json_schema_output=True)`, `llama3_json` parser |
+| `Qwen3Backend` | `qwen3` | thinking toggle, tools | `hermes` parser, `enable_thinking` toggle, `unused1`/`unused2` stability fields |
+| `AnthropicBackend` | `anthropic` | thinking, tools | pydantic-ai Agent via native API |
+
+`AgentBackend` wraps a `ModelBackend` with pipeline-level config (`thinking_budget`). Validates `tools_capable` at call time.
 
 ## Sampling pins
 
-All LLM calls derive `ModelSettings` from `_BASE_MODEL_SETTINGS` in `pipeline.runner`.
+All backends use greedy decoding. Per-backend `ModelSettings` enforce the pins internally.
 
 | Setting | Value | Why |
 |---|---|---|
 | `temperature` | 0.0 | Greedy decoding. Deterministic argmax per token. |
 | `top_p` | 1.0 | Redundant under `temperature=0`; set explicitly for documentation. |
-| `top_k` | 1 (via `extra_body`) | Constrains decode space on Fireworks. Redundant under greedy; documents intent. |
+| `top_k` | 1 (via `extra_body`) | Constrains decode space. Redundant under greedy; documents intent. |
 | `seed` | 0 | Tie-break determinism where the provider honors it. |
 | `parallel_tool_calls` | False | Force one tool call per assistant turn. |
-| `max_tokens` | Per slot | Different for `fast` and `default`; only field overridden per slot. |
-
-`top_k` is not a first-class pydantic-ai `ModelSettings` field. We route it through `extra_body={"top_k": 1}`; pydantic-ai forwards `extra_body` to the OpenAI client's `chat.completions.create` verbatim, and Fireworks documents `top_k` as a supported sampling parameter.
-
-`parallel_tool_calls=False` maps correctly on both providers we use: OpenAI sends `parallel_tool_calls=False` (when tools are present); pydantic-ai's Anthropic path translates it to `tool_choice['disable_parallel_tool_use']=True`. The setting is omitted when no tools are registered, which is harmless.
-
-## Cascading `ModelSettings`
-
-`ModelSettings` is a pydantic-ai `TypedDict(total=False)`. New slots inherit the determinism pins via dict-merge:
-
-```python
-_BASE_MODEL_SETTINGS = ModelSettings(
-    temperature=0.0, top_p=1.0, seed=0,
-    parallel_tool_calls=False, extra_body={"top_k": 1},
-)
-
-MODEL_SETTINGS_BY_SLOT = {
-    "fast": ModelSettings(**_BASE_MODEL_SETTINGS, max_tokens=...),
-    "default": ModelSettings(**_BASE_MODEL_SETTINGS, max_tokens=...),
-}
-```
-
-New slots override only what differs. Hand-building a `ModelSettings` outside this pattern is forbidden by D2 (see root `CLAUDE.md`).
+| `max_tokens` | Per backend | Configured in SERVICES.toml. |
 
 ## Schema field count and output stability
 
@@ -103,25 +94,22 @@ firectl deployment get <id> | rg 'replica|affinity|route|draft'
 
 Eagle3 (`Draft Token Count > 0`, `Draft Model: ...-eagle3-...`) is acceptable for the semantic-stability bar. Drop it (`--draft-token-count 0`) if you ever need bit-exact behavior, which you won't get anyway without server-side batch-invariant kernels.
 
-## Provider matrix
+## Service configuration
 
-Which env vars route where:
+Infrastructure is declared in `SERVICES.toml` at the repo root. Each `[services.NAME]` section maps to a `ModelBackend` instance via the `backend` field. API keys come from environment variables (the `api_key_env` field names the env var). The `[defaults]` section maps slot names to service names. CLI `--service` overrides beat defaults.
 
-| Env vars | Provider | Default model |
+## Workaround inventory
+
+| Workaround | Backend | Retire when |
 |---|---|---|
-| `RUNPOD_BASE_URL` + `RUNPOD_API_KEY` (+ optional `RUNPOD_MODEL`) | RunPod OpenAI-compat | `Qwen/Qwen3-32B-FP8` |
-| `FIREWORKS_BASE_URL` + `FIREWORKS_API_KEY` (+ optional `FIREWORKS_MODEL`) | Fireworks OpenAI-compat | `accounts/fireworks/models/qwen3-235b-a22b` |
-| Neither | Anthropic | `claude-haiku-4-5-20251001` / `claude-opus-4-6` |
-
-Detection lives in `pipeline.runner._openai_compat_env`. RunPod wins if both compat sets are present.
-
-## Per-request provenance
-
-For forensic replay when variance increases, log:
-
-- Resolved model id (RunPod model name, `accounts/fireworks/models/...`, or Anthropic snapshot).
-- `fireworks-sampling-options` response header (Fireworks): what sampling values the server actually used.
-- `system_fingerprint` field (OpenAI): if it changes between runs, OpenAI rotated backend config and outputs may diverge even with everything else byte-identical.
+| BPE `Ġ`/`Ċ` cleanup | `DeepSeekR1DistillVllm021Backend` | HF Transformers [#45920](https://github.com/huggingface/transformers/issues/45920) fixed |
+| `<think>` block stripping | `DeepSeekR1DistillVllm021Backend` | vLLM unified parser [#32713](https://github.com/vllm-project/vllm/issues/32713) ships |
+| Schema-in-prompt JSON | `DeepSeekR1DistillVllm021Backend` | vLLM unified parser OR pydantic-ai VLLMProvider [#3515](https://github.com/pydantic/pydantic-ai/issues/3515) |
+| Raw JSON + retry | `DeepSeekR1DistillVllm021Backend` | Same as above |
+| `unused1`/`unused2` on RawClaim | `Qwen3Backend` | vLLM [#39677](https://github.com/vllm-project/vllm/issues/39677) fixed |
+| `extra_body={"top_k": 1}` | Per-backend | N/A (provider-specific) |
+| `parallel_tool_calls=False` | Per-backend | N/A |
+| pydantic-ai + vLLM tool loops | `Llama3Backend` docs | pydantic-ai [#1414](https://github.com/pydantic/pydantic-ai/issues/1414) or VLLMProvider lands |
 
 ## Structured outputs
 

@@ -30,6 +30,7 @@ from dissect.models import (
     ExtractFactualOutput,
     ExtractRhetoricOutput,
     ExternalEvidence,
+    FunnelDecision,
     LoadBearingBinaryOutput,
     LoadBearingResult,
     PipelineState,
@@ -353,3 +354,29 @@ def test_pipeline_state_centrality_assignable():
     assert s.triaged_evidence[2] == [12]
     assert s.disclaim_candidates == [(1, 2)]
     assert s.verify_batch_count == 3
+
+
+def test_funnel_decision_round_trip():
+    for variant in ("factual", "normative", "dual", "skipped"):
+        d = FunnelDecision(start_line=5, filter_fired=variant)
+        assert FunnelDecision.model_validate(d.model_dump()) == d
+
+
+def test_funnel_decision_rejects_unknown_filter():
+    with pytest.raises(ValidationError):
+        FunnelDecision(start_line=1, filter_fired="structural")
+
+
+def test_extract_claims_output_with_facts():
+    rc = RawClaim(text="X should be Y", question="Q?")
+    rf = RawClaim(text="Z shipped in 2012", question="When did Z ship?")
+    out = ExtractClaimsOutput(claims=[rc], facts=[rf])
+    assert len(out.claims) == 1
+    assert len(out.facts) == 1
+    assert ExtractClaimsOutput.model_validate(out.model_dump()) == out
+
+
+def test_extract_claims_output_back_compat():
+    out = ExtractClaimsOutput()
+    assert out.claims == []
+    assert out.facts == []

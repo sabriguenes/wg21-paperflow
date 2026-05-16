@@ -15,6 +15,7 @@ AI's ``output_type``. Frozen domain models are updated via
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Literal, Optional, Self
 
 from pydantic import BaseModel, Field, model_validator
@@ -24,6 +25,61 @@ from paperstore import SourceLoc
 
 Stance = Literal["supports", "contradicts"]
 ClaimKind = Literal["normative", "factual"]
+
+
+class SentenceTag(StrEnum):
+    """Outcome of the Step 1 (Tag Sentences) classifier.
+
+    ``TARGET``: high-confidence extraction candidate. Rendered with a
+    ``[TARGET]`` prefix in the renumbered Step 2 (Extract Claims) input.
+
+    ``CONTEXT``: ambiguous or low-confidence. Rendered with a
+    ``[CONTEXT]`` prefix; the LLM may use it for coreference but should
+    only extract when the classification protocol clearly qualifies it.
+
+    ``SKIP``: high-confidence structural prose / topic introducer /
+    rhetorical filler. Removed from the Step 2 input entirely.
+    """
+
+    TARGET = "target"
+    CONTEXT = "context"
+    SKIP = "skip"
+
+
+class SentenceSpan(BaseModel, frozen=True):
+    """A sentence within a paper chunk, with its absolute source
+    location.
+
+    ``line`` is the 1-based absolute line number in the original paper
+    (matching ``Chunk.line_offset`` + offset within the chunk).
+    ``start_char`` and ``end_char`` are 0-based character offsets
+    within that source line. The span is verbatim source text; the
+    Step 1 classifier never modifies it.
+    """
+
+    text: str
+    line: int
+    start_char: int
+    end_char: int
+
+
+class TaggedSentence(BaseModel, frozen=True):
+    """One sentence with its Step 1 tag and the underlying classifier
+    scores.
+
+    ``target_score`` is the classifier's probability that the sentence
+    is a TARGET candidate; ``skip_score`` is the probability it is a
+    SKIP candidate. With ``multi_label=True`` (the default), the two
+    scores are independent per-label probabilities in ``[0, 1]``; they
+    do not sum to one. The decision rule in
+    ``harness.py:_tag_sentences`` applies separate thresholds and
+    defaults to ``CONTEXT`` when neither threshold fires.
+    """
+
+    span: SentenceSpan
+    tag: SentenceTag
+    target_score: float
+    skip_score: float
 
 
 # -- Domain models -----------------------------------------------------------
@@ -59,6 +115,13 @@ class Claim(BaseModel, frozen=True):
     uid: int
     loc: SourceLoc
     text: str = Field(description="Exact quote from the paper.")
+    standalone: str = Field(
+        default="",
+        description="Self-contained rewrite of `text` with pronouns and "
+        "implicit referents resolved from chunk context. Empty if `text` "
+        "is already standalone. Downstream matching may prefer this when "
+        "non-empty.",
+    )
     original_quotes: list[str] = Field(
         description="Source quotes absorbed during dedup. Initially [text].",
     )
@@ -287,6 +350,12 @@ class RawClaim(BaseModel, frozen=True):
         "the harness clamps to 1.",
     )
     question: str = ""
+    standalone: str = Field(
+        default="",
+        description="Self-contained rewrite of `text` with pronouns and "
+        "implicit referents resolved from chunk context. Empty if `text` "
+        "is already standalone or ambiguity cannot be resolved.",
+    )
     # Constrained decoding stability: Qwen 30B produces non-deterministic
     # output with fewer than 5 schema fields (20-28 claims across runs).
     # At 5 fields, output stabilizes (19 claims in 9/10 runs). These
@@ -327,20 +396,26 @@ class RawRhetoric(BaseModel, frozen=True):
 # -- Per-step output models --------------------------------------------------
 
 
+FunnelFilter = Literal["factual", "normative", "dual", "skipped"]
+
+
+class FunnelDecision(BaseModel, frozen=True):
+    """Per-sentence routing decision from the Step 2 funnel.
+
+    Each input sentence gets exactly one trace entry recording which
+    funnel filter fired. The ``start_line`` ties the decision back to
+    the source paper for diagnostics.
+    """
+
+    start_line: int
+    filter_fired: FunnelFilter
+
+
 class ExtractClaimsOutput(BaseModel, frozen=True):
-    """Extract Claims step output: normative claims from a single chunk."""
+    """Extract Claims step output: normative claims and factual claims from a single chunk."""
 
     claims: list[RawClaim] = []
-
-    # @model_validator(mode="after")
-    # def _reject_empty(self) -> Self:
-    #     if not self.claims:
-    #         raise ModelRetry(
-    #             "Empty claim output is rejected. Re-read the chunk and extract "
-    #             "every statement that argues something should be true, ought "
-    #             "to be true, or is better or worse than an alternative."
-    #         )
-    #     return self
+    facts: list[RawClaim] = []
 
 
 class ExtractEvidenceOutput(BaseModel, frozen=True):
@@ -390,7 +465,7 @@ class DedupGroupingOutput(BaseModel, frozen=True):
 class VerifyProposition(BaseModel, frozen=True):
     """One (claim, evidence) judgement for the batched verify sub-prompt.
 
-    Step 8 packs a small number of these into each LLM call. The model
+    Step 9 packs a small number of these into each LLM call. The model
     returns three-valued verdicts; ``_custom_verify`` translates them
     into the canonical ``ClaimVerdict`` statuses (``support`` →
     ``proven``, ``contradict`` → ``disproven``, ``unrelated`` → drop).
@@ -512,6 +587,10 @@ class PipelineState(BaseModel):
     citations: Optional[list[CitationRef]] = None
     blanked_lines: int = 0
 
+    # Tag Sentences (Step 1). Per-run, not persisted. Consumed by
+    # Step 2 Extract Claims via _prepare_extract_claims_chunks.
+    tagged_sentences: Optional[list[TaggedSentence]] = None
+
     # Extract
     raw_claims: Optional[list[RawClaim]] = None
     raw_evidence: Optional[list[RawEvidence]] = None
@@ -529,7 +608,7 @@ class PipelineState(BaseModel):
 
     # Verify triage (populated by _custom_verify before any LLM call so
     # the trace can show what the embedding pre-filter handed to the
-    # LLM). None until Step 8 has run.
+    # LLM). None until Step 9 has run.
     centrality_scores: Optional[dict[int, float]] = None
     triaged_evidence: Optional[dict[int, list[int]]] = None
     disclaim_candidates: Optional[list[tuple[int, int]]] = None

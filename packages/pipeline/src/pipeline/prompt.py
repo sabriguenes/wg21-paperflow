@@ -83,10 +83,13 @@ class StepHooks:
 
     The hooks control HOW to format state into a user message
     (``prepare``) and HOW to store the LLM output into state
-    (``extract``). The metadata controls WHAT.
+    (``extract``). ``agent`` is the ``AgentBackend`` instance
+    assigned to this step; set at pipeline setup time, not at
+    import time.
     """
 
     output_type: type[BaseModel] | None = None
+    agent: Any = None
     prepare: Any = None
     extract: Any = None
     guard: Any = None
@@ -117,10 +120,13 @@ class StepSpec:
 def parse_step_meta(name: str, body: str) -> StepMeta:
     """Parse step metadata from a section body.
 
-    Raises ``MissingMetadataError`` if **Model** is absent. When
-    ``Model: none``, all other metadata fields are optional and
-    default to empty/main -- the step is pure Python and the
-    section body is free-form documentation.
+    ``**Model:**`` and ``**Execution:**`` are optional. When absent,
+    they default to ``"none"`` and ``"main"`` respectively. Agent
+    assignment is handled by ``StepHooks.agent`` in Python, not by
+    the prompt file.
+
+    ``**Tools:**``, ``**Condition:**``, and ``**System prompt:**``
+    remain active and are parsed when present.
     """
     m = _STEP_RE.match(name)
     if not m:
@@ -146,34 +152,8 @@ def parse_step_meta(name: str, body: str) -> StepMeta:
             f"'### System Prompt' body."
         )
 
-    if "model" not in fields:
-        raise MissingMetadataError(
-            f"Step '{name}' is missing required metadata field "
-            f"'**Model:**'. Expected format: '- **Model:** value'"
-        )
-
-    model_slot = fields["model"].split("(")[0].strip().lower()
-
-    if model_slot == "none":
-        return StepMeta(
-            name=name,
-            number=number,
-            model_slot="none",
-            execution=fields.get("execution", "main").strip().lower(),
-            tools=[],
-            condition=fields.get("condition"),
-            system_prompt=system_prompt,
-            system_prompt_mode=system_prompt_mode,
-        )
-
-    required = ["execution"]
-    for req in required:
-        if req not in fields:
-            raise MissingMetadataError(
-                f"Step '{name}' is missing required metadata field "
-                f"'**{req.title()}:**'. Expected format: "
-                f"'- **{req.title()}:** value'"
-            )
+    model_slot = fields.get("model", "none").split("(")[0].strip().lower()
+    execution = fields.get("execution", "main").strip().lower()
 
     def _split_list(raw: str) -> list[str]:
         return [s.strip() for s in raw.split(",") if s.strip()]
@@ -182,7 +162,7 @@ def parse_step_meta(name: str, body: str) -> StepMeta:
         name=name,
         number=number,
         model_slot=model_slot,
-        execution=fields["execution"].strip().lower(),
+        execution=execution,
         tools=_split_list(fields.get("tools", "")),
         condition=fields.get("condition"),
         system_prompt=system_prompt,
@@ -224,7 +204,11 @@ def build_pipeline(
 
     metas.sort(key=lambda m: m.number)
 
-    if any(not m.is_custom for m in metas):
+    has_llm_steps = any(not m.is_custom for m in metas) or any(
+        hooks.get(m.name) and hooks[m.name].agent is not None
+        for m in metas if m.name in hooks
+    )
+    if has_llm_steps:
         if not sections.get("System Prompt", "").strip():
             raise MissingSystemPromptError(
                 "Prompt file is missing required non-empty '## System Prompt' section."

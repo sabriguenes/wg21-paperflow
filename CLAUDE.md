@@ -61,11 +61,11 @@ Full field semantics live in `packages/tomd/src/tomd/CLAUDE.md`. Body headings s
 
 ## Determinism
 
-Semantic stability across runs is non-negotiable for the analytical pipelines `dissect` and `advocatus`. Their findings must be reproducible: re-running on the same paper must produce the same verdicts, the same Relatio, the same caput causae. Any source of run-to-run variance (concurrent in-flight requests, temperature drift, unordered set iteration into a prompt) is a defect for these pipelines, not a tunable.
+Semantic stability across runs is non-negotiable for the analytical pipelines `dissect` and `advocatus`. Their findings must be reproducible: re-running on the same paper must produce the same verdicts, the same Relatio, the same caput causae. Any source of run-to-run variance (concurrent in-flight requests, temperature drift, unordered set iteration into a prompt) is a defect for these pipelines, not a tunable. Quality-stability, not bit-identical: same findings, same verdicts, same structure. Bit-exact reproducibility on hosted endpoints is impossible without server-side batch-invariant kernels.
 
 The `pipeline` framework permits non-serial execution as a capability for future packages that may not need byte-identical reproducibility, but the **default is serial** and dissect and advocatus rely on that default. Any change that raises `_PARALLEL_CONCURRENCY`, `_TASK_CONCURRENCY`, or otherwise allows multiple in-flight LLM requests must keep dissect and advocatus on the serial path (per-context or per-call concurrency parameter; never a global flip).
 
-See `MODELS.md` for sampling pins, MoE caveats, Eagle3 trade-off, Fireworks specifics, and the firectl deployment invariants.
+See `MODELS.md` for sampling pins, MoE caveats, and the workaround inventory.
 
 - D1. Every LLM call goes through `run_agent` or `run_task` from `pipeline`. Never construct a `pydantic_ai.Agent` directly or call `chat.completions.create`.
 - D4. Never set `parallel_tool_calls=True`.
@@ -78,6 +78,22 @@ See `MODELS.md` for sampling pins, MoE caveats, Eagle3 trade-off, Fireworks spec
 - D11. `dissect` and `advocatus` run with at most one in-flight LLM request at a time. The framework defaults to serial via `_parallel_semaphore` and `_task_semaphore` at `asyncio.Semaphore(1)`. New packages that opt into concurrent execution must do so through a per-package mechanism that leaves these two pipelines on the serial path.
 
 D2 and D3 name pipeline-internal symbols and live in `packages/pipeline/src/pipeline/CLAUDE.md`.
+
+## Services and agents
+
+Infrastructure is declared in `SERVICES.toml` at the repo root. Each `[services.NAME]` section declares an endpoint (backend type, URL, API key env var, model name, capabilities). The `[defaults]` section maps slot names (`fast`, `default`, `tool`) to service names.
+
+Pipelines create agents by intent, not by model name:
+
+```python
+extraction_agent = AgentBackend(slots["fast"], thinking_budget=2048)
+synthesis_agent = AgentBackend(slots["default"], thinking_budget=4096)
+research_agent = AgentBackend(slots["tool"])
+```
+
+`AgentBackend` wraps a `ModelBackend` with pipeline-level config. `ModelBackend` (one class per model family) encapsulates all mechanical concerns: structured output strategy, BPE cleanup, thinking-block stripping, tool-calling workarounds. See `MODELS.md` for the workaround inventory and retire-when conditions.
+
+Override slots at the CLI with `--service NAME` (all slots) or `--service SLOT=NAME` (one slot).
 
 ## Invariants
 

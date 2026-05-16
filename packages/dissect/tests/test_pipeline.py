@@ -43,6 +43,7 @@ from dissect.models import (
     ExternalEvidence,
     LoadBearingResult,
     PipelineState,
+    SentenceTag,
     SourceLoc,
     WebSearchOutput,
 )
@@ -97,7 +98,7 @@ def test_dissect_error_message_includes_pid(store):  # noqa: F811
 def test_step0_read_chunks_and_citations():
     import asyncio
     state = PipelineState(paper_source="# Title\n\nSee P2300R10 for details.\n")
-    ctx = StepContext(sections={}, model_slots={})
+    ctx = StepContext(sections={}, agents={})
     asyncio.run(_custom_read(state, ctx))
 
     assert state.chunks is not None
@@ -122,7 +123,7 @@ def test_step15_report_renders_unsupported():
             ClaimVerdict(claim_uid=1, status="unproven"),
         ],
     )
-    ctx = StepContext(sections={}, model_slots={}, pid="P0001R0")
+    ctx = StepContext(sections={}, agents={}, pid="P0001R0")
     asyncio.run(_custom_report(state, ctx))
 
     assert state.report is not None
@@ -311,7 +312,7 @@ def test_pure_verify_citations_injects_known_url_into_user_message(
 
     captured: list[str] = []
 
-    async def fake_run_task(*, system_prompt, user_message, output_type, **kwargs):
+    async def fake_run_task(agent, system_prompt, user_message, output_type, **kwargs):
         captured.append(user_message)
         return CitationTaskOutput(
             audit=CitationAuditEntry(
@@ -324,6 +325,10 @@ def test_pure_verify_citations_injects_known_url_into_user_message(
         )
 
     monkeypatch.setattr("dissect.pipeline.run_task", fake_run_task)
+
+    from pipeline.agents import AgentBackend
+    from pipeline.model_backends import Llama3Backend
+    _stub = AgentBackend(Llama3Backend(base_url="", api_key="", model=""))
 
     state = PipelineState(
         citations=[
@@ -338,7 +343,7 @@ def test_pure_verify_citations_injects_known_url_into_user_message(
             "System Prompt": "You dissect papers.",
             "10. Verify Citations": "INSTRUCTIONS",
         },
-        model_slots={"fast": "stub-model"},
+        agents={"tool": _stub, "default": _stub, "fast": _stub},
         backend=store,
         tool_registry={"web_fetch": lambda **_: ""},
     )
@@ -363,7 +368,7 @@ def test_pure_verify_citations_injects_known_url_into_user_message(
 def test_verify_citations_fails_above_threshold(store, monkeypatch):  # noqa: F811
     calls = 0
 
-    async def fake_run_task(*, system_prompt, user_message, output_type, **kwargs):
+    async def fake_run_task(agent, system_prompt, user_message, output_type, **kwargs):
         nonlocal calls
         calls += 1
         if calls <= 2:
@@ -378,6 +383,10 @@ def test_verify_citations_fails_above_threshold(store, monkeypatch):  # noqa: F8
         )
 
     monkeypatch.setattr("dissect.pipeline.run_task", fake_run_task)
+    from pipeline.agents import AgentBackend
+    from pipeline.model_backends import Llama3Backend
+    _stub = AgentBackend(Llama3Backend(base_url="", api_key="", model=""))
+
     state = PipelineState(
         citations=[
             CitationRef(paper_id="P0001R0", count=1),
@@ -392,7 +401,7 @@ def test_verify_citations_fails_above_threshold(store, monkeypatch):  # noqa: F8
             "System Prompt": "You dissect papers.",
             "10. Verify Citations": "INSTRUCTIONS",
         },
-        model_slots={"fast": "stub-model"},
+        agents={"tool": _stub, "default": _stub, "fast": _stub},
         backend=store,
         tool_registry={"web_fetch": lambda **_: ""},
     )
@@ -405,7 +414,7 @@ def test_verify_citations_fails_above_threshold(store, monkeypatch):  # noqa: F8
 def test_web_search_fails_above_threshold(monkeypatch):
     calls = 0
 
-    async def fake_run_task(*, system_prompt, user_message, output_type, **kwargs):
+    async def fake_run_task(agent, system_prompt, user_message, output_type, **kwargs):
         nonlocal calls
         calls += 1
         if calls <= 2:
@@ -413,6 +422,10 @@ def test_web_search_fails_above_threshold(monkeypatch):
         return WebSearchOutput(external_evidence=[])
 
     monkeypatch.setattr("dissect.pipeline.run_task", fake_run_task)
+    from pipeline.agents import AgentBackend
+    from pipeline.model_backends import Llama3Backend
+    _stub = AgentBackend(Llama3Backend(base_url="", api_key="", model=""))
+
     claims = [
         Claim(
             uid=i, loc=_loc(i), text=f"Claim {i}", original_quotes=[f"Claim {i}"],
@@ -432,7 +445,7 @@ def test_web_search_fails_above_threshold(monkeypatch):
             "System Prompt": "You dissect papers.",
             "11. Web Search": "INSTRUCTIONS",
         },
-        model_slots={"fast": "stub-model"},
+        agents={"tool": _stub, "default": _stub, "fast": _stub},
         tool_registry={"deep_search": lambda **_: "", "web_fetch": lambda **_: ""},
     )
     ctx._current_spec = StepSpec(
@@ -447,3 +460,103 @@ def test_web_search_fails_above_threshold(monkeypatch):
 
     with pytest.raises(StepError, match="Web search failed"):
         asyncio.run(_custom_web_search(state, ctx))
+
+
+# ---------------------------------------------------------------------------
+# Step 1: _custom_tag_sentences chunk_index honoring
+# ---------------------------------------------------------------------------
+
+
+class _StubClassifier:
+    """Records which texts get classified so the test can verify
+    chunk_index restriction."""
+
+    model_id = "stub"
+    device = "cpu"
+
+    def __init__(self):
+        self.seen_texts: list[str] = []
+
+    def classify(self, texts, candidate_labels, *, multi_label=True):
+        self.seen_texts.extend(texts)
+        return [
+            {candidate_labels[0]: 0.5, candidate_labels[1]: 0.1}
+            for _ in texts
+        ]
+
+
+def test_custom_tag_sentences_honors_chunk_index():
+    """``--chunk N`` must restrict Step 1 work to chunk N. Without this,
+    interactive iteration on ``--step 1 --chunk 0`` pays the full
+    classifier cost across every chunk in the paper."""
+    import asyncio
+    from dissect.models import Chunk, PipelineState
+    from dissect.pipeline import _custom_tag_sentences
+    from pipeline import StepContext
+
+    state = PipelineState(
+        chunks=[
+            Chunk(text="Chunk zero sentence.", line_offset=1),
+            Chunk(text="Chunk one sentence.", line_offset=10),
+        ],
+    )
+    clf = _StubClassifier()
+    ctx = StepContext(
+        sections={},
+        classifiers={"selector": clf},
+        chunk_index=0,
+    )
+
+    asyncio.run(_custom_tag_sentences(state, ctx))
+
+    # Only chunk 0's text should reach the classifier.
+    assert clf.seen_texts == ["Chunk zero sentence."]
+    assert state.tagged_sentences is not None
+    assert len(state.tagged_sentences) == 1
+    assert state.tagged_sentences[0].span.line == 1
+
+
+def test_custom_tag_sentences_no_chunk_index_processes_all():
+    """When chunk_index is None, Step 1 processes every chunk."""
+    import asyncio
+    from dissect.models import Chunk, PipelineState
+    from dissect.pipeline import _custom_tag_sentences
+    from pipeline import StepContext
+
+    state = PipelineState(
+        chunks=[
+            Chunk(text="Chunk zero sentence.", line_offset=1),
+            Chunk(text="Chunk one sentence.", line_offset=10),
+        ],
+    )
+    clf = _StubClassifier()
+    ctx = StepContext(
+        sections={},
+        classifiers={"selector": clf},
+        chunk_index=None,
+    )
+
+    asyncio.run(_custom_tag_sentences(state, ctx))
+    assert clf.seen_texts == ["Chunk zero sentence.", "Chunk one sentence."]
+
+
+def test_custom_tag_sentences_out_of_range_chunk_index():
+    """An out-of-range chunk index produces zero tagged sentences."""
+    import asyncio
+    from dissect.models import Chunk, PipelineState
+    from dissect.pipeline import _custom_tag_sentences
+    from pipeline import StepContext
+
+    state = PipelineState(
+        chunks=[Chunk(text="Only chunk.", line_offset=1)],
+    )
+    clf = _StubClassifier()
+    ctx = StepContext(
+        sections={},
+        classifiers={"selector": clf},
+        chunk_index=5,
+    )
+
+    asyncio.run(_custom_tag_sentences(state, ctx))
+    assert clf.seen_texts == []
+    assert state.tagged_sentences == []

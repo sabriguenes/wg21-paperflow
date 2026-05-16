@@ -20,6 +20,44 @@ from paperstore.stages import STAGE_NAMES
 from cli.targets import MONTH_RE, resolve_pid
 
 
+def _parse_service_overrides(raw: list[str] | None) -> dict[str, str] | None:
+    """Parse ``--service`` flag values into a slot -> service-name dict.
+
+    A bare ``NAME`` (no ``=``) applies to all default slots.
+    ``SLOT=NAME`` overrides one slot.
+    """
+    if not raw:
+        return None
+    overrides: dict[str, str] = {}
+    for item in raw:
+        if "=" in item:
+            slot, name = item.split("=", 1)
+            overrides[slot.strip()] = name.strip()
+        else:
+            overrides["fast"] = item
+            overrides["default"] = item
+            overrides["tool"] = item
+    return overrides
+
+
+def _parse_classifier_overrides(raw: list[str] | None) -> dict[str, str] | None:
+    """Parse ``--classifier`` flag values into a slot -> classifier-name dict.
+
+    A bare ``NAME`` (no ``=``) applies to the default ``selector`` slot.
+    ``SLOT=NAME`` overrides one slot. Mirrors :func:`_parse_service_overrides`.
+    """
+    if not raw:
+        return None
+    overrides: dict[str, str] = {}
+    for item in raw:
+        if "=" in item:
+            slot, name = item.split("=", 1)
+            overrides[slot.strip()] = name.strip()
+        else:
+            overrides["selector"] = item
+    return overrides
+
+
 def run_process_command(
     args: argparse.Namespace,
     backend: StorageBackend,
@@ -33,10 +71,15 @@ def run_process_command(
 
     target = args.targets[0]
     debug = getattr(args, "debug", False)
-    trace_val = getattr(args, "trace", None)
-    trace = trace_val is not None
-    stop_after = trace_val if isinstance(trace_val, int) and trace_val >= 0 else None
+    trace = getattr(args, "trace", False)
+    step_val = getattr(args, "step", None)
+    if step_val is not None:
+        trace = True
+    stop_after = step_val
+    chunk_index = getattr(args, "chunk", None)
     force = getattr(args, "force", False)
+    service_overrides = _parse_service_overrides(getattr(args, "service", None))
+    classifier_overrides = _parse_classifier_overrides(getattr(args, "classifier", None))
 
     verb = STAGE_NAMES.get(through - 1, "process")
 
@@ -69,23 +112,26 @@ def run_process_command(
 
     failed = 0
     total = len(papers)
+    last_result = None
     with progress_ctx:
         for i, paper in enumerate(papers):
             if on_progress:
-                stage_name = STAGE_NAMES.get(paper.status, "processing")
                 on_progress(ProgressEvent(
                     step=i, total=total,
-                    name=f"{paper.paper_id} - {stage_name}",
+                    name=f"{paper.paper_id} - {verb}",
                     pct=i / total if total else 1.0,
                 ))
             try:
-                asyncio.run(
+                last_result = asyncio.run(
                     process_paper(
                         paper.paper_id, backend,
                         through=through,
                         debug=debug,
                         trace=trace,
                         stop_after=stop_after,
+                        chunk_index=chunk_index,
+                        service_overrides=service_overrides,
+                        classifier_overrides=classifier_overrides,
                         force=force,
                         on_progress=on_progress,
                     )
@@ -114,6 +160,15 @@ def run_process_command(
     if total > 1:
         print(f"{ok} succeeded, {failed} failed out of {total} papers")
     elif failed == 0 and total == 1:
-        print(f"{papers[0].paper_id}: {STAGE_NAMES.get(through - 1, 'done')}")
+        pid = papers[0].paper_id
+        stage_label = STAGE_NAMES.get(through - 1, "done")
+        # last_result may be missing only when process_paper itself
+        # raised; that path goes through ``failed += 1`` above, so we
+        # are guaranteed a result here. Fall back defensively anyway.
+        ran = getattr(last_result, "stages_run", None)
+        if ran is not None and not ran:
+            print(f"{pid}: already at {stage_label} (nothing to do)")
+        else:
+            print(f"{pid}: {stage_label}")
 
     return 1 if failed else 0

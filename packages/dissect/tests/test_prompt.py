@@ -68,12 +68,13 @@ def test_parse_step_meta_with_condition():
     assert meta.condition == "has critical gaps"
 
 
-def test_parse_step_meta_missing_model():
+def test_parse_step_meta_missing_model_defaults_to_none():
     body = (
         "- **Execution:** main\n"
     )
-    with pytest.raises(MissingMetadataError, match="Model"):
-        parse_step_meta("9. Report", body)
+    meta = parse_step_meta("9. Report", body)
+    assert meta.model_slot == "none"
+    assert meta.is_custom
 
 
 def test_parse_step_meta_bad_name():
@@ -175,24 +176,34 @@ def test_parse_step_meta_caput_causae():
     assert meta.condition == "has anchored claims"
 
 
-def test_pipeline_has_16_steps():
-    """Verify the full pipeline has steps 0-15."""
-    from dissect.pipeline import _HOOKS, load_sections
+def _make_test_hooks():
+    from pipeline.agents import AgentBackend
+    from pipeline.model_backends import Llama3Backend
+    stub = AgentBackend(Llama3Backend(base_url="", api_key="", model=""))
+    from dissect.pipeline import _build_hooks
+    return _build_hooks(stub, stub, stub)
+
+
+def test_pipeline_has_17_steps():
+    """Verify the full pipeline has steps 0-16."""
+    from dissect.pipeline import load_sections
+    hooks = _make_test_hooks()
     secs = dict(load_sections("dissect", "dissect.md"))
-    specs = build_pipeline(secs, _HOOKS)
-    assert len(specs) == 16
+    specs = build_pipeline(secs, hooks)
+    assert len(specs) == 17
     assert specs[0].meta.number == 0
-    assert specs[-1].meta.number == 15
+    assert specs[-1].meta.number == 16
 
 
 def test_dissect_prompt_has_required_system_prompts():
-    from dissect.pipeline import _HOOKS, load_sections
+    from dissect.pipeline import load_sections
+    hooks = _make_test_hooks()
     secs = dict(load_sections("dissect", "dissect.md"))
-    specs = build_pipeline(secs, _HOOKS)
+    specs = build_pipeline(secs, hooks)
     by_number = {spec.meta.number: spec for spec in specs}
 
     assert secs["System Prompt"].strip()
-    for number in [7, 8, 9, 10, 11]:
+    for number in [8, 9, 10, 11, 12]:
         assert by_number[number].meta.system_prompt
 
 

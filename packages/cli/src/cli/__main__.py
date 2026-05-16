@@ -103,9 +103,9 @@ _VERB_FLAGS: dict[str, set[str]] = {
     "mailing":   set(),
     "download":  {"force", "concurrency"},
     "convert":   {"force", "concurrency"},
-    "dissect":   {"debug", "trace", "force"},
-    "advocatus": {"debug", "trace", "force"},
-    "agora":     {"debug", "trace", "force"},
+    "dissect":   {"debug", "trace", "step", "chunk", "service", "classifier", "force"},
+    "advocatus": {"debug", "trace", "step", "service", "force"},
+    "agora":     {"debug", "trace", "step", "service", "force"},
     "status":    set(),
 }
 
@@ -117,25 +117,38 @@ _FLAG_DEFS: list[dict] = [
     dict(name="debug", flags=["--debug"], action="store_true",
          default=False,
          help="Write full LLM transcripts per step to paperstore as a single .debug.md file."),
-    dict(name="trace", flags=["--trace"], type=int, nargs="?",
-         const=-1, default=None, metavar="N",
-         help="Write pipeline state trace to .trace.md. With N, stop after step N."),
+    dict(name="trace", flags=["--trace"], action="store_true",
+         default=False,
+         help="Write pipeline state trace to .trace.md."),
+    dict(name="step", flags=["--step"], type=int,
+         default=None, metavar="N",
+         help="Stop after step N (implies --trace)."),
+    dict(name="chunk", flags=["--chunk"], type=int,
+         default=None, metavar="C",
+         help="Run only chunk C in parallel steps (dissect only)."),
+    dict(name="service", flags=["--service"], action="append",
+         default=None, metavar="NAME",
+         help="Override service binding. Use NAME to override all slots, or SLOT=NAME for one slot. Repeatable."),
+    dict(name="classifier", flags=["--classifier"], action="append",
+         default=None, metavar="NAME",
+         help="Override classifier slot binding (e.g. dissect Step 1 Tag Sentences). Use NAME to override all slots, or SLOT=NAME (e.g. selector=zeroshot-base) for one slot. Repeatable."),
 ]
 
 _PAPER_ID_RE = re.compile(r"^[PND]\d{3,5}(R\d+)?$", re.IGNORECASE)
 
 _EPILOG = """\
 Examples:
-  paperflow 2026                   process all papers for 2026
   paperflow mailing                scrape mailing index
   paperflow download P3642R4       download one paper
   paperflow convert 2026-01        convert papers from Jan 2026 onward
   paperflow dissect P4003R2        LLM-driven paper dissection
-  paperflow dissect 2026-01        batch dissect papers from Jan 2026 onward
-  paperflow advocatus P4003R2      examine a dissected paper through the tribunal
-  paperflow advocatus 2026-01      batch advocatus for a month
-  paperflow agora P4003R2          plan a fake r/wg21 thread for a dissected paper
-  paperflow agora 2026-01          batch agora for a month
+  paperflow dissect P4003R2 --trace --step 3   stop after step 3 with trace
+  paperflow dissect P4003R2 --chunk 0          run only chunk 0
+  paperflow dissect P4003R2 --service b200-r1  override all service slots
+  paperflow dissect P4003R2 --service fast=b200-r1 --service tool=b200-llama
+  paperflow dissect P4003R2 --classifier selector=zeroshot-base  swap Step 1 classifier
+  paperflow advocatus P4003R2      examine a dissected paper
+  paperflow agora P4003R2          plan a discussion thread
   paperflow status                 show all incomplete papers
   paperflow status P4003R2         show status of one paper
 """

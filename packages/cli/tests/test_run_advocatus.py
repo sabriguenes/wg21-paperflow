@@ -21,6 +21,7 @@ from unittest.mock import patch
 import pytest
 
 from paperstore import SqliteBackend
+from pipeline import ProcessResult
 
 
 @pytest.fixture
@@ -47,7 +48,7 @@ def test_command_calls_process_paper_with_through_4(backend: SqliteBackend):
 
     async def fake_process_paper(pid, be, **kwargs):
         calls.append({"pid": pid, "through": kwargs.get("through")})
-        return kwargs.get("through", 4)
+        return ProcessResult(final_status=kwargs.get("through", 4), stages_run=[3])
 
     with patch("pipeline.process_paper", new=fake_process_paper):
         rc = command(_stub_args("P1234R0"), backend)
@@ -89,7 +90,7 @@ def test_command_batch_processes_month(backend: SqliteBackend, capsys):
 
     async def fake_process_paper(pid, be, **kwargs):
         calls.append(pid)
-        return 4
+        return ProcessResult(final_status=4, stages_run=[3])
 
     with patch("pipeline.process_paper", new=fake_process_paper):
         rc = command(_stub_args("2026-01"), backend)
@@ -109,7 +110,7 @@ def test_command_skips_papers_already_done(backend: SqliteBackend):
 
     async def fake_process_paper(pid, be, **kwargs):
         calls.append(pid)
-        return 4
+        return ProcessResult(final_status=4, stages_run=[])
 
     with patch("pipeline.process_paper", new=fake_process_paper):
         rc = command(_stub_args("P1234R0"), backend)
