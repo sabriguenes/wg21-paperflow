@@ -1471,6 +1471,7 @@ async def dissect_paper(
     *,
     service_overrides: dict[str, str] | None = None,
     classifier_overrides: dict[str, str] | None = None,
+    provider_override: str | None = None,
     on_progress: ProgressCallback | None = None,
     stop_after: int | None = None,
     chunk_index: int | None = None,
@@ -1484,15 +1485,27 @@ async def dissect_paper(
     report string. Pass ``service_overrides`` to bind LLM slots to
     specific services (e.g. ``{"default": "fireworks-405b"}``); pass
     ``classifier_overrides`` to bind classifier slots (e.g.
-    ``{"selector": "zeroshot-base"}``) for Step 1 Tag Sentences.
+    ``{"selector": "zeroshot-base"}``) for Step 1 Tag Sentences; pass
+    ``provider_override`` to lock the transformer provider
+    (device/dtype/batch) used by all classifiers.
     """
     from dissect.pdf_extract import extract_pdf_text
-    from pipeline import load_classifiers, resolve_classifier_slots
+    from pipeline import (
+        load_classifiers,
+        load_transformer_providers,
+        resolve_classifier_slots,
+        resolve_transformer_provider,
+    )
 
     services, defaults = load_services()
     slots = resolve_slots(services, defaults, service_overrides)
 
-    classifiers, classifier_defaults = load_classifiers()
+    providers, provider_defaults = load_transformer_providers()
+    provider = resolve_transformer_provider(
+        providers, provider_defaults, override=provider_override,
+    )
+
+    classifiers, classifier_defaults = load_classifiers(provider=provider)
     classifier_slots = resolve_classifier_slots(
         classifiers, classifier_defaults, classifier_overrides,
     )
@@ -1587,6 +1600,7 @@ async def dissect_since(
     *,
     service_overrides: dict[str, str] | None = None,
     classifier_overrides: dict[str, str] | None = None,
+    provider_override: str | None = None,
     on_progress: ProgressCallback | None = None,
     stop_after: int | None = None,
     debug: bool = False,
@@ -1610,6 +1624,7 @@ async def dissect_since(
                 pid, backend,
                 service_overrides=service_overrides,
                 classifier_overrides=classifier_overrides,
+                provider_override=provider_override,
                 on_progress=on_progress,
                 stop_after=stop_after,
                 debug=debug,

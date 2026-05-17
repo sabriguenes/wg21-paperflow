@@ -88,19 +88,27 @@ def test_registry_contains_known_backends():
 
 
 class _StubHFPipeline:
-    """Mimics the callable returned by ``transformers.pipeline``."""
+    """Mimics the callable returned by ``transformers.pipeline``.
+
+    Accepts ``batch_size`` for parity with the real HF pipeline call
+    site introduced by :mod:`pipeline.transformer_backend`. Materializes
+    ``texts`` once so generator inputs (used to defeat the HF
+    is_last-flush batching trap) are handled correctly.
+    """
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    def __call__(self, texts, *, candidate_labels, multi_label):
+    def __call__(self, texts, *, candidate_labels, multi_label, batch_size=None):
+        materialized = list(texts)
         self.calls.append({
-            "texts": list(texts),
+            "texts": materialized,
             "labels": list(candidate_labels),
             "multi_label": multi_label,
+            "batch_size": batch_size,
         })
         out = []
-        for _ in texts:
+        for _ in materialized:
             # Return labels in reversed order to verify reconstruction.
             sorted_labels = list(reversed(candidate_labels))
             scores = [0.9 - 0.3 * i for i in range(len(sorted_labels))]
@@ -109,7 +117,7 @@ class _StubHFPipeline:
                 "labels": sorted_labels,
                 "scores": scores,
             })
-        return out if len(texts) > 1 else out[0]
+        return out if len(materialized) > 1 else out[0]
 
 
 def _install_stub_transformers(monkeypatch, stub: _StubHFPipeline) -> None:
@@ -130,11 +138,15 @@ def test_zeroshot_v2_passes_labels_through_and_dicts_results(monkeypatch):
     backend = ZeroShotV2Backend(model="fake/model", device="cpu")
     result = backend.classify(["a", "b"], ["target", "skip"])
 
-    assert stub.calls == [{
-        "texts": ["a", "b"],
-        "labels": ["target", "skip"],
-        "multi_label": True,
-    }]
+    assert len(stub.calls) == 1
+    call = stub.calls[0]
+    assert call["texts"] == ["a", "b"]
+    assert call["labels"] == ["target", "skip"]
+    assert call["multi_label"] is True
+    # TransformerBackend always forwards a batch_size from the active
+    # provider so the HF pipeline batches across sequence boundaries
+    # (huggingface/transformers#24005).
+    assert call["batch_size"] is not None and call["batch_size"] > 0
     assert len(result) == 2
     for r in result:
         assert set(r.keys()) == {"target", "skip"}
@@ -193,7 +205,7 @@ def test_zeroshot_v2_propagates_multi_label_flag(monkeypatch):
 
 
 class _StubCrossEncoder:
-    def __init__(self, model_id, device=None, local_files_only=False):
+    def __init__(self, model_id, device=None, local_files_only=False, **_kw):
         self.model_id = model_id
         self.device = device
         self.calls: list[list[tuple[str, str]]] = []
@@ -201,7 +213,8 @@ class _StubCrossEncoder:
         # can construct deterministic per-label outcomes.
         self.scores_by_hypothesis: dict[str, tuple[float, float]] = {}
 
-    def predict(self, pairs, *, apply_softmax=False, show_progress_bar=False):
+    def predict(self, pairs, *, apply_softmax=False, show_progress_bar=False,
+                batch_size=None, **_kw):
         self.calls.append(list(pairs))
         out = []
         for _premise, hypothesis in pairs:
@@ -214,7 +227,7 @@ class _StubCrossEncoder:
 def _install_stub_st(monkeypatch, stub: _StubCrossEncoder) -> None:
     fake_mod = types.ModuleType("sentence_transformers")
 
-    def factory(model, device=None, local_files_only=False):
+    def factory(model, device=None, local_files_only=False, model_kwargs=None, **_kw):
         # The backend's _load tries local_files_only=True first; in our
         # stub that succeeds, so the fallback branch never runs.
         stub.model_id = model

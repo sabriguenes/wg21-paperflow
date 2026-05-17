@@ -20,9 +20,24 @@
 #    names. The orchestrator overrides via --classifier CLI flags
 #    (e.g. `--classifier selector=zeroshot-base`).
 #
-# The two namespaces do not mix: slot resolution is independent, and
-# `--service` / `--classifier` flags target different dicts on the
-# StepContext.
+# 3. [transformer_providers.NAME] declares the device / dtype / batch
+#    settings used for transformer inference. Classifiers do NOT declare
+#    `device` directly; instead they reference (or inherit) a provider.
+#    Two modes:
+#      mode = "auto"      -- detect host once. Picks cuda > mps > cpu;
+#                            bf16 on Ampere+, fp16 on older CUDA, fp32
+#                            on MPS and CPU; default batch_size by
+#                            device, capped by `max_batch_size`.
+#      mode = "explicit"  -- declared device / dtype / batch_size are
+#                            used verbatim. Missing required keys raise
+#                            at load. Use in cloud / provisioned hosts.
+#    [transformer_provider_defaults] maps slot names to provider names.
+#    Override precedence at runtime: --provider CLI flag (top) >
+#    PAPERFLOW_TRANSFORMER_PROVIDER env var > [transformer_provider_defaults]
+#    > the hardcoded "auto" fallback (so a fresh clone with no provider
+#    section still works).
+#
+# The three namespaces do not mix: slot resolution is independent.
 
 [services.b200-r1]
 backend = "deepseek_r1_distill_vllm021"
@@ -74,7 +89,6 @@ tool = "anthropic-opus"
 [classifiers.nli-small]
 backend = "nli_cross_encoder"
 model = "cross-encoder/nli-deberta-v3-small"
-device = "cpu"
 
 # Large alternative: DeBERTa-v3-large fine-tuned for zero-shot
 # classification on 5 NLI + 28 non-NLI datasets. ~1.7GB FP32, ~1.5s
@@ -86,7 +100,6 @@ device = "cpu"
 [classifiers.zeroshot-large]
 backend = "zeroshot_v2"
 model = "MoritzLaurer/deberta-v3-large-zeroshot-v2.0"
-device = "cpu"
 
 # Mid-tier: DeBERTa-v3-base, same fine-tune family as zeroshot-large.
 # ~700MB FP32, sub-second per chunk on CPU. Use via `--classifier
@@ -95,7 +108,6 @@ device = "cpu"
 [classifiers.zeroshot-base]
 backend = "zeroshot_v2"
 model = "MoritzLaurer/deberta-v3-base-zeroshot-v2.0"
-device = "cpu"
 
 # Example future addition: specialized claim detector. Demonstrates
 # that the abstraction makes adding a new classifier a config change,
@@ -104,7 +116,54 @@ device = "cpu"
 # [classifiers.claimbuster]
 # backend = "claimbuster"
 # model = "lukasgarbas/claimbuster-multilingual"  # or a local fine-tune
-# device = "cpu"
 
 [classifier_defaults]
 selector = "nli-small"
+
+# ---------------------------------------------------------------------------
+# Transformer providers (device / dtype / batching for HF + CrossEncoder)
+# ---------------------------------------------------------------------------
+
+# Detect the host at startup. Suited to dev machines and CI.
+# Picks cuda > mps > cpu; bf16 on Ampere+, fp16 on older CUDA, fp32
+# elsewhere. `max_batch_size` caps the auto-picked default (cuda=64,
+# mps=32, cpu=16).
+[transformer_providers.auto]
+mode = "auto"
+max_batch_size = 64
+max_length = 192
+executor_workers = 1
+
+# Provisioned cloud (e.g. RunPod B200, A100). Explicit values fail
+# fast on misconfiguration instead of silently degrading to CPU.
+[transformer_providers.cuda-b200]
+mode = "explicit"
+device = "cuda"
+dtype = "bf16"
+batch_size = 64
+max_length = 192
+executor_workers = 1
+
+# Older CUDA (Turing / Volta) where bf16 is unsupported. fp16 avoids
+# the CrossEncoder NaN bug because batched logits stay > 1e3 absolute
+# value for typical inputs; if you observe NaNs, switch to cpu-fp32.
+[transformer_providers.cuda-fp16]
+mode = "explicit"
+device = "cuda"
+dtype = "fp16"
+batch_size = 48
+max_length = 192
+executor_workers = 1
+
+# Deterministic CPU fallback. Use to bisect when an MPS or CUDA
+# result looks wrong (e.g. CrossEncoder NaN logits on Turing).
+[transformer_providers.cpu-fp32]
+mode = "explicit"
+device = "cpu"
+dtype = "fp32"
+batch_size = 16
+max_length = 192
+executor_workers = 1
+
+[transformer_provider_defaults]
+default = "auto"

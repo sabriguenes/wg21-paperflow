@@ -31,6 +31,7 @@ from pipeline.classifier_backends import (
     ClassifierBackend,
 )
 from pipeline.model_backends import BACKEND_REGISTRY, ModelBackend
+from pipeline.transformer_backend import TransformerProvider, default_auto_provider
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,8 @@ def resolve_slots(
 
 def load_classifiers(
     path: Path | None = None,
+    *,
+    provider: TransformerProvider | None = None,
 ) -> tuple[dict[str, ClassifierBackend], dict[str, str]]:
     """Parse SERVICES.toml, build ClassifierBackend instances.
 
@@ -152,9 +155,16 @@ def load_classifiers(
     names from ``[classifier_defaults]``.
 
     No API keys: classifier backends are local-model wrappers. Per-
-    entry fields (``model``, ``device``, plus any optional fields the
-    specific backend reads) are forwarded as kwargs to the backend
-    constructor.
+    entry fields (``model`` plus any optional fields the specific
+    backend reads) are forwarded as kwargs to the backend constructor.
+
+    The runtime device / dtype / batch settings come from a
+    :class:`TransformerProvider`. Resolve one with
+    :func:`load_transformer_providers` + :func:`resolve_transformer_provider`
+    and pass it via the ``provider`` kwarg; when omitted, the
+    process-wide host-auto provider is used. The legacy per-classifier
+    ``device`` field is silently dropped: configure it via the provider
+    instead.
 
     Missing ``[classifiers.*]`` and ``[classifier_defaults]`` are not
     an error -- this lets pre-Step-1 callers ignore the new sections
@@ -177,6 +187,9 @@ def load_classifiers(
     classifiers_config = config.get("classifiers", {})
     defaults = config.get("classifier_defaults", {})
 
+    if provider is None:
+        provider = default_auto_provider()
+
     classifiers: dict[str, ClassifierBackend] = {}
     for name, cfg in classifiers_config.items():
         backend_key = cfg.get("backend")
@@ -187,19 +200,102 @@ def load_classifiers(
                 f"Available: {sorted(CLASSIFIER_BACKEND_REGISTRY)}"
             )
 
-        # Forward all non-`backend` keys as kwargs. Each backend reads
-        # what it understands and ignores the rest via **_unused.
+        # Drop `backend` (used above) and the legacy `device` field
+        # (now owned by the provider). Forward the rest as kwargs.
         init_kwargs: dict[str, Any] = {
-            k: v for k, v in cfg.items() if k != "backend"
+            k: v for k, v in cfg.items() if k not in ("backend", "device")
         }
+        init_kwargs["provider"] = provider
+
         backend_cls = CLASSIFIER_BACKEND_REGISTRY[backend_key]
         classifiers[name] = backend_cls(**init_kwargs)
         logger.info(
-            "Classifier '%s': %s  model=%s  device=%s",
-            name, backend_key, cfg.get("model", ""), cfg.get("device", "cpu"),
+            "Classifier '%s': %s  model=%s  provider=%s (device=%s dtype=%s batch=%d)",
+            name, backend_key, cfg.get("model", ""),
+            provider.name, provider.device, provider.dtype, provider.batch_size,
         )
 
     return classifiers, defaults
+
+
+def load_transformer_providers(
+    path: Path | None = None,
+) -> tuple[dict[str, TransformerProvider], dict[str, str]]:
+    """Parse ``[transformer_providers.*]`` and ``[transformer_provider_defaults]``.
+
+    Returns ``(providers, defaults)``. Always includes a ``"auto"``
+    entry: if SERVICES.toml does not declare one (e.g. a fresh clone),
+    a host-detected one is injected so callers can rely on the name.
+
+    Missing sections are not an error. The returned ``defaults`` dict
+    is empty in that case; the four-level resolution in
+    :func:`resolve_transformer_provider` will still land on ``"auto"``.
+
+    Raises ``FileNotFoundError`` if the config file is not found.
+    Raises ``ValueError`` for malformed entries (missing required
+    keys under ``mode = "explicit"``).
+    """
+    if path is None:
+        path = _find_services_toml()
+    if path is None or not path.is_file():
+        raise FileNotFoundError(
+            f"{_SERVICES_FILENAME} not found. Create it at the repo root "
+            f"with at least one [services.NAME] section."
+        )
+
+    with open(path, "rb") as f:
+        config = tomllib.load(f)
+
+    raw_providers = config.get("transformer_providers", {})
+    defaults = config.get("transformer_provider_defaults", {})
+
+    providers: dict[str, TransformerProvider] = {}
+    for name, cfg in raw_providers.items():
+        providers[name] = TransformerProvider.from_toml(name, cfg)
+
+    # Hardcoded fallback so a fresh clone with no transformer_providers
+    # section still produces a usable "auto" provider.
+    if "auto" not in providers:
+        providers["auto"] = default_auto_provider()
+
+    return providers, defaults
+
+
+_TRANSFORMER_PROVIDER_ENV = "PAPERFLOW_TRANSFORMER_PROVIDER"
+
+
+def resolve_transformer_provider(
+    providers: dict[str, TransformerProvider],
+    defaults: dict[str, str],
+    *,
+    override: str | None = None,
+) -> TransformerProvider:
+    """Apply the four-level provider-name precedence.
+
+    Order, top wins:
+
+    1. ``override`` (from the ``--provider`` CLI flag).
+    2. ``PAPERFLOW_TRANSFORMER_PROVIDER`` env var.
+    3. ``[transformer_provider_defaults].default`` from SERVICES.toml.
+    4. The hardcoded ``"auto"`` entry injected by
+       :func:`load_transformer_providers`.
+
+    Raises ``KeyError`` if the resolved name is not in ``providers``.
+    Mirrors the slot-resolution pattern used by :func:`resolve_slots`
+    and :func:`resolve_classifier_slots`.
+    """
+    name = (
+        override
+        or os.environ.get(_TRANSFORMER_PROVIDER_ENV)
+        or defaults.get("default")
+        or "auto"
+    )
+    if name not in providers:
+        raise KeyError(
+            f"Transformer provider '{name}' is not defined in "
+            f"SERVICES.toml. Available: {sorted(providers)}"
+        )
+    return providers[name]
 
 
 def resolve_classifier_slots(

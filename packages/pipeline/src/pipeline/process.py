@@ -46,6 +46,7 @@ async def process_paper(
     chunk_index: int | None = None,
     service_overrides: dict[str, str] | None = None,
     classifier_overrides: dict[str, str] | None = None,
+    provider_override: str | None = None,
     force: bool = False,
     on_progress: object = None,
 ) -> ProcessResult:
@@ -125,6 +126,7 @@ async def process_paper(
                              stop_after=stop_after, chunk_index=chunk_index,
                              service_overrides=service_overrides,
                              classifier_overrides=classifier_overrides,
+                             provider_override=provider_override,
                              on_progress=on_progress)
         except Exception as exc:
             logger.error("%s failed at %s: %s", pid, stage_name, exc)
@@ -193,6 +195,7 @@ async def _run_stage(
     chunk_index: int | None = None,
     service_overrides: dict[str, str] | None = None,
     classifier_overrides: dict[str, str] | None = None,
+    provider_override: str | None = None,
     on_progress: object = None,
 ) -> Any:
     """Execute a single pipeline stage for one paper."""
@@ -205,14 +208,17 @@ async def _run_stage(
                              stop_after=stop_after, chunk_index=chunk_index,
                              service_overrides=service_overrides,
                              classifier_overrides=classifier_overrides,
+                             provider_override=provider_override,
                              on_progress=on_progress)
     elif stage == STAGES["advocatus"]:
         await _stage_advocatus(pid, backend, debug=debug, trace=trace,
                                service_overrides=service_overrides,
+                               provider_override=provider_override,
                                on_progress=on_progress)
     elif stage == STAGES["agora"]:
         await _stage_agora(pid, backend, debug=debug, trace=trace,
                            service_overrides=service_overrides,
+                           provider_override=provider_override,
                            on_progress=on_progress)
     elif stage == STAGES["herald"]:
         pass
@@ -270,6 +276,7 @@ async def _stage_dissect(
     stop_after: int | None = None, chunk_index: int | None = None,
     service_overrides: dict[str, str] | None = None,
     classifier_overrides: dict[str, str] | None = None,
+    provider_override: str | None = None,
     on_progress: object = None,
 ) -> None:
     """Run dissect pipeline on the paper.
@@ -286,6 +293,7 @@ async def _stage_dissect(
         stop_after=stop_after, chunk_index=chunk_index,
         service_overrides=service_overrides,
         classifier_overrides=classifier_overrides,
+        provider_override=provider_override,
         on_progress=on_progress,
     )
     backend.write_dissect_md(pid, report)
@@ -294,6 +302,7 @@ async def _stage_dissect(
 async def _stage_advocatus(
     pid: str, backend: StorageBackend, *, debug: bool = False, trace: bool = False,
     service_overrides: dict[str, str] | None = None,
+    provider_override: str | None = None,
     on_progress: object = None,
 ) -> None:
     """Run advocatus pipeline on the paper.
@@ -309,11 +318,16 @@ async def _stage_advocatus(
         on_progress=on_progress,
     )
     backend.write_advocatus_md(pid, relatio)
+    # provider_override is accepted for API parity but advocatus does
+    # not currently load classifiers; passing it through is a no-op
+    # today and a future-friendly hook.
+    _ = provider_override
 
 
 async def _stage_agora(
     pid: str, backend: StorageBackend, *, debug: bool = False, trace: bool = False,
     service_overrides: dict[str, str] | None = None,
+    provider_override: str | None = None,
     on_progress: object = None,
 ) -> None:
     """Run agora pipeline on the paper.
@@ -328,3 +342,4 @@ async def _stage_agora(
         service_overrides=service_overrides,
         on_progress=on_progress,
     )
+    _ = provider_override

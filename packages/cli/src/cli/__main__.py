@@ -103,9 +103,9 @@ _VERB_FLAGS: dict[str, set[str]] = {
     "mailing":   set(),
     "download":  {"force", "concurrency"},
     "convert":   {"force", "concurrency"},
-    "dissect":   {"debug", "trace", "step", "chunk", "service", "classifier", "force"},
-    "advocatus": {"debug", "trace", "step", "service", "force"},
-    "agora":     {"debug", "trace", "step", "service", "force"},
+    "dissect":   {"debug", "trace", "step", "chunk", "service", "classifier", "provider", "force"},
+    "advocatus": {"debug", "trace", "step", "service", "provider", "force"},
+    "agora":     {"debug", "trace", "step", "service", "provider", "force"},
     "status":    set(),
 }
 
@@ -132,6 +132,8 @@ _FLAG_DEFS: list[dict] = [
     dict(name="classifier", flags=["--classifier"], action="append",
          default=None, metavar="NAME",
          help="Override classifier slot binding (e.g. dissect Step 1 Tag Sentences). Use NAME to override all slots, or SLOT=NAME (e.g. selector=zeroshot-base) for one slot. Repeatable."),
+    dict(name="provider", flags=["--provider"], default=None, metavar="NAME",
+         help="Override the active transformer provider (device/dtype/batch). Defaults to PAPERFLOW_TRANSFORMER_PROVIDER, then [transformer_provider_defaults].default in SERVICES.toml, then 'auto' (host-detected)."),
 ]
 
 _PAPER_ID_RE = re.compile(r"^[PND]\d{3,5}(R\d+)?$", re.IGNORECASE)
@@ -147,6 +149,7 @@ Examples:
   paperflow dissect P4003R2 --service b200-r1  override all service slots
   paperflow dissect P4003R2 --service fast=b200-r1 --service tool=b200-llama
   paperflow dissect P4003R2 --classifier selector=zeroshot-base  swap Step 1 classifier
+  paperflow dissect P4003R2 --provider cuda-b200                 lock provider in cloud
   paperflow advocatus P4003R2      examine a dissected paper
   paperflow agora P4003R2          plan a discussion thread
   paperflow status                 show all incomplete papers

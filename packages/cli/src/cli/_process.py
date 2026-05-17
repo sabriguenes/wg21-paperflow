@@ -80,6 +80,7 @@ def run_process_command(
     force = getattr(args, "force", False)
     service_overrides = _parse_service_overrides(getattr(args, "service", None))
     classifier_overrides = _parse_classifier_overrides(getattr(args, "classifier", None))
+    provider_override = getattr(args, "provider", None)
 
     verb = STAGE_NAMES.get(through - 1, "process")
 
@@ -132,6 +133,7 @@ def run_process_command(
                         chunk_index=chunk_index,
                         service_overrides=service_overrides,
                         classifier_overrides=classifier_overrides,
+                        provider_override=provider_override,
                         force=force,
                         on_progress=on_progress,
                     )
