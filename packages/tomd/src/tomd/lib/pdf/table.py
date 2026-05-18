@@ -67,6 +67,17 @@ _BARE_HEADING_NUM_RE = re.compile(
 _HEADING_NUM_MAX_WORDS = 8
 
 
+def _render_table_text(rows: list[list[list]]) -> str:
+    """Render table rows (list of cells, each cell a list of Spans) to pipe-delimited text."""
+    return "\n".join(
+        " | ".join(
+            "".join(s.text for s in cell).strip()
+            for cell in row
+        )
+        for row in rows
+    )
+
+
 def _find_column_xs(blocks: list[Block]) -> frozenset[float]:
     """Return x-start positions that are genuine table columns.
 
@@ -309,13 +320,7 @@ def _detect_side_by_side_tables(
             table_row = [col_spans.get(ci, []) for ci in range(num_cols)]
             all_rows_data.append(table_row)
 
-        text = "\n".join(
-            " | ".join(
-                "".join(s.text for s in cell).strip()
-                for cell in row
-            )
-            for row in all_rows_data
-        )
+        text = _render_table_text(all_rows_data)
 
         table_sections.append(Section(
             kind=SectionKind.TABLE,
@@ -342,16 +347,6 @@ _GEO_Y_OVERLAP_MIN = 0.3     # fraction of smaller block's height that must over
 _GEO_MAX_ROW_GAP = 25.0      # max y-gap between consecutive row bands
 _GEO_MIN_BLOCK_WORD_LIMIT = 40  # blocks with more words are likely prose, not cells
 
-
-def _block_aligns_with_column(block: Block, column_xs: frozenset[float]) -> bool:
-    """True if every non-empty line in block starts at a confirmed column x."""
-    for line in block.lines:
-        if not line.spans or not line.text.strip():
-            continue
-        x0 = line.bbox[0]
-        if not any(abs(x0 - cx) <= _COLUMN_X_BUCKET for cx in column_xs):
-            return False
-    return True
 
 
 def _y_overlap(a_y0: float, a_y1: float, b_y0: float, b_y1: float) -> bool:
@@ -496,13 +491,7 @@ def _detect_geometric_tables(
                 table_row = [col_spans.get(ci, []) for ci in range(num_cols)]
                 all_rows_data.append(table_row)
 
-            text = "\n".join(
-                " | ".join(
-                    "".join(s.text for s in cell).strip()
-                    for cell in row
-                )
-                for row in all_rows_data
-            )
+            text = _render_table_text(all_rows_data)
 
             table_sections.append(Section(
                 kind=SectionKind.TABLE,
@@ -780,13 +769,7 @@ def _detect_horizontal_row_tables(
                     row.append([])
                 rows.append(row)
 
-            text = "\n".join(
-                " | ".join(
-                    "".join(s.text for s in cell).strip()
-                    for cell in row
-                )
-                for row in rows
-            )
+            text = _render_table_text(rows)
 
             table_sections.append(Section(
                 kind=SectionKind.TABLE,
@@ -905,13 +888,7 @@ def detect_tables(blocks: list[Block]) -> tuple[list[Section], list[Block]]:
                     k += 1
             rows = merged
 
-            text = "\n".join(
-                " | ".join(
-                    "".join(s.text for s in cell).strip()
-                    for cell in row
-                )
-                for row in rows
-            )
+            text = _render_table_text(rows)
 
             table_sections.append(Section(
                 kind=SectionKind.TABLE,

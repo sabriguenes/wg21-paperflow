@@ -9,6 +9,22 @@ from tomd.lib.pdf.types import KNOWN_SECTIONS, Section, SectionKind
 
 _log = logging.getLogger(__name__)
 
+
+def _matches_author_name(text: str, author_tokens: set[str]) -> bool:
+    """True if *text* looks like a single author name matching reply-to tokens."""
+    if "," in text:
+        return False
+    clean_name = re.sub(r"[*_`()\[\]<>]", " ", text)
+    clean_name = re.sub(r"\S+@\S+", " ", clean_name)
+    clean_name = re.sub(r"https?://\S+", " ", clean_name)
+    name_tokens = [t.lower() for t in clean_name.split()
+                   if len(t) >= 3 and t[0].isalpha()]
+    if not (1 <= len(name_tokens) <= 4):
+        return False
+    match_count = sum(1 for t in name_tokens if t in author_tokens)
+    return match_count >= 1 and match_count / len(name_tokens) >= 0.5
+
+
 # Patterns for metadata headings that duplicate front-matter content.
 _META_DOC_HEADING_RE = re.compile(
     r"^(?:Doc\.?\s*(?:No\.?|Number|#)|Document\s*(?:Number|No\.?)?|"
@@ -205,17 +221,9 @@ def strip_metadata_headings(sections: list[Section],
                         continue
 
         # Single-author heading matching reply-to tokens.
-        if author_tokens and "," not in first_line:
-            clean_name = re.sub(r"[*_`()\[\]<>]", " ", first_line)
-            clean_name = re.sub(r"\S+@\S+", " ", clean_name)
-            clean_name = re.sub(r"https?://\S+", " ", clean_name)
-            name_tokens = [t.lower() for t in clean_name.split()
-                           if len(t) >= 3 and t[0].isalpha()]
-            if 1 <= len(name_tokens) <= 4:
-                match_count = sum(1 for t in name_tokens if t in author_tokens)
-                if match_count >= 1 and match_count / len(name_tokens) >= 0.5:
-                    to_remove.add(i)
-                    continue
+        if author_tokens and _matches_author_name(first_line, author_tokens):
+            to_remove.add(i)
+            continue
 
     # Second pass: high-confidence metadata duplicates on page 0 AFTER
     # the boundary.  Two-column PDFs repeat title/date/author in right column.
@@ -255,17 +263,9 @@ def strip_metadata_headings(sections: list[Section],
             continue
 
         # Single-author name matching reply-to tokens.
-        if author_tokens and "," not in first_line:
-            clean_name = re.sub(r"[*_`()\[\]<>]", " ", first_line)
-            clean_name = re.sub(r"\S+@\S+", " ", clean_name)
-            clean_name = re.sub(r"https?://\S+", " ", clean_name)
-            name_tokens = [t.lower() for t in clean_name.split()
-                           if len(t) >= 3 and t[0].isalpha()]
-            if 1 <= len(name_tokens) <= 4:
-                match_count = sum(1 for t in name_tokens if t in author_tokens)
-                if match_count >= 1 and match_count / len(name_tokens) >= 0.5:
-                    to_remove.add(i)
-                    continue
+        if author_tokens and _matches_author_name(first_line, author_tokens):
+            to_remove.add(i)
+            continue
 
     if to_remove:
         _log.info("Stripping %d metadata heading(s) from body: %s",

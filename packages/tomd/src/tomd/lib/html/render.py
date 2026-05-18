@@ -2,6 +2,7 @@
 
 import re
 import urllib.parse
+from collections import deque
 
 from bs4 import BeautifulSoup, Comment, Tag, NavigableString
 
@@ -35,7 +36,6 @@ def _fix_misnested_blocks(soup: BeautifulSoup) -> None:
 
     Uses a worklist to avoid rescanning the entire DOM on each fix.
     """
-    from collections import deque
 
     def _has_block_child(tag: Tag) -> bool:
         return any(isinstance(c, Tag) and c.name in _BLOCK_TAGS for c in tag.children)
@@ -97,7 +97,6 @@ def _fix_misnested_list_items(soup: BeautifulSoup) -> None:
 
     Uses a worklist to avoid rescanning the entire DOM on each fix.
     """
-    from collections import deque
 
     def _direct_li_children(li: Tag) -> list[Tag]:
         return li.find_all("li", recursive=False)
@@ -448,13 +447,6 @@ def _needs_flat_reconstruction(el: Tag) -> bool:
     return False
 
 
-
-def _has_br_in_cells(el: Tag) -> bool:
-    """Return True if any cell contains a <br> tag."""
-    for cell in el.find_all(["th", "td"]):
-        if cell.find("br"):
-            return True
-    return False
 
 
 def _cell_own_text(cell: Tag) -> str:

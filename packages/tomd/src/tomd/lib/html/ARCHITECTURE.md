@@ -15,7 +15,7 @@ The converter handles six generator families (mpark/wg21, Bikeshed, hand-written
 | 3 | Extract metadata (title, document, date, audience, reply-to) | `extract.py` |
 | 4 | Strip boilerplate (CSS, scripts, TOC, generator chrome) | `extract.py` |
 | 5 | Walk DOM, render to Markdown | `render.py` |
-| 6 | Assemble front matter + body, ASCII-encode, generate prompts | `__init__.py` |
+| 6 | Assemble front matter + body, ASCII-encode, generate prompts | `convert.py` |
 
 ## Techniques by Layer
 
@@ -143,13 +143,13 @@ The converter handles six generator families (mpark/wg21, Bikeshed, hand-written
 ### Layer 5: Output (2 techniques)
 
 **T17. Front matter assembly**
-- `__init__.py:convert_html`
+- `convert.py:convert_html`
 - Fixed field order: title, document, date, audience, reply-to
 - Title double-quoted. Reply-to as YAML list of double-quoted strings.
 - Extra keys appended after the standard order.
 
 **T18. Output encoding**
-- `__init__.py:convert_html`
+- `convert.py:convert_html`
 - Output is UTF-8 Unicode — non-ASCII characters are emitted directly
 - `ascii_escape` in `lib/__init__.py` is kept for external use but is not called in the pipeline
 
@@ -157,10 +157,11 @@ The converter handles six generator families (mpark/wg21, Bikeshed, hand-written
 
 | Module | Responsibility | Public API | Lines |
 |--------|---------------|------------|------:|
-| `__init__.py` | Pipeline orchestration | `convert_html` | 74 |
-| `extract.py` | Parsing, generator detection, metadata, boilerplate | (internal to `convert_html`) | 248 |
-| `render.py` | DOM-to-Markdown traversal | (internal to `convert_html`) | 341 |
-| **Total** | | **1 public function** | **663** |
+| `__init__.py` | Pipeline orchestration | `convert_html` | 3 |
+| `convert.py` | HTML-to-Markdown conversion, filename fallbacks | `convert_html` | ~109 |
+| `extract.py` | Parsing, generator detection, metadata, boilerplate | (internal to `convert_html`) | ~942 |
+| `render.py` | DOM-to-Markdown traversal | (internal to `convert_html`) | ~664 |
+| **Total** | | **1 public function** | **~1718** |
 
 ## Shared Dependencies
 

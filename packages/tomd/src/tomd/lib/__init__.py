@@ -25,7 +25,6 @@ from tomd.lib.shared import (  # noqa: F401
 
 from tomd.lib.metadata_yaml.format import (  # noqa: F401
     FRONT_MATTER_ORDER,
-    extract_revision,
     format_front_matter,
     sanitize_metadata,
 )

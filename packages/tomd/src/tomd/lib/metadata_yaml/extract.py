@@ -8,6 +8,7 @@ Pathway 1 (section-line regex scan) and safety-net email fallback.
 import logging
 import re
 from dataclasses import replace
+from pathlib import Path
 
 from tomd.lib.shared import DATE_RE, DOC_NUM_RE, EMAIL_RE
 from tomd.lib.pdf.types import (
@@ -15,8 +16,6 @@ from tomd.lib.pdf.types import (
     SECTION_NUM_RE, DOC_FIELD_RE, REPLY_TO_RE, AUDIENCE_RE,
     KNOWN_SECTIONS,
 )
-
-from pathlib import Path
 
 _log = logging.getLogger(__name__)
 

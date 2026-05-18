@@ -253,7 +253,7 @@ def _parse_pdf_info_date(raw: str) -> str:
 
 def _run_pipeline(path: Path) -> PipelineResult:
     """Run the full PDF conversion pipeline, returning all intermediate data."""
-    import fitz
+    import fitz  # lazy: PyMuPDF not required for HTML-only paths
 
     path = Path(path)
     result = PipelineResult()

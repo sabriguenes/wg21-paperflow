@@ -11,7 +11,6 @@ from .types import (
     Y_TOLERANCE, REPEATING_THRESHOLD, EDGE_ITEMS_PER_PAGE,
     TERMINAL_PUNCTUATION,
     PAGE_NUM_RE, COMPOUND_PREFIXES,
-    compute_bbox,
 )
 from .wg21 import _LABEL_RE as _WG21_LABEL_RE
 
@@ -330,7 +329,7 @@ def strip_hidden_blocks(
     if not hidden_by_page:
         return blocks
 
-    import fitz
+    import fitz  # lazy: PyMuPDF not required for HTML-only paths
     result = []
     for block in blocks:
         page_hidden = hidden_by_page.get(block.page_num)

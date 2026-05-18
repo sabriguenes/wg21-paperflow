@@ -394,9 +394,11 @@ def heading_confidence(has_number: bool, number_level: int,
     return 0, Confidence.UNCERTAIN
 
 
-# Canonical implementation lives in metadata_yaml.extract; this alias
-# keeps the backward-compat structure_sections() wrapper working.
-from ..metadata_yaml.extract import extract_metadata as _extract_metadata
+# Deferred import: metadata_yaml.extract imports from pdf.types which imports
+# from pdf.__init__ which imports from structure.py. Moving this to the
+# top-level import block creates a circular import.
+from ..metadata_yaml.extract import extract_metadata as _extract_metadata  # noqa: E402
+
 
 
 def _split_heading_body(sec: Section,

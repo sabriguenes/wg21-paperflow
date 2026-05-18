@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import replace
 
-from tomd.lib.pdf.types import Confidence, Section, SectionKind
+from tomd.lib.pdf.types import Confidence, KNOWN_SECTIONS, Section, SectionKind
 
 _log = logging.getLogger(__name__)
 
@@ -273,8 +273,6 @@ def promote_abstract_from_uncertain(sections: list[Section]) -> None:
     Must run BEFORE strip_pre_content_paragraphs in the pipeline.
     Mutates *sections* in-place.
     """
-    from tomd.lib.pdf.types import KNOWN_SECTIONS
-
     _MIN_ABSTRACT_BODY_WORDS = 10
     _MAX_ABSTRACT_BODY_WORDS = 200
     _CONTENT_HEADING_NUM_RE = re.compile(r"^\d{1,2}(?:\.\d+)*\.?\s")

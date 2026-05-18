@@ -174,11 +174,6 @@ _REDUNDANT_META_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-_REDUNDANT_TABLE_RE = re.compile(
-    r"^(?:\|[^\n]*\|\n){2,6}\n*---\n*",
-    re.MULTILINE,
-)
-
 # Labels that identify a body line as leaked metadata.  Covers the
 # standard WG21 header fields plus common variants.
 _FREEFORM_META_LABEL_RE = re.compile(

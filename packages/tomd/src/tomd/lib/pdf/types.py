@@ -85,7 +85,6 @@ class Block:
 class SectionKind(Enum):
     """The structural role of a document section."""
     TITLE = "title"
-    METADATA = "metadata"
     HEADING = "heading"
     PARAGRAPH = "paragraph"
     LIST = "list"

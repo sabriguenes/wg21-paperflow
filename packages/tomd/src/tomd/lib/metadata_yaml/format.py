@@ -8,10 +8,6 @@ for the strict-order contract described in CLAUDE.md.
 
 import re
 
-# These regexes are also defined in shared.py. Duplicated here to avoid
-# circular imports (shared.py re-exports from this module).
-_PID_REVISION_RE = re.compile(r"[PDpd]\d{3,5}[Rr](\d+)")
-
 _TITLE_LABEL_RE = re.compile(
     r"(?:Paper\s*Number|Document(?:\s*Number)?|Title|Authors?|"
     r"Acknowledgements?|Reply[- ]?to|Audience|Date)\s*:",
@@ -28,12 +24,6 @@ _NON_AUTHOR_RE = re.compile(
 
 
 FRONT_MATTER_ORDER = ("title", "document", "date", "intent", "audience", "reply-to")
-
-
-def extract_revision(document: str) -> int | None:
-    """Extract revision number from a paper ID like P2583R3 -> 3."""
-    m = _PID_REVISION_RE.search(document)
-    return int(m.group(1)) if m else None
 
 
 def sanitize_metadata(metadata: dict) -> dict:

@@ -1,6 +1,6 @@
 # PDF conversion rules (tomd)
 
-This document describes how the **PDF** branch of tomd turns a WG21-style PDF into Markdown. It mirrors execution order in [`lib/pdf/__init__.py`](lib/pdf/__init__.py) `_run_pipeline`, groups **multi-signal** decisions together, and adds **Why** only where intent is clear from code comments, module docstrings, [`lib/pdf/ARCHITECTURE.md`](lib/pdf/ARCHITECTURE.md), or [`CLAUDE.md`](CLAUDE.md).
+This document describes how the **PDF** branch of tomd turns a WG21-style PDF into Markdown. It mirrors execution order in [`lib/pdf/pipeline.py`](lib/pdf/pipeline.py) `_run_pipeline`, groups **multi-signal** decisions together, and adds **Why** only where intent is clear from code comments, module docstrings, [`lib/pdf/ARCHITECTURE.md`](lib/pdf/ARCHITECTURE.md), or [`CLAUDE.md`](CLAUDE.md).
 
 For deeper technique tables and module maps, see [`lib/pdf/ARCHITECTURE.md`](lib/pdf/ARCHITECTURE.md).
 
@@ -51,9 +51,9 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 - Skip conversion when page count is **200 or more**.
 
-**Why:** Presentation geometry and huge drafts break dual-path assumptions and are out of scope for committee-paper conversion ([`__init__.py`](lib/pdf/__init__.py) docstrings).
+**Why:** Presentation geometry and huge drafts break dual-path assumptions and are out of scope for committee-paper conversion ([`pipeline.py`](lib/pdf/pipeline.py) docstrings).
 
-**Sources:** `_is_slide_deck`, `_is_standards_draft` in [`lib/pdf/__init__.py`](lib/pdf/__init__.py).
+**Sources:** `_is_slide_deck`, `_is_standards_draft` in [`lib/pdf/pipeline.py`](lib/pdf/pipeline.py).
 
 ---
 
@@ -92,9 +92,9 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 ### Body-font census
 
-- Count characters per lowercased font name across **MuPDF** blocks; keep the **top five** font names as `body_fonts` for hidden-region detection ([`__init__.py`](lib/pdf/__init__.py)).
+- Count characters per lowercased font name across **MuPDF** blocks; keep the **top five** font names as `body_fonts` for hidden-region detection ([`pipeline.py`](lib/pdf/pipeline.py)).
 
-**Sources:** `_run_pipeline` font loop in [`lib/pdf/__init__.py`](lib/pdf/__init__.py).
+**Sources:** `_run_pipeline` font loop in [`lib/pdf/pipeline.py`](lib/pdf/pipeline.py).
 
 ---
 
@@ -215,7 +215,7 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 **WG21 block metadata**
 
-- Scan early MuPDF blocks with **text color lightness** map from **space characters** in texttrace so Type 3 black glyphs still reveal watermark lightness ([`_get_page0_text_colors`](lib/pdf/__init__.py), [`wg21.py`](lib/pdf/wg21.py)).
+- Scan early MuPDF blocks with **text color lightness** map from **space characters** in texttrace so Type 3 black glyphs still reveal watermark lightness ([`_get_page0_text_colors`](lib/pdf/pipeline.py), [`wg21.py`](lib/pdf/wg21.py)).
 - Recognize labels both with colon (`Audience:`) via `_LABEL_RE` and without colon (`Audience` alone on a line) via `_BARE_LABEL_RE` (Scrivener-style PDFs).
 - **Intent extraction:** `Intent:` (colon or bare) is recognized as a metadata label. The value is stored lowercase (e.g. `Inform` becomes `inform`, `Ask` becomes `ask`). Only the exact label `Intent` is accepted; no synonyms.
 - `_LABEL_RE` includes non-metadata stop-labels (`Issues`, `Previous`, `Follow up to`, `Co-authors`, `Source`, `Reference`, `Contributor`) that terminate value collection without storing a field, preventing adjacent lines from bleeding into the preceding field.
@@ -223,7 +223,7 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 - **Target as audience fallback:** `Target:` maps to the audience field only when no explicit `Audience:` or `Subgroup:` was already extracted. This prevents Target (typically `C++26`) from overwriting the committee audience value.
 - **Reply-to wins:** Explicit `Reply-to:` labels store directly into `reply-to`. `Author:`, `Editor:`, and `Co-author:` labels store into `_author_names` only and fill `reply-to` as fallback when no explicit Reply-to was extracted. When an explicit Reply-to entry has an email matching a bare-name fallback entry, the bare name is upgraded in place. Aligns with the HTML extractor bucket strategy ([`wg21.py`](lib/pdf/wg21.py)).
 
-**Why:** Title versus watermark disambiguation uses lightness proxy ([`__init__.py`](lib/pdf/__init__.py) docstring).
+**Why:** Title versus watermark disambiguation uses lightness proxy ([`pipeline.py`](lib/pdf/pipeline.py) docstring).
 
 **Sources:** `extract_metadata_from_blocks`, `_get_page0_text_colors`.
 
@@ -282,7 +282,7 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 ### Table insertion
 
-- Insert each `TABLE` section before the first later section on a later page, or before the first lower block on the **same** page ([`__init__.py`](lib/pdf/__init__.py)).
+- Insert each `TABLE` section before the first later section on a later page, or before the first lower block on the **same** page ([`pipeline.py`](lib/pdf/pipeline.py)).
 
 **Sources:** `_run_pipeline` loop over `table_sections`.
 
@@ -345,7 +345,7 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 **Merge**
 
-- Union **structure metadata** with **WG21 block metadata**; WG21 keys **overwrite** on conflict ([`__init__.py`](lib/pdf/__init__.py) comment).
+- Union **structure metadata** with **WG21 block metadata**; WG21 keys **overwrite** on conflict ([`pipeline.py`](lib/pdf/pipeline.py) comment).
 
 **Document id**
 
@@ -355,15 +355,15 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 - Date values are parsed via `normalize_date` ([`shared.py`](lib/shared.py)), which handles multiple formats in priority order: ISO `YYYY-MM-DD`, slash-separated `YYYY/MM/DD`, natural language `Month DD, YYYY` (full or abbreviated month names), and European `DD Month YYYY`.
 - Pre-label blocks matching `_BARE_DATE_RE` (e.g. "March 26, 2026" alone on a line, without a `Date:` label) are parsed and stored as `date` before the labeled-field scan runs.
-- If still missing after block extraction, parse **`creationDate`** from PDF info dict to **YYYY-MM-DD** when possible ([`_parse_pdf_info_date`](lib/pdf/__init__.py)). This is a last-resort fallback and may reflect the PDF generation timestamp rather than the paper date.
+- If still missing after block extraction, parse **`creationDate`** from PDF info dict to **YYYY-MM-DD** when possible ([`_parse_pdf_info_date`](lib/pdf/pipeline.py)). This is a last-resort fallback and may reflect the PDF generation timestamp rather than the paper date.
 
 **Revision**
 
-- If stem revision differs from embedded **non-D** document id revision, **rewrite document id** from filename ([`_override_revision_from_filename`](lib/metadata_yaml/extract.py)).
+- If stem revision differs from embedded **non-D** document id revision, **rewrite document id** from filename ([`override_revision_from_filename`](lib/metadata_yaml/extract.py)). The HTML path has an identical private copy in [`lib/html/convert.py`](lib/html/convert.py) to avoid a circular import chain.
 
 **Title**
 
-- Else use **first heading** text; else PDF **title** metadata when not boilerplate regex ([`__init__.py`](lib/pdf/__init__.py)).
+- Else use **first heading** text; else PDF **title** metadata when not boilerplate regex ([`pipeline.py`](lib/pdf/pipeline.py)).
 
 **Reply-to**
 
@@ -406,7 +406,7 @@ Pass 2 (`strip_pre_content_paragraphs` in [`metadata_yaml/strip.py`](lib/metadat
 
 **Structural hints**
 
-- When there are **no** heading texts, mark sections whose **second** non-empty line is a bare **page number** and whose **x** clusters with peers ([`_toc_structural_hints`](lib/pdf/__init__.py)).
+- When there are **no** heading texts, mark sections whose **second** non-empty line is a bare **page number** and whose **x** clusters with peers ([`_toc_structural_hints`](lib/pdf/pipeline.py)).
 
 **Matching**
 
@@ -443,7 +443,7 @@ Pass 2 (`strip_pre_content_paragraphs` in [`metadata_yaml/strip.py`](lib/metadat
 
 **Why:** Fuzzy on huge heading sets is **O(sections x headings)** and can hang large PDFs ([`toc.py`](lib/toc.py)).
 
-**Sources:** `find_toc_indices` in [`lib/toc.py`](lib/toc.py); `_toc_structural_hints` in [`lib/pdf/__init__.py`](lib/pdf/__init__.py).
+**Sources:** `find_toc_indices` in [`lib/toc.py`](lib/toc.py); `_toc_structural_hints` in [`lib/pdf/pipeline.py`](lib/pdf/pipeline.py).
 
 ---
 
@@ -481,9 +481,9 @@ Pass 2 (`strip_pre_content_paragraphs` in [`metadata_yaml/strip.py`](lib/metadat
 
 **Wording prompts**
 
-- Append wording diagnostic prompts when the wording pass reported problems ([`__init__.py`](lib/pdf/__init__.py)).
+- Append wording diagnostic prompts when the wording pass reported problems ([`pipeline.py`](lib/pdf/pipeline.py)).
 
-**Sources:** `emit_markdown`, `emit_prompts`, [`lib/pdf/__init__.py`](lib/pdf/__init__.py).
+**Sources:** `emit_markdown`, `emit_prompts`, [`lib/pdf/pipeline.py`](lib/pdf/pipeline.py).
 
 ---
 
@@ -493,7 +493,7 @@ Links point to sections above.
 
 | Module | Topics |
 |--------|--------|
-| [`lib/pdf/__init__.py`](lib/pdf/__init__.py) | [Early exits](#early-exits), [Body-font census](#body-font-census), [Page zero metadata](#page-zero-metadata), [Table insertion](#table-insertion), [TOC hints](#toc-stripping), [Emit prompts](#emit) |
+| [`lib/pdf/pipeline.py`](lib/pdf/pipeline.py) | [Early exits](#early-exits), [Body-font census](#body-font-census), [Page zero metadata](#page-zero-metadata), [Table insertion](#table-insertion), [TOC hints](#toc-stripping), [Emit prompts](#emit) |
 | [`lib/pdf/pipeline.py`](lib/pdf/pipeline.py) | [Metadata merge](#metadata-merge) (orchestration), [TOC stripping](#toc-stripping) (plausibility guard, label-anchored fallback, protection, dedup), [Body cleanup](#body-cleanup-uncertain-sections) |
 | [`lib/metadata_yaml/extract.py`](lib/metadata_yaml/extract.py) | [Structure](#structure) (early metadata scan), [Metadata merge](#metadata-merge) (fallbacks, revision override, reply-to enrichment) |
 | [`lib/metadata_yaml/strip.py`](lib/metadata_yaml/strip.py) | [Metadata merge](#metadata-merge) (pre-heading stripping, metadata heading stripping) |
