@@ -53,7 +53,7 @@ class TestCanonicalOrdering:
         )
         result = _normalize_front_matter(md, None)
         keys = _extract_fm_keys(result)
-        assert keys == ["title", "document", "revision", "date",
+        assert keys == ["title", "document", "date",
                         "intent", "audience", "reply-to"]
 
     def test_unknown_keys_appended_after_canonical(self):

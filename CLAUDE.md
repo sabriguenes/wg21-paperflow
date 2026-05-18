@@ -48,7 +48,6 @@ Every converted paper gets this YAML block. Field order is fixed.
 ---
 title: "Paper Title"
 document: P2583R3
-revision: 3
 date: 2024-01-15
 intent: info
 audience: SG1, LEWG

@@ -85,8 +85,7 @@ The converter handles six generator families (mpark/wg21, Bikeshed, hand-written
 **T9. Heading rendering**
 - `render.py:_render_heading`
 - Maps `<h1>`-`<h6>` to ATX headers (`#` - `######`)
-- Strips WG21 chrome: `span.header-section-number`, `span.secno`, `a.self-link`
-- Strips leading dotted-decimal section numbers via regex
+- Skips `a.self-link` (UI chrome). Section numbering spans (`span.header-section-number`, `span.secno`) are preserved so numbers appear in output.
 - Strips wrapping `**...**` bold markers (ATX prefix conveys weight)
 
 **T10. Paragraph rendering**

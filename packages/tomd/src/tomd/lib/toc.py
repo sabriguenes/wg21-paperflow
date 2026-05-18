@@ -14,9 +14,15 @@ _log = logging.getLogger(__name__)
 
 _TRAILING_PAGE_NUM_RE = re.compile(r"\s+\d{1,4}\s*$")
 _DOT_LEADER_RE = re.compile(r"\s*[.·]{2,}[\s.·]*")
+_SPACED_DOT_LEADER_RE = re.compile(r"(?:\. ){2,}\.")
+# Tighter threshold for TOC *detection* (vs stripping in normalization).
+# 5+ consecutive dots avoids false positives on ellipsis (...) and
+# C++ variadic syntax (Args...) that appear heavily in WG21 papers.
+_DOT_LEADER_DETECT_RE = re.compile(r"[.·]{5,}")
 
 _TOC_LABELS = frozenset({
     "table of contents",
+    "table of content",
     "contents",
 })
 
@@ -32,6 +38,15 @@ def _first_line(text: str) -> str:
     return text.split("\n")[0].strip()
 
 
+def has_dot_leader(text: str) -> bool:
+    """Check for dot leaders in any form (compact or spaced).
+
+    Uses _DOT_LEADER_DETECT_RE (5+ dots) instead of _DOT_LEADER_RE (2+)
+    to avoid false positives on ellipsis and C++ variadic syntax.
+    """
+    return bool(_DOT_LEADER_DETECT_RE.search(text) or _SPACED_DOT_LEADER_RE.search(text))
+
+
 def _normalize_toc_entry(text: str) -> str:
     """Normalize text for TOC comparison.
 
@@ -40,6 +55,7 @@ def _normalize_toc_entry(text: str) -> str:
     """
     text = _first_line(text)
     text = _DOT_LEADER_RE.sub(" ", text)
+    text = _SPACED_DOT_LEADER_RE.sub(" ", text)
     text = _TRAILING_PAGE_NUM_RE.sub("", text)
     text = SECTION_NUM_PREFIX_RE.sub("", text)
     text = _WHITESPACE_RE.sub(" ", text).strip().lower()
@@ -57,15 +73,19 @@ def find_toc_indices(
     texts: list[str],
     headings: set[str],
     structural_hints: list[bool] | None = None,
+    full_texts: list[str] | None = None,
 ) -> set[int]:
     """Return indices of entries that form a Table of Contents.
 
-    texts: ordered list of section texts from the document
+    texts: ordered list of section first-line texts from the document
     headings: set of known heading texts to match against
     structural_hints: optional per-section booleans marking entries that
         look like TOC entries by structure (standalone page number on the
         second line at a consistent x position). Used as a fallback when
         headings is empty, e.g. in headingless wording-only papers.
+    full_texts: optional full section texts (multi-line). When provided,
+        dot-leader detection checks the full text, catching leaders on
+        lines beyond the first.
 
     Both texts and headings are normalized before comparison. Detects runs
     of 3+ consecutive matches. Also includes any "Table of Contents" label
@@ -97,15 +117,39 @@ def find_toc_indices(
                 return True
         return False
 
+    # Bare section-number line: digits/dots or single uppercase letter.
+    # When the first line is just a number, try joining with line 2
+    # for heading comparison (handles multi-line TOC entries where
+    # MuPDF splits section number and title onto separate lines).
+    _BARE_NUM_RE = re.compile(r"^(?:[A-Z]|\d+(?:\.\d+)*\.?)$")
+
+    def _multi_line_match(ft_text: str) -> bool:
+        lines = ft_text.split("\n")
+        if len(lines) < 2:
+            return False
+        first = lines[0].strip()
+        if not _BARE_NUM_RE.match(first):
+            return False
+        joined = first + " " + lines[1].strip()
+        return _matches_heading(joined)
+
     matches = []
     for i, text in enumerate(texts):
+        ft = full_texts[i] if full_texts else text
+        # Check dot-leaders per line to avoid false positives on body
+        # paragraphs that happen to contain 5+ dots (ASCII art, code).
+        has_dot = any(has_dot_leader(ln) for ln in ft.split("\n"))
         if norm_headings:
-            matches.append(_matches_heading(_first_line(text)))
+            first_match_ok = _matches_heading(_first_line(text))
+            if not first_match_ok and not has_dot:
+                first_match_ok = _multi_line_match(ft)
+            matches.append(has_dot or first_match_ok)
         else:
             matches.append(
-                bool(structural_hints
-                     and i < len(structural_hints)
-                     and structural_hints[i])
+                has_dot
+                or bool(structural_hints
+                        and i < len(structural_hints)
+                        and structural_hints[i])
             )
 
     # Find the first match - everything before it is pre-TOC (title, metadata)

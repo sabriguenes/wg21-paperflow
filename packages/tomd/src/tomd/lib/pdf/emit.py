@@ -1,8 +1,10 @@
 """Markdown and companion prompts file generation."""
 
 import logging
+import re
 
-from .. import format_front_matter, dedup_paragraphs, strip_redundant_body_meta, strip_leading_h1, DEFAULT_FENCE_LANG
+from ..metadata_yaml.format import format_front_matter
+from .. import dedup_paragraphs, strip_redundant_body_meta, strip_orphan_toc_list, strip_leading_h1, DEFAULT_FENCE_LANG
 from ..shared import _find_front_matter_end
 from .cleanup import normalize_whitespace
 from .types import Line, Span, Section, SectionKind, BULLET_CHARS
@@ -83,28 +85,153 @@ def _render_line_spans(line: Line, in_code_section: bool = False,
     return "".join(parts)
 
 
+_EMDASH_BULLET_RE = re.compile(r"^[\u2013\u2014]\s")
+
+
 def _render_paragraph_spans(sec: Section) -> str:
-    """Render a paragraph section using span-level formatting, then unwrap."""
+    """Render a paragraph section using span-level formatting, then unwrap.
+
+    Preserves line breaks when every non-empty line starts with an
+    em-dash or en-dash bullet marker so that bullet lists extracted
+    as PARAGRAPH sections render as separate items instead of being
+    collapsed into a single prose line.
+    """
+    if not sec.lines:
+        return " ".join(ln.strip() for ln in sec.text.split("\n") if ln.strip())
     rendered_lines = []
     for line in sec.lines:
         rendered_lines.append(_render_line_spans(line))
     text = "\n".join(rendered_lines)
     text = normalize_whitespace(text)
     lines = text.split("\n")
+    non_empty = [ln.strip() for ln in lines if ln.strip()]
+    if non_empty and all(_EMDASH_BULLET_RE.match(ln) for ln in non_empty):
+        # Rewrite em/en-dash bullets as markdown list items so that
+        # renderers display them as a proper list instead of joining
+        # consecutive lines into a single paragraph.
+        # indent_level > 0 indicates a nested sub-list (set by
+        # _assign_emdash_nesting in the emit pre-pass).
+        prefix = "  " * sec.indent_level
+        return "\n".join(
+            prefix + _EMDASH_BULLET_RE.sub("- ", ln, count=1)
+            for ln in non_empty
+        )
     return " ".join(ln.strip() for ln in lines if ln.strip())
+
+
+_BARE_HEADING_NUM_RE = re.compile(
+    r"^\s*(?:\d+(?:\.\d+)*|[A-Z]+)\.?\s*$"
+)
+
+_CONTINUATION_WORDS = frozenset({
+    "a", "an", "the", "of", "for", "in", "to", "with",
+    "from", "and", "or", "by", "at", "on",
+})
+
+
+def _heading_line_continues(text: str) -> bool:
+    """True when heading text is clearly cut mid-phrase by line wrapping.
+
+    Signals: trailing comma/semicolon, unbalanced open parenthesis, or
+    ending with an article/preposition/conjunction.
+    """
+    stripped = text.rstrip()
+    if not stripped:
+        return False
+    if stripped[-1] in (",", ";"):
+        return True
+    if stripped.count("(") > stripped.count(")"):
+        return True
+    words = stripped.split()
+    if words:
+        last = words[-1].lower().rstrip(".,;:")
+        if last in _CONTINUATION_WORDS:
+            return True
+    return False
 
 
 def _render_heading_spans(sec: Section) -> str:
     """Render a heading using span-level formatting for the first line.
 
     Bold is suppressed because the ATX prefix already conveys heading weight.
+    When line 0 is a bare section number (e.g. "1", "3.2", "I."), subsequent
+    lines at the same font size are joined to recover the title text that
+    MuPDF split onto a separate line.
+
+    If the heading section contains additional body lines (e.g. table cells
+    merged into a single section), those are emitted as a paragraph below
+    the heading so content is not lost.
     """
     prefix = "#" * sec.heading_level
+    remainder_lines: list[str] = []
     if sec.lines:
-        text = _render_line_spans(sec.lines[0], suppress_bold=True)
+        first = _render_line_spans(sec.lines[0], suppress_bold=True).strip()
+        if len(sec.lines) > 1 and _BARE_HEADING_NUM_RE.match(first):
+            head_fs = sec.lines[0].font_size
+            parts = [first]
+            consumed = 1
+            for line in sec.lines[1:]:
+                rendered_part = _render_line_spans(
+                    line, suppress_bold=True).strip()
+                # Always join short title lines after a bare number, even
+                # when font size differs (Kretz-style: 19.9pt number +
+                # 11.6pt ALL-CAPS title). Only break on font mismatch once
+                # the title has been consumed (i.e. after the first join).
+                if abs(line.font_size - head_fs) > 0.5:
+                    if consumed == 1 and len(line.text.split()) <= 8:
+                        parts.append(rendered_part)
+                        consumed += 1
+                    break
+                parts.append(rendered_part)
+                consumed += 1
+            text = " ".join(p for p in parts if p)
+            for line in sec.lines[consumed:]:
+                r = _render_line_spans(line).strip()
+                if r:
+                    remainder_lines.append(r)
+        else:
+            text = first
+            head_fs = sec.lines[0].font_size
+            if _heading_line_continues(first):
+                parts = [first]
+                consumed = 1
+                for line in sec.lines[1:]:
+                    if abs(line.font_size - head_fs) > 0.5:
+                        break
+                    part = _render_line_spans(
+                        line, suppress_bold=True).strip()
+                    if part:
+                        parts.append(part)
+                    consumed += 1
+                text = " ".join(p for p in parts if p)
+                for line in sec.lines[consumed:]:
+                    r = _render_line_spans(line).strip()
+                    if r:
+                        remainder_lines.append(r)
+            else:
+                for line in sec.lines[1:]:
+                    r = _render_line_spans(line).strip()
+                    if r:
+                        remainder_lines.append(r)
     else:
         text = sec.text.split("\n")[0]
-    return f"{prefix} {text.strip()}"
+    clean_text = text.strip()
+    if not clean_text:
+        return ""
+    heading = f"{prefix} {clean_text}"
+    if remainder_lines:
+        # Filter out lines that duplicate the heading text (bold-overlay
+        # artifacts in some PDFs produce 3x repeated heading spans).
+        head_norm = re.sub(r"[^a-z0-9\s]", "", clean_text.lower()).strip()
+        filtered = []
+        for rl in remainder_lines:
+            rl_norm = re.sub(r"[^a-z0-9\s]", "", rl.lower()).strip()
+            if rl_norm and rl_norm != head_norm:
+                filtered.append(rl)
+        if filtered:
+            body = " ".join(filtered)
+            return f"{heading}\n\n{body}"
+    return heading
 
 
 def _normalize_bullet(char: str) -> str:
@@ -245,18 +372,38 @@ def _render_wording_section(sec: Section) -> str:
     for line in sec.lines:
         rendered_lines.append(_render_wording_line(line))
     text = normalize_whitespace("\n".join(rendered_lines))
-    inner = " ".join(ln.strip() for ln in text.split("\n") if ln.strip())
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    has_code = any(s.monospace for ln in sec.lines for s in ln.spans if s.text.strip())
+    if has_code:
+        inner = "\n".join(lines)
+    else:
+        inner = " ".join(ln.strip() for ln in lines)
     return f":::{div_class}\n\n{inner}\n\n:::"
 
 
 def _render_cell_spans(spans: list, suppress_bold: bool = False) -> str:
-    """Render a table cell's spans with inline formatting."""
+    """Render a table cell's spans with inline formatting.
+
+    When every non-whitespace span is monospace, all spans are merged into a
+    single backtick pair to avoid fragmented output like `t``<``U`.
+    """
+    if not spans:
+        return ""
+    text_spans = [s for s in spans if s.text.strip()]
+    if text_spans and all(s.monospace for s in text_spans):
+        merged = "".join(s.text for s in spans).strip()
+        if merged:
+            return f"`{merged}`"
     line = Line(spans=spans)
     return _render_line_spans(line, suppress_bold=suppress_bold).strip()
 
 
 def _render_table(sec: Section) -> str:
-    """Render a table section as a Markdown table."""
+    """Render a table section as a Markdown table.
+
+    Cell content is collapsed to a single line because markdown table
+    rows cannot span multiple lines.
+    """
     if not sec.columns:
         return sec.text
 
@@ -264,7 +411,10 @@ def _render_table(sec: Section) -> str:
     num_cols = max(len(row) for row in rows)
 
     header = rows[0]
-    header_cells = [_render_cell_spans(cell, suppress_bold=True) for cell in header]
+    header_cells = [
+        _render_cell_spans(cell, suppress_bold=True).replace("\n", " ")
+        for cell in header
+    ]
     while len(header_cells) < num_cols:
         header_cells.append("")
 
@@ -273,7 +423,10 @@ def _render_table(sec: Section) -> str:
     lines.append("| " + " | ".join(["---"] * num_cols) + " |")
 
     for row in rows[1:]:
-        cells = [_render_cell_spans(cell) for cell in row]
+        cells = [
+            _render_cell_spans(cell).replace("\n", " ")
+            for cell in row
+        ]
         while len(cells) < num_cols:
             cells.append("")
         lines.append("| " + " | ".join(cells) + " |")
@@ -305,12 +458,69 @@ def _render_section_md(sec: Section) -> str:
     return sec.text
 
 
+_EMDASH_NESTING_X_THRESHOLD = 6.0
+
+
+def _is_emdash_bullet_section(sec: Section) -> bool:
+    """True when every non-empty raw line starts with an em/en-dash bullet."""
+    if sec.kind != SectionKind.PARAGRAPH or not sec.lines:
+        return False
+    for line in sec.lines:
+        raw = "".join(s.text for s in line.spans).strip()
+        if raw and not _EMDASH_BULLET_RE.match(raw):
+            return False
+    return bool(sec.lines)
+
+
+def _section_min_x0(sec: Section) -> float:
+    """Leftmost x-coordinate across all lines in the section."""
+    x0s = [ln.bbox[0] for ln in sec.lines if ln.bbox]
+    return min(x0s) if x0s else 0.0
+
+
+def _assign_emdash_nesting(sections: list[Section]) -> None:
+    """Pre-pass: set indent_level on consecutive em-dash bullet sections.
+
+    Groups of adjacent em-dash PARAGRAPH sections are identified.
+    Within each group, the leftmost x0 is the base level (indent 0).
+    Sections whose x0 is shifted right by >= _EMDASH_NESTING_X_THRESHOLD
+    get increasing indent_level values.
+    """
+    n = len(sections)
+    i = 0
+    while i < n:
+        if not _is_emdash_bullet_section(sections[i]):
+            i += 1
+            continue
+        group_start = i
+        while i < n and _is_emdash_bullet_section(sections[i]):
+            i += 1
+        group = sections[group_start:i]
+        if len(group) < 2:
+            continue
+        x0s = [_section_min_x0(s) for s in group]
+        base_x0 = min(x0s)
+        unique_x = sorted(set(x0s))
+        level_map: dict[float, int] = {}
+        for ux in unique_x:
+            if ux - base_x0 < _EMDASH_NESTING_X_THRESHOLD:
+                level_map[ux] = 0
+            else:
+                level_map[ux] = len(
+                    [v for v in level_map.values() if v > 0]
+                ) + 1
+        for sec, x0 in zip(group, x0s):
+            sec.indent_level = level_map.get(x0, 0)
+
+
 def emit_markdown(metadata: dict, sections: list[Section]) -> str:
     """Generate the output Markdown from structured sections.
 
     Confident sections are clean Markdown. Uncertain sections emit
     the MuPDF version marked with an HTML comment.
     """
+    _assign_emdash_nesting(sections)
+
     parts: list[str] = []
 
     fm = format_front_matter(metadata)
@@ -333,6 +543,10 @@ def emit_markdown(metadata: dict, sections: list[Section]) -> str:
         rendered = _render_section_md(sec)
         if not rendered.strip():
             continue
+        # Skip headings that render as bare ATX prefix with no text.
+        if sec.kind in (SectionKind.TITLE, SectionKind.HEADING):
+            if not rendered.lstrip("#").strip():
+                continue
         parts.append(rendered)
         line_num += rendered.count("\n") + 2
 
@@ -350,6 +564,7 @@ def emit_markdown(metadata: dict, sections: list[Section]) -> str:
                 md = md[:line_end + 1] + body
 
     md = strip_redundant_body_meta(md)
+    md = strip_orphan_toc_list(md)
 
     if fm:
         fm_end = _find_front_matter_end(md)

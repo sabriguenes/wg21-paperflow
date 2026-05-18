@@ -5,7 +5,7 @@ import urllib.parse
 
 from bs4 import BeautifulSoup, Comment, Tag, NavigableString
 
-from .. import strip_format_chars, SECTION_NUM_PREFIX_RE, ALLOWED_LINK_SCHEMES
+from .. import strip_format_chars, ALLOWED_LINK_SCHEMES
 
 _BOLD_WRAP_RE = re.compile(r"^\*\*(.+)\*\*$")
 _LOSSY_TABLE_MARKER = "<!-- tomd:lossy-table -->"
@@ -209,6 +209,14 @@ def _render_element(el: Tag, generator: str) -> str | None:
             return "> " + inner.replace("\n", "\n> ")
         return None
 
+    if tag == "abstract-block":
+        parts = []
+        _render_children(el, parts, generator)
+        inner = "\n\n".join(p for p in parts if p.strip())
+        if inner:
+            return f"## Abstract\n\n{inner}"
+        return None
+
     if tag == "tt-":
         text = el.get_text()
         return f"`{text}`" if text.strip() else None
@@ -232,7 +240,7 @@ def _render_element(el: Tag, generator: str) -> str | None:
     return result if result else None
 
 
-_HEADING_SKIP_CLASSES = frozenset({"header-section-number", "secno", "self-link"})
+_HEADING_SKIP_CLASSES = frozenset({"self-link"})
 
 
 def _render_heading(el: Tag) -> str | None:
@@ -245,7 +253,6 @@ def _render_heading(el: Tag) -> str | None:
         return None
     text = text.replace("\n", " ")
     text = re.sub(r"  +", " ", text)
-    text = SECTION_NUM_PREFIX_RE.sub("", text)
     text = _BOLD_WRAP_RE.sub(r"\1", text)
     return f"{'#' * level} {text}"
 

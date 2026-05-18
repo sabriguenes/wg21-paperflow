@@ -13,11 +13,14 @@
   </header>
   <main class="panes">
     <section class="pane">
-      <div class="label">Original</div>
+      <div class="label">Original <span class="fmt">{{ source_format }}</span></div>
       <iframe class="frame" src="/source" title="Original source"></iframe>
     </section>
     <section class="pane">
-      <div class="label">Rendered Markdown</div>
+      <div class="label">
+        <span id="right-label">Rendered Markdown</span>
+        <button class="toggle-btn" id="toggle-view" title="Switch view">Raw Markdown</button>
+      </div>
       <iframe class="frame" id="md-frame" src="/markdown" title="Rendered markdown"></iframe>
     </section>
   </main>
@@ -25,10 +28,22 @@
     (function () {
       const frame = document.getElementById("md-frame");
       const status = document.getElementById("status");
+      const toggle = document.getElementById("toggle-view");
+      const rightLabel = document.getElementById("right-label");
+      let showingMarkdown = true;
+
       const setStatus = (label, state) => {
         status.textContent = label;
         status.dataset.state = state;
       };
+
+      toggle.addEventListener("click", () => {
+        showingMarkdown = !showingMarkdown;
+        frame.src = showingMarkdown ? "/markdown" : "/markdown-raw";
+        rightLabel.textContent = showingMarkdown ? "Rendered Markdown" : "Raw Markdown";
+        toggle.textContent = showingMarkdown ? "Raw Markdown" : "Rendered Markdown";
+      });
+
       const es = new EventSource("/events");
       es.addEventListener("open", () => setStatus("live", "live"));
       es.addEventListener({{ reload_event | tojson }}, () => {

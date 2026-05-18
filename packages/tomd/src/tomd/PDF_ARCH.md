@@ -185,6 +185,7 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 **Promotion**
 
 - If there are **at least five** insertion spans, promote **unconfirmed** red deletions to full deletions so **color-only** diff styles still work ([`wording.py`](lib/pdf/wording.py), [`CLAUDE.md`](CLAUDE.md)). If there are **fewer than five** total ins or del spans after filtering, skip wording entirely ([`wording.py`](lib/pdf/wording.py)).
+- **Page-gated promotion (Ticket F fix):** Unconfirmed deletions are promoted **only on pages at or after the first page containing an insertion span**. Pages before the first insertion (preamble: Abstract, TOC, Revision History) keep their red spans as unconfirmed and those spans are dropped. This prevents red code-styling in preamble pages from being falsely classified as wording deletions (e.g. p2583r3 had 432 red code spans in Abstract/early sections).
 
 **Why:** WG21 frameworks use fixed hue bands; hyperlinks are blue and excluded; minimum span counts suppress noise ([`wording.py`](lib/pdf/wording.py) module docstring).
 
@@ -202,7 +203,11 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 - Snap bold or italic boundaries to **word edges** for adjacent non-monospace spans ([`spans.py`](lib/pdf/spans.py)).
 
-**Sources:** `cleanup_text` in [`lib/pdf/cleanup.py`](lib/pdf/cleanup.py); `normalize_spans` in [`lib/pdf/spans.py`](lib/pdf/spans.py).
+**Block sorting**
+
+- After normalization, sort **both** block lists by **(page_num, y-midpoint)**. MuPDF sometimes delivers blocks out of visual order within a page, which disrupts section boundaries downstream (e.g. wording content landing inside Acknowledgements) ([`pipeline.py`](lib/pdf/pipeline.py)).
+
+**Sources:** `cleanup_text` in [`lib/pdf/cleanup.py`](lib/pdf/cleanup.py); `normalize_spans` in [`lib/pdf/spans.py`](lib/pdf/spans.py); block sort in [`pipeline.py`](lib/pdf/pipeline.py).
 
 ---
 
@@ -235,11 +240,15 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 - Single-line blocks aligned to known columns can merge into the **next** row when lookahead confirms a table row; **same-page only** ([`table.py`](lib/pdf/table.py) module docstring).
 
+**Side-by-side tables (Pass 2)**
+
+- After standard columnar detection, scan remaining blocks for **side-by-side tables** where each cell is a separate MuPDF block (e.g. "Tony Tables" with multi-line code cells). Cluster body block x-positions into columns, group by y-overlap into rows, require **at least two** valid data rows ([`_detect_side_by_side_tables`](lib/pdf/table.py)).
+
 **Spatial path**
 
 - Drop spatial blocks whose vertical center falls inside table **y-ranges** so dual-path compare ignores table interiors ([`exclude_table_regions`](lib/pdf/table.py)).
 
-**Sources:** `detect_tables`, `exclude_table_regions` in [`lib/pdf/table.py`](lib/pdf/table.py).
+**Sources:** `detect_tables`, `_detect_side_by_side_tables`, `exclude_table_regions` in [`lib/pdf/table.py`](lib/pdf/table.py).
 
 ---
 
@@ -283,7 +292,7 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 **Early metadata scan**
 
-- Strip leading metadata lines using patterns for document field, reply-to, audience, dates ([`_extract_metadata`](lib/pdf/structure.py)).
+- Strip leading metadata lines using patterns for document field, reply-to, audience, dates ([`extract_metadata`](lib/metadata_yaml/extract.py)).
 
 **Body size and font ranks**
 
@@ -296,6 +305,9 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 **Headings**
 
 - Combine **section numbering depth**, **font-size rank**, **bold**, and **known section names** via `heading_confidence`; reject **long first-line prose** when confidence is only LOW ([`structure.py`](lib/pdf/structure.py), [`CLAUDE.md`](CLAUDE.md)).
+- **Bold-only heading path:** When a section has no section number, no enlarged font, and is not a known section name, but its first line is bold, short (<= `_HEADING_MAX_WORDS`), and free of code-like characters (`_CODE_CHARS`), it enters the heading path at LOW confidence. Level is inferred as `last_heading_level + 1` (minimum 3). `_validate_nesting` then clamps to correct depth. This handles WG21 papers with bold-at-body-size sub-headings (e.g. P3373R4 "Operation States and Stack Frames" under "Background") ([`structure.py`](lib/pdf/structure.py)).
+- **Multi-line heading recovery:** When MuPDF splits a heading's section number and title onto separate lines within one block (e.g. line 0 = "1", line 1 = "Abstract", both at the same font size), the emit step joins all same-font lines after a bare section number to recover the full heading text ([`emit.py`](lib/pdf/emit.py) `_render_heading_spans`).
+- **Heading+body split at body font size:** `_split_heading_body` splits a multi-line heading section when line 0 is bold and line 1 is not. The bold-drop condition accepts headings at body font size (no size ratio requirement) when line 0 is short (<= `_HEADING_MAX_WORDS` words). This handles PDFs where "Abstract" is bold at 12pt body size with a non-bold prose paragraph merged into the same MuPDF block ([`structure.py`](lib/pdf/structure.py)).
 
 **Lists**
 
@@ -347,7 +359,7 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 **Revision**
 
-- If stem revision differs from embedded **non-D** document id revision, **rewrite document id** from filename ([`_override_revision_from_filename`](lib/pdf/__init__.py)).
+- If stem revision differs from embedded **non-D** document id revision, **rewrite document id** from filename ([`_override_revision_from_filename`](lib/metadata_yaml/extract.py)).
 
 **Title**
 
@@ -355,14 +367,38 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 **Reply-to**
 
-- Else PDF **author** when not boilerplate regex ([`__init__.py`](lib/pdf/__init__.py)).
+- Else PDF **author** when not boilerplate regex ([`apply_pdf_metadata_fallbacks`](lib/metadata_yaml/extract.py)).
 
 **Email enrichment**
 
-- If **no** reply-to entry contained an email yet, scan **first 30** lines of page zero for emails; pair **bare emails** with previous line names; merge into `"Name <email>"` ([`_enrich_pdf_reply_to`](lib/pdf/__init__.py)).
+- If **no** reply-to entry contained an email yet, scan **first 30** lines of page zero for emails; pair **bare emails** with previous line names; merge into `"Name <email>"` ([`enrich_pdf_reply_to`](lib/metadata_yaml/extract.py)).
 - After pairing, remaining bare `<email>` entries are checked against `_author_names` (collected during `_store_field` in [`wg21.py`](lib/pdf/wg21.py)) via last-name heuristic ([`enrich_reply_to_names`](lib/shared.py)). Only matched names are paired; unmatched authors are dropped.
 
-**Sources:** `_run_pipeline` metadata section in [`lib/pdf/__init__.py`](lib/pdf/__init__.py).
+**Pre-heading metadata stripping (two passes)**
+
+Pass 1 (`strip_pre_heading_fragments` in [`metadata_yaml/strip.py`](lib/metadata_yaml/strip.py)): After metadata merge and reply-to enrichment, all non-heading, non-title sections on page 0 that precede the first `HEADING` or `TITLE` section are removed from `sections`. These are metadata fragments (author names, doc numbers, affiliations) already captured in the YAML dict; stripping them prevents duplicate metadata appearing in the Markdown body.
+
+Pass 2 (`strip_pre_content_paragraphs` in [`metadata_yaml/strip.py`](lib/metadata_yaml/strip.py)): After `strip_metadata_headings` runs (see below), a second pass strips all non-heading, non-title sections on page 0 that sit before the first **content** heading. Content headings are identified by `_is_content_heading`: numbered sections (`1. Foo`, `2.3 Bar`) or known section names (Abstract, Motivation, etc.). This catches metadata paragraphs that were originally positioned between the title heading and the first content heading; once `strip_metadata_headings` removes the title echo, these paragraphs become the leading sections and must be cleaned up. Example: `ISO/IEC JTC1 SC22 WG21 N5040 -- 2026-04-07 Braden Ganetsky...` in N5040.
+
+**Metadata heading stripping**
+
+- After pass 1 of pre-heading stripping, `strip_metadata_headings` ([`metadata_yaml/strip.py`](lib/metadata_yaml/strip.py)) removes page-0 HEADING sections before the first content heading (numbered section or KNOWN_SECTIONS name like Abstract, Revision History) whose text duplicates front-matter data. Patterns matched:
+  - Document number headings (`Doc. no.:`, `Document Number:`, `Paper Number:`) containing the extracted document ID.
+  - Date headings (`Date:`) when a date is already in front matter.
+  - Bare date headings (`March 26, 2026`, `26 March 2026`, `2026-03-26`) without a label (`_BARE_DATE_HEADING_RE`).
+  - Separator headings (lines of `=`, `-`, `~`, `*`).
+  - WG21 category labels (`Programming Language C++`, `ISO/IEC JTC1`, `WG21 PROPOSAL`).
+  - Title echo headings: word-stem overlap >= 50% with the front-matter title.
+  - Author-list headings: 3+ comma-separated items where >= 80% look like person names (1-4 words, uppercase initial).
+  - Single-author headings: 1-4 word names (possibly italic/bold) that match reply-to tokens from metadata (>= 50% token overlap).
+- Pass 2 (post-boundary) applies the same patterns to page-0 headings **after** the first content heading. Title-echo matching in pass 2 is suppressed once a body paragraph (PARAGRAPH or LIST) has been seen, preventing legitimate sub-headings from being stripped when they share words with the title (e.g. P3373R4 "Operation States and Stack Frames" under title "Of Operation States and Their Lifetimes").
+- This handles PDFs where `wg21.extract_metadata_from_blocks` extracts metadata correctly but the consumed block indices are not propagated to the section-level pipeline, leaving metadata blocks to be classified as headings by font-size-based heading detection.
+
+**Body cleanup (UNCERTAIN sections)**
+
+- After TOC stripping and abstract deduplication, `strip_metadata_from_uncertain` ([`body/abstract.py`](lib/body/abstract.py)) removes lines from UNCERTAIN sections on page 0 that echo front-matter metadata: labeled lines (`Document:`, `Date:`, etc.), bare values matching the title, document ID, audience, date formats, or reply-to author names with emails. Then `reorder_abstract_in_uncertain` moves Abstract heading + paragraph to the top of UNCERTAIN sections when two-column PDF extraction placed them after body text.
+
+**Sources:** `_run_pipeline` in [`lib/pdf/pipeline.py`](lib/pdf/pipeline.py); `_is_content_heading`, `strip_metadata_headings`, `strip_pre_heading_fragments`, `strip_pre_content_paragraphs` in [`lib/metadata_yaml/strip.py`](lib/metadata_yaml/strip.py); `strip_metadata_from_uncertain`, `reorder_abstract_in_uncertain` in [`lib/body/abstract.py`](lib/body/abstract.py).
 
 ---
 
@@ -375,16 +411,37 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 **Matching**
 
 - Normalize section first lines and headings (strip dot leaders, trailing page numbers, section prefixes).
+- **Multi-line TOC entries:** When the first line of a section is a bare section number (e.g. `"3"`, `"10.5"`, `"A"`) and heading matching fails, the first two lines are joined (e.g. `"3" + "The Proposal"` becomes `"3 The Proposal"`) and re-tested. This handles PDFs where MuPDF splits the TOC section number and title onto separate lines.
+
+**Dot leaders**
+
+- Two forms exist in WG21 PDFs: compact (`....`) matched by `_DOT_LEADER_RE`, and spaced (`. . . .`) matched by `_SPACED_DOT_LEADER_RE`. Both forms count as TOC matches.
+- Dot leaders may appear on **line 2+** of multi-line sections (e.g. section text `"6.1\npotentially-convertible-to . . . 5"`). The `full_texts` parameter passes the complete section text for dot-leader detection while `texts` (first-line only) remains the key for heading matching and deduplication.
 
 **Runs**
 
 - Require **three or more** matches with gap bridging up to **three** misses; stop duplicate first lines; include preceding **Contents** label ([`toc.py`](lib/toc.py)).
 
+**Plausibility guard**
+
+- After `find_toc_indices` returns, a plausibility guard rejects phantom TOC detections. A valid TOC must have at least one confirming signal: (a) dot leaders in at least one section, (b) a "Contents" / "Table of Contents" label in the document, or (c) a heading inside the detected block also exists outside it (the inside copy is a TOC reference, the outside is the real heading). Without any signal the detection is treated as a phantom from heading self-matching, common in short dense papers where the gap between headings is small. Rejected phantom TOCs are logged and the `toc_indices` set is cleared ([`pipeline.py`](lib/pdf/pipeline.py)).
+
+**Protection**
+
+- **Label-anchored TOC fallback:** When `find_toc_indices` returns empty but a paragraph-level "Contents" or "Table of Contents" label exists, the pipeline scans forward for numbered entries (lines matching `^\d+[.)]\s+\S`) until the next HEADING. If 3+ numbered lines are found, the label and intermediate sections are marked as TOC. This handles PDFs where TOC entry titles differ from actual section headings, preventing heading-match-based detection from working ([`pipeline.py`](lib/pdf/pipeline.py)).
+- After `find_toc_indices` returns, the pipeline protects indices whose section is a `HEADING` with a `KNOWN_SECTIONS` name (e.g. Abstract, Motivation) **unless** the section text contains dot-leaders (`. . .` or `.....`), which marks it as a TOC entry rather than a real heading. Body paragraphs immediately after a protected heading are also protected: the **first** paragraph must meet `_TOC_BODY_PROTECT_MIN_WORDS` (10 words, counted across the full paragraph text, not just the first line) to confirm the heading has real content; once confirmed, all subsequent paragraphs are protected regardless of length until the next heading, table, dot-leader, or section-number entry. **Exception:** when the protected heading is `"abstract"`, the word-count threshold is bypassed for the first body paragraph, because short abstracts (e.g. a single sentence) are legitimate. This prevents short but valid prose paragraphs from being stripped as TOC artifacts. **Additionally**, if the first section after an Abstract heading is classified as a `HEADING` with `Confidence.LOW`, it is reclassified as a `PARAGRAPH` (heading_level reset to 0) and protected. This handles wording-heavy papers (e.g. LaTeX proposals with dominant small-font wording blocks) where `_detect_body_size` miscalibrates the body font size, causing the actual abstract prose to be misclassified as a heading.
+- **Duplicate-aware guard (Ticket H fix):** Some PDFs use tab-based or space-aligned TOC formatting without dot-leaders. Before the protection loop, the pipeline collects KNOWN_SECTIONS heading names that exist **outside** the TOC range. If the same name appears both inside and outside, the inside copy is a TOC artifact and is **not** protected. This handles dot-leader-free TOCs without affecting single-occurrence headings that legitimately fall within the TOC range.
+
+**Abstract deduplication**
+
+- After TOC stripping, `_dedup_abstract` removes duplicate `## Abstract` headings. When both a metadata-zone Abstract and a TOC-protected Abstract survive, the empty one (no body paragraph) is removed while the one with body content is kept.
+- **Known limitation (Ticket G):** Headings not in `KNOWN_SECTIONS` (e.g. "History") that appear between Abstract and the first numbered section may not be recognized as section-terminating boundaries. Their body text gets merged into the preceding Abstract section. Requires either adding "History" to `KNOWN_SECTIONS` or improving heading detection for non-standard section names.
+
 **Fuzzy guard**
 
 - Exact set handles common case; **fuzzy** `similar()` runs only when normalized heading count **does not exceed 200** ([`toc.py`](lib/toc.py) comment).
 
-**Why:** Fuzzy on huge heading sets is **O(sections × headings)** and can hang large PDFs ([`toc.py`](lib/toc.py)).
+**Why:** Fuzzy on huge heading sets is **O(sections x headings)** and can hang large PDFs ([`toc.py`](lib/toc.py)).
 
 **Sources:** `find_toc_indices` in [`lib/toc.py`](lib/toc.py); `_toc_structural_hints` in [`lib/pdf/__init__.py`](lib/pdf/__init__.py).
 
@@ -404,9 +461,23 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 - Merge adjacent monospace spans into one backtick run; **suppress bold** inside headings ([`emit.py`](lib/pdf/emit.py)).
 
+**Table cell rendering**
+
+- When **all** non-whitespace spans in a table cell are monospace, merge into a **single** backtick pair instead of fragmenting per-span. Prevents output like `` `template``<``T``>` `` ([`_render_cell_spans`](lib/pdf/emit.py)).
+
+**Wording sections**
+
+- Wording sections (ins/del fenced divs) preserve **line breaks** when the section contains monospace (code) spans. Prose-only wording sections are collapsed to a single line. This keeps C++ standard wording code readable ([`_render_wording_section`](lib/pdf/emit.py)).
+
+**Empty heading skip**
+
+- Headings that render as bare ATX prefixes with no text (e.g. `## `) are skipped during emission. This handles multi-line heading sections where MuPDF places whitespace on line 0 and the actual title on a later line, and the heading renderer only uses line 0 ([`emit.py`](lib/pdf/emit.py)).
+
 **Post-pass**
 
-- Run `dedup_paragraphs`, strip redundant body metadata tables or lines, strip duplicate leading **H1** when it matches or is a prefix of the title ([`emit.py`](lib/pdf/emit.py), [`lib/__init__.py`](lib/__init__.py)).
+- Run `dedup_paragraphs`, strip redundant body metadata tables or lines, strip duplicate leading **H1** when it matches or is a prefix of the title ([`emit.py`](lib/pdf/emit.py), [`lib/__init__.py`](lib/__init__.py)). `strip_leading_h1` also handles plaintext title echoes (no `#` prefix) via fuzzy `_titles_match`, and promotes a bare "Abstract" line immediately after to `## Abstract` when the PDF structurer missed the heading markup ([`shared.py`](lib/shared.py)).
+- **Freeform metadata stripping:** After emit, `strip_freeform_metadata_lines` (called from `api.py`) scans the first `_FREEFORM_SCAN_DEPTH` (15) non-blank body lines for leaked metadata labels (`_FREEFORM_META_LABEL_RE`). Labels include `Document`, `Document #`, `Date`, `Audience`, `Reply to`, `Authors`, etc. Also matches `Document PXXXXRN` (no colon) and `ISO/IEC JTC...` header lines via `_FREEFORM_DOC_ID_RE`. When `metadata` is provided (API layer), three content-aware checks fire before the structural-line break: (a) heading/list lines with metadata labels (`_HEADING_META_LABEL_RE`, `_LIST_META_LABEL_RE`), (b) bare date headings (`_HEADING_BARE_DATE_RE`), (c) author-name headings matching `reply-to` tokens, and (d) bare author+email lines matching `reply-to` names. Continuation detection handles both indented/comma-prefixed lines and "label-only" lines where the label ends with `:` and the value sits on the next line without indentation ([`shared.py`](lib/shared.py)).
+- **Orphan TOC strip:** Remove bullet-list Tables of Contents that appear between front matter and the first `##` heading. Some WG21 PDFs use minimal TOCs (section names as bullets, no dot-leaders or page numbers) that survive TOC detection. The strip fires when at least 3 bullets exist and at least 50% match actual document headings. Applied in both PDF and HTML emit paths ([`shared.py`](lib/shared.py) `strip_orphan_toc_list`).
 
 **Wording prompts**
 
@@ -422,7 +493,11 @@ Links point to sections above.
 
 | Module | Topics |
 |--------|--------|
-| [`lib/pdf/__init__.py`](lib/pdf/__init__.py) | [Early exits](#early-exits), [Body-font census](#body-font-census), [Page zero metadata](#page-zero-metadata), [Table insertion](#table-insertion), [Metadata merge](#metadata-merge), [TOC hints](#toc-stripping), [Emit prompts](#emit) |
+| [`lib/pdf/__init__.py`](lib/pdf/__init__.py) | [Early exits](#early-exits), [Body-font census](#body-font-census), [Page zero metadata](#page-zero-metadata), [Table insertion](#table-insertion), [TOC hints](#toc-stripping), [Emit prompts](#emit) |
+| [`lib/pdf/pipeline.py`](lib/pdf/pipeline.py) | [Metadata merge](#metadata-merge) (orchestration), [TOC stripping](#toc-stripping) (plausibility guard, label-anchored fallback, protection, dedup), [Body cleanup](#body-cleanup-uncertain-sections) |
+| [`lib/metadata_yaml/extract.py`](lib/metadata_yaml/extract.py) | [Structure](#structure) (early metadata scan), [Metadata merge](#metadata-merge) (fallbacks, revision override, reply-to enrichment) |
+| [`lib/metadata_yaml/strip.py`](lib/metadata_yaml/strip.py) | [Metadata merge](#metadata-merge) (pre-heading stripping, metadata heading stripping) |
+| [`lib/body/abstract.py`](lib/body/abstract.py) | [TOC stripping](#toc-stripping) (abstract dedup), [Body cleanup](#body-cleanup-uncertain-sections) (metadata echo strip, abstract reorder) |
 | [`lib/pdf/extract.py`](lib/pdf/extract.py) | [Dual extraction](#dual-extraction), [Links](#links) |
 | [`lib/pdf/types.py`](lib/pdf/types.py) | Spatial ratios, regex helpers, [Readability](#readability-gate), similarity threshold |
 | [`lib/pdf/cleanup.py`](lib/pdf/cleanup.py) | [Hidden stripping](#hidden-region-stripping), [Header and footer](#header-and-footer-stripping), [Text cleanup](#text-cleanup) |

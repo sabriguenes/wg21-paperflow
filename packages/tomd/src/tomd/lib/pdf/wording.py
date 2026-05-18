@@ -223,6 +223,7 @@ def classify_wording(blocks: list[Block],
     Sets span.wording_role on matching spans.
     Returns an empty list (reserved for future diagnostic messages).
     """
+    # Candidates carry (span, role, page_num) for page-local promotion.
     candidates: list[tuple] = []
 
     for block in blocks:
@@ -242,28 +243,37 @@ def classify_wording(blocks: list[Block],
                     continue
 
                 if is_green_ins(span.color):
-                    candidates.append((span, "ins"))
+                    candidates.append((span, "ins", block.page_num))
                 elif is_red_del(span.color):
                     if _match_strikethrough(span.bbox, drawings):
-                        candidates.append((span, "del"))
+                        candidates.append((span, "del", block.page_num))
                     else:
-                        candidates.append((span, "del_unconfirmed"))
+                        candidates.append((span, "del_unconfirmed", block.page_num))
                 elif not _is_chromatic(span.color) and span.color != 0:
                     r, g, b = _color_int_to_rgb(span.color)
                     lightness = (r + g + b) / 3.0
                     if _CONTEXT_LIGHTNESS_MIN < lightness < _CONTEXT_LIGHTNESS_MAX:
-                        candidates.append((span, "context"))
+                        candidates.append((span, "context", block.page_num))
 
-    ins_count = sum(1 for _, r in candidates if r == "ins")
-    confirmed_del = sum(1 for _, r in candidates if r == "del")
+    ins_count = sum(1 for _, r, _ in candidates if r == "ins")
+    confirmed_del = sum(1 for _, r, _ in candidates if r == "del")
+    preamble_dropped = 0
 
     if ins_count >= _MIN_WORDING_SPANS:
+        # Page-gated promotion: only promote del_unconfirmed on pages at
+        # or after the first page containing an ins span. The preamble
+        # (Abstract, TOC, Revision History) precedes wording sections and
+        # often contains red code-styling that must not be promoted.
+        # Ticket F: prevents 432 false wording-remove blocks in p2583r3.
+        first_ins_page = min(pg for _, r, pg in candidates if r == "ins")
         candidates = [
-            (s, "del" if r == "del_unconfirmed" else r)
-            for s, r in candidates
+            (s, "del" if r == "del_unconfirmed" and pg >= first_ins_page else r, pg)
+            for s, r, pg in candidates
         ]
-    else:
-        candidates = [(s, r) for s, r in candidates if r != "del_unconfirmed"]
+    # Drop remaining unconfirmed (preamble pages, or ins_count < threshold).
+    pre_drop = len(candidates)
+    candidates = [(s, r, pg) for s, r, pg in candidates if r != "del_unconfirmed"]
+    preamble_dropped = pre_drop - len(candidates)
 
     ins_del = [c for c in candidates if c[1] in ("ins", "del")]
     if len(ins_del) < _MIN_WORDING_SPANS:
@@ -271,13 +281,13 @@ def classify_wording(blocks: list[Block],
                     len(ins_del), _MIN_WORDING_SPANS)
         return []
 
-    for span, role in candidates:
+    for span, role, _ in candidates:
         span.wording_role = role
 
-    del_count = sum(1 for _, r in candidates if r == "del")
-    ctx_count = sum(1 for _, r in candidates if r == "context")
-    _log.info("Wording detected: %d ins, %d del (%d promoted), %d context",
-               ins_count, del_count, del_count - confirmed_del if del_count > confirmed_del else 0,
-               ctx_count)
+    del_count = sum(1 for _, r, _ in candidates if r == "del")
+    ctx_count = sum(1 for _, r, _ in candidates if r == "context")
+    promoted = del_count - confirmed_del if del_count > confirmed_del else 0
+    _log.info("Wording detected: %d ins, %d del (%d promoted, %d preamble dropped), %d context",
+               ins_count, del_count, promoted, preamble_dropped, ctx_count)
 
     return []

@@ -56,6 +56,11 @@ class Line:
         text_spans = [s for s in self.spans if s.text.strip()]
         return bool(text_spans) and all(s.bold for s in text_spans)
 
+    @property
+    def is_monospace(self) -> bool:
+        text_spans = [s for s in self.spans if s.text.strip()]
+        return bool(text_spans) and all(s.monospace for s in text_spans)
+
 
 @dataclass
 class Block:
@@ -199,11 +204,27 @@ KNOWN_SECTIONS = frozenset({
     "impact on the standard",
     "proposed changes",
     "poll results",
+    "polls",
     "changelog",
     "appendix",
     "bibliography",
     "summary",
     "conclusion",
+    "history",
+    "related work",
+    "prior art",
+    "proposal",
+    "discussion",
+    "rationale",
+    "open questions",
+    "straw polls",
+    "thanks",
+    "alternatives considered",
+    "alternatives",
+    "comparison",
+    "examples",
+    "faq",
+    "questions",
 })
 
 TERMINAL_PUNCTUATION = frozenset(".?!:")

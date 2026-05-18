@@ -1059,7 +1059,8 @@ def strip_boilerplate(soup: BeautifulSoup, generator: str) -> list[str]:
 
     if generator == "bikeshed":
         for div in soup.find_all("div", {"data-fill-with": True}):
-            div.decompose()
+            if div["data-fill-with"] != "abstract":
+                div.decompose()
         for h1 in soup.find_all("h1", class_="p-name"):
             h1.decompose()
         for h2 in soup.find_all("h2", id="profile-and-date"):

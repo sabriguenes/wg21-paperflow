@@ -110,33 +110,33 @@ def test_find_hidden_regions_mode_3_skipped():
 
 # ---- strip_hidden_blocks -------------------------------------------------
 
-def _make_block(text, x0, y0, x1, y1):
+def _make_block(text, x0, y0, x1, y1, page_num=0):
     span = Span(
         text=text, font_name="Body", font_size=11.0,
         bbox=(x0, y0, x1, y1),
     )
     line = Line(spans=[span], bbox=(x0, y0, x1, y1))
-    return Block(lines=[line], bbox=(x0, y0, x1, y1))
+    return Block(lines=[line], bbox=(x0, y0, x1, y1), page_num=page_num)
 
 
 def test_strip_hidden_blocks_empty_hidden_set_returns_input():
     """No hidden bboxes -> input blocks returned unchanged."""
     block = _make_block("visible text", 10, 10, 100, 30)
-    assert strip_hidden_blocks([block], set()) == [block]
+    assert strip_hidden_blocks([block], {}) == [block]
 
 
 def test_strip_hidden_blocks_drops_block_entirely_in_hidden():
     """A block whose only span overlaps a hidden bbox is dropped."""
-    block = _make_block("widget text", 10, 10, 100, 30)
-    hidden = {(5.0, 5.0, 150.0, 50.0)}  # engulfs the block
+    block = _make_block("widget text", 10, 10, 100, 30, page_num=0)
+    hidden = {0: {(5.0, 5.0, 150.0, 50.0)}}
     result = strip_hidden_blocks([block], hidden)
     assert result == []
 
 
 def test_strip_hidden_blocks_keeps_block_outside_hidden():
     """A block whose span is outside all hidden bboxes survives."""
-    block = _make_block("body text", 10, 300, 100, 320)
-    hidden = {(5.0, 5.0, 150.0, 50.0)}  # hidden at y=5..50; block at y=300 untouched
+    block = _make_block("body text", 10, 300, 100, 320, page_num=0)
+    hidden = {0: {(5.0, 5.0, 150.0, 50.0)}}
     result = strip_hidden_blocks([block], hidden)
     assert result == [block]
 
@@ -152,7 +152,15 @@ def test_strip_hidden_blocks_keeps_block_with_any_visible_span():
         bbox=(60, 10, 150, 30),
     )
     line = Line(spans=[hidden_span, visible_span], bbox=(10, 10, 150, 30))
-    block = Block(lines=[line], bbox=(10, 10, 150, 30))
-    hidden = {(5.0, 5.0, 55.0, 35.0)}  # covers hidden_span only
+    block = Block(lines=[line], bbox=(10, 10, 150, 30), page_num=0)
+    hidden = {0: {(5.0, 5.0, 55.0, 35.0)}}
+    result = strip_hidden_blocks([block], hidden)
+    assert result == [block]
+
+
+def test_strip_hidden_blocks_ignores_hidden_on_different_page():
+    """Hidden regions on page 2 must not affect blocks on page 0."""
+    block = _make_block("heading", 10, 10, 100, 30, page_num=0)
+    hidden = {2: {(5.0, 5.0, 150.0, 50.0)}}
     result = strip_hidden_blocks([block], hidden)
     assert result == [block]

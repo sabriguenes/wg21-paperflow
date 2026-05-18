@@ -5,7 +5,8 @@ import os
 import re
 from pathlib import Path
 
-from .. import format_front_matter, dedup_paragraphs, strip_redundant_body_meta, strip_leading_h1
+from ..metadata_yaml.format import format_front_matter
+from .. import dedup_paragraphs, strip_redundant_body_meta, strip_orphan_toc_list, strip_leading_h1
 from . import extract as _extract
 from . import render as _render
 
@@ -101,6 +102,7 @@ def convert_html(path: Path | os.PathLike[str]) -> tuple[str, list[str] | None]:
                 md = md[:fm_end + 1] + body
 
     md = strip_redundant_body_meta(md)
+    md = strip_orphan_toc_list(md)
 
     if metadata:
         fm_end = md.find("---", 4)
