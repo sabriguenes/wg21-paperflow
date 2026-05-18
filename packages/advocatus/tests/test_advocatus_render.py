@@ -60,7 +60,7 @@ def test_render_sine_causa():
         confidence=1.0,
     )
     out = render_relatio(state)
-    assert "*Sine causa*" in out
+    assert "***Sine causa.***" in out
     assert "tribunal does not convene" in out
     assert "P1000R0" in out
     # No objections / probationes / acta sections under sine_causa
@@ -79,7 +79,7 @@ def test_render_nihil_obstat_no_objections():
         objections=[],
     )
     out = render_relatio(state)
-    assert "*Nihil obstat*" in out
+    assert "***Nihil obstat.***" in out
     assert "0.92" in out
     assert "## Objections" not in out  # no objections section when empty
     assert "## Acta" in out
@@ -107,6 +107,9 @@ def test_render_cum_objectionibus_full():
     )
 
     killed = _charge(20)
+    # Distinct section on articulus 20 so the Probatio heading uniquely
+    # identifies which articulus the section came from.
+    art_20 = _articulus(20).model_copy(update={"section": "2.20"})
     p = Probatio(
         articulus_uid=killed.articulus_uid,
         killed_charge=killed,
@@ -138,7 +141,7 @@ def test_render_cum_objectionibus_full():
         seal="cum_objectionibus",
         one_sentence_assessment="The cause proceeds with one objection of consequence.",
         confidence=0.78,
-        articuli=[_articulus(10), _articulus(20)],
+        articuli=[_articulus(10), art_20],
         candidate_charges=[_charge(10), _charge(20)],
         defensor_results=[defensor],
         surviving_charges=[surviving],
@@ -151,13 +154,13 @@ def test_render_cum_objectionibus_full():
     out = render_relatio(state)
 
     # Verdict first
-    seal_pos = out.index("*Cum objectionibus*")
+    seal_pos = out.index("***Cum objectionibus.***")
     obj_pos = out.index("## Objections")
     assert seal_pos < obj_pos
 
-    # Objections rendered in severity order: HIGH before LOW
-    high_pos = out.index("[HIGH]")
-    low_pos = out.index("[LOW]")
+    # Objections rendered in severity order: High before Low
+    high_pos = out.index("Severity: High")
+    low_pos = out.index("Severity: Low")
     assert high_pos < low_pos
 
     # Each section present
@@ -171,9 +174,12 @@ def test_render_cum_objectionibus_full():
     assert "## Notae Minores" in out
     assert "formatting inconsistency" in out
 
-    # uid references appear
-    assert "uid 10" in out
-    assert "uid 20" in out
+    # Provenance from the originating articuli surfaces in the output.
+    # Articulus 20 was killed → its section heads the Probatio entry.
+    assert "2.20" in out
+    # Articulus 10 carries the surviving objection → its charge's
+    # quoted text is rendered verbatim under each Objection.
+    assert "X is the best approach" in out
 
 
 def test_render_omits_empty_optional_sections():
@@ -207,7 +213,7 @@ def _full_state_for_trace() -> PipelineState:
         dissect_evidence=[
             DossierEntry(label="operator_provided", text="evidence text"),
         ],
-        dissect_markers=[a],
+        dissect_rhetoric=[a],
         dissect_caput_causae="The paper argues for X.",
         dissect_citation_audit=[
             TabulaFontiumEntry(paper_id="P9999R0", resolution_method="wg21_link",

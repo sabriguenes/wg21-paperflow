@@ -65,10 +65,14 @@ async def _main() -> None:
             if e.merged_into is not None:
                 continue
             flags = []
-            if e.quantitative: flags.append("Q")
-            if e.cited: flags.append("C")
-            if e.verifiable: flags.append("V")
-            if e.normative: flags.append("N")
+            if e.quantitative:
+                flags.append("Q")
+            if e.cited:
+                flags.append("C")
+            if e.verifiable:
+                flags.append("V")
+            if e.normative:
+                flags.append("N")
             print(f"  [{e.uid}] L{e.loc.line} [{','.join(flags) or '-'}]  ({e.section})")
             print(f"      text: {e.text}")
             for s in e.supports:

@@ -13,10 +13,9 @@ phrasing AND margin -- and see which combo wins.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
-from ablate import decide, TAGS, score_config  # type: ignore
+from ablate import score_config  # type: ignore
 
 ROOT = Path(__file__).parent
 ALT_DIR = ROOT / "data" / "alt_hypothesis_scores"
@@ -76,8 +75,8 @@ def main() -> None:
 
     print("\n## Sorted summary (by accuracy desc, T->S asc)\n")
     summary.sort(key=lambda r: (-r[0], r[1]))
-    print(f"| acc | T->S miss | F1 T | F1 S | classifier | variant | margin |")
-    print(f"| --- | --- | --- | --- | --- | --- | --- |")
+    print("| acc | T->S miss | F1 T | F1 S | classifier | variant | margin |")
+    print("| --- | --- | --- | --- | --- | --- | --- |")
     for acc, crit, ft, fs, clf, vid, (tm, sm) in summary:
         print(f"| {acc:.3f} | {crit} | {ft:.3f} | {fs:.3f} | "
               f"{clf} | {vid} | ({tm}, {sm}) |")

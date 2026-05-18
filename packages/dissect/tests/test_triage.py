@@ -17,7 +17,6 @@ those edge cases.
 
 from __future__ import annotations
 
-import pytest
 
 from dissect import triage
 from dissect.models import Claim, SourceLoc

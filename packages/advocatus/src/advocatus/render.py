@@ -34,7 +34,6 @@ from pipeline import sanitize_md
 
 from advocatus.models import (
     PipelineState,
-    Seal,
 )
 
 _SEAL_HEADERS = {

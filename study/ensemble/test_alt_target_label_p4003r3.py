@@ -50,7 +50,7 @@ def main() -> None:
     slots = resolve_classifier_slots(clfs, defaults, {"selector": "nli-small"})
     classifier = slots["selector"]
 
-    print(f"# Cross-paper validation: alt target labels on P4003R3\n")
+    print("# Cross-paper validation: alt target labels on P4003R3\n")
     g_t = sum(1 for v in gold.values() if v == "TARGET")
     g_c = sum(1 for v in gold.values() if v == "CONTEXT")
     g_s = sum(1 for v in gold.values() if v == "SKIP")

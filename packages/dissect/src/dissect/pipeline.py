@@ -39,13 +39,11 @@ from pipeline import (
     load_services,
     make_read_paper_tool,
     resolve_slots,
-    run_agent,
     run_task,
 )
 from pipeline.errors import (
     PaperNotConvertedError,
     PaperNotFoundError,
-    PromptFileError,
     StepError,
 )
 from dissect.harness import (

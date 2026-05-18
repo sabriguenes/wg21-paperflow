@@ -86,13 +86,17 @@ def test_load_sections_caches_result():
 
 
 def test_step_names_match_advocatus_md_to_hooks():
-    from advocatus.pipeline import _HOOKS, load_sections
+    from advocatus.pipeline import _build_hooks, load_sections
+    from pipeline.agents import AgentBackend
+    from pipeline.model_backends import Llama3Backend
+    stub = AgentBackend(Llama3Backend(base_url="", api_key="", model=""))
+    hooks = _build_hooks(stub, stub)
     secs = load_sections("advocatus", "advocatus.md")
     step_keys = {k for k in secs if k.startswith("Step ")}
-    assert step_keys == set(_HOOKS), (
-        f"Mismatch between advocatus.md and _HOOKS:\n"
-        f"  in advocatus.md, not in _HOOKS: {step_keys - set(_HOOKS)}\n"
-        f"  in _HOOKS, not in advocatus.md: {set(_HOOKS) - step_keys}"
+    assert step_keys == set(hooks), (
+        f"Mismatch between advocatus.md and registered hooks:\n"
+        f"  in advocatus.md, not in hooks: {step_keys - set(hooks)}\n"
+        f"  in hooks, not in advocatus.md: {set(hooks) - step_keys}"
     )
 
 
@@ -137,7 +141,7 @@ def test_pure_load_reads_all_paperrow_fields_we_care_about(tmp_path: Path):
     backend.write_dissect_md("P1234R0", "# Dissect\n\nContent.")
 
     state = PipelineState()
-    ctx = StepContext(sections={}, model_slots={}, backend=backend, pid="P1234R0")
+    ctx = StepContext(sections={}, backend=backend, pid="P1234R0")
 
     asyncio.run(_pure_load(state, ctx))
 
@@ -152,13 +156,13 @@ def test_pure_load_reads_all_paperrow_fields_we_care_about(tmp_path: Path):
 
 def test_step_context_initializes_debug_log_when_debug_true():
     from pipeline import StepContext
-    ctx = StepContext(sections={}, model_slots={}, debug=True)
+    ctx = StepContext(sections={}, debug=True)
     assert ctx.debug_log == []
 
 
 def test_step_context_debug_log_stays_none_when_debug_false():
     from pipeline import StepContext
-    ctx = StepContext(sections={}, model_slots={}, debug=False)
+    ctx = StepContext(sections={}, debug=False)
     assert ctx.debug_log is None
 
 
@@ -182,50 +186,38 @@ def test_dispatch_stop_after_halts_after_step_n():
 
     pipeline = [_spec(i) for i in range(5)]
     state = PipelineState()
-    ctx = StepContext(sections={}, model_slots={})
+    ctx = StepContext(sections={})
 
     asyncio.run(dispatch(pipeline, state, ctx, stop_after=2))
     assert visited == [0, 1, 2]
 
 
-def test_run_task_appends_to_debug_log_when_provided():
-    """run_task must call render_debug_md and append to debug_log."""
-    import pipeline.tasks as pmod
+def test_run_task_forwards_debug_log_to_agent():
+    """run_task must forward debug_log through to the agent's run method."""
+    from pydantic import BaseModel
+    from pipeline.tasks import run_task
+
+    class _Out(BaseModel):
+        text: str
 
     log: list[str] = []
-    captured: list = []
-
-    class _StubResult:
-        output = "stub-output"
-
-        def all_messages(self):
-            return []
+    captured: dict = {}
 
     class _StubAgent:
-        def __init__(self, *a, **kw):
-            pass
+        async def run(self, system_prompt, user_message, output_type, **kwargs):
+            captured["debug_log"] = kwargs.get("debug_log")
+            captured["label"] = kwargs.get("label")
+            return _Out(text="stub-output")
 
-        def tool_plain(self, fn):
-            pass
+    result = asyncio.run(run_task(
+        _StubAgent(),  # type: ignore[arg-type]
+        "sp",
+        "um",
+        _Out,
+        label="test-label",
+        debug_log=log,
+    ))
 
-        async def run(self, *a, **kw):
-            return _StubResult()
-
-    monkey_patch_targets = {"Agent": _StubAgent}
-    orig_agent = pmod.Agent
-    pmod.Agent = _StubAgent  # type: ignore[assignment]
-    try:
-        result = asyncio.run(pmod.run_task(
-            system_prompt="sp",
-            user_message="um",
-            output_type=str,
-            label="test-label",
-            debug_log=log,
-        ))
-    finally:
-        pmod.Agent = orig_agent  # type: ignore[assignment]
-    captured.append(monkey_patch_targets)  # silence unused-var
-
-    assert result == "stub-output"
-    assert len(log) == 1
-    assert log[0].startswith("# test-label")
+    assert result.text == "stub-output"
+    assert captured["debug_log"] is log
+    assert captured["label"] == "test-label"

@@ -24,7 +24,7 @@ from pathlib import Path
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).parent))
-from ablate import decide  # type: ignore
+from ablate import decide  # type: ignore  # noqa: E402
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -38,11 +38,16 @@ EXAMPLE_BLOCK = re.compile(r"^\[\*Example\b.*\*end example\*\]", re.DOTALL)
 
 def is_structural_skip(text: str) -> bool:
     t = text.strip()
-    if NUMBER_ONLY.match(t): return True
-    if ELLIPSIS_PREFIX.match(t): return True
-    if PUNCT_ONLY.match(t): return True
-    if len(t.split()) < 3: return True
-    if EXAMPLE_BLOCK.match(t): return True
+    if NUMBER_ONLY.match(t):
+        return True
+    if ELLIPSIS_PREFIX.match(t):
+        return True
+    if PUNCT_ONLY.match(t):
+        return True
+    if len(t.split()) < 3:
+        return True
+    if EXAMPLE_BLOCK.match(t):
+        return True
     return False
 
 
@@ -113,9 +118,11 @@ def main() -> None:
         return decide(scores_["target"], scores_["skip"], 0.05, 0.40), "large"
 
     def cascade(which, row):
-        s = row["nli-small"][which]
-        l = row["zeroshot-large"][which]
-        return cascade_pred(s["target"], s["skip"], l["target"], l["skip"])
+        small = row["nli-small"][which]
+        large = row["zeroshot-large"][which]
+        return cascade_pred(
+            small["target"], small["skip"], large["target"], large["skip"],
+        )
 
     def filter_then_small(which, row):
         if is_structural_skip(row["text"]):
@@ -133,7 +140,7 @@ def main() -> None:
         return cascade(which, row)
 
     print("# Final cascade-vs-single ablation\n")
-    print(f"Corpus: P2300R10 Phase 1 + Phase 2  (n=410)\n")
+    print("Corpus: P2300R10 Phase 1 + Phase 2  (n=410)\n")
 
     for which in ("baseline", "alt"):
         hypo_label = (

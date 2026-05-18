@@ -8,10 +8,10 @@
 """PDF text extraction for the web_fetch tool.
 
 Registered into ``WebResearcher.binary_extractors`` so dissect's
-``web_fetch`` calls can resolve PDF-served citations. ``web_tools``
-itself stays free of pymupdf (AGPL) by design; the extractor lives
-here because dissect is already inside the paperflow AGPL surface
-via tomd.
+``web_fetch`` calls can resolve PDF-served citations. The ``pipeline``
+package itself stays free of pymupdf (AGPL) by design; the extractor
+lives here because dissect is already inside the paperflow AGPL
+surface via tomd.
 """
 
 from __future__ import annotations

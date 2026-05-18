@@ -43,7 +43,6 @@ from dissect.models import (
     ExternalEvidence,
     LoadBearingResult,
     PipelineState,
-    SentenceTag,
     SourceLoc,
     WebSearchOutput,
 )

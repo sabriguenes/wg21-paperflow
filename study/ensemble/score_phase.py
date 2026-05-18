@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from ablate import decide, TAGS, score_config  # type: ignore
+from ablate import TAGS, score_config  # type: ignore
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
@@ -49,7 +49,7 @@ def main() -> None:
     have_small = len(small) == len(sids)
     have_large = len(large) == len(sids)
     print(f"# {pid} phase ablation  ({len(sids)} sentences)")
-    print(f"\nGold: " + ", ".join(
+    print("\nGold: " + ", ".join(
         f"{tag}={sum(1 for v in gold_by_sid.values() if v == tag)}"
         for tag in TAGS
     ))

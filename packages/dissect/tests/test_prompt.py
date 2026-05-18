@@ -188,7 +188,7 @@ def test_pipeline_has_17_steps():
     """Verify the full pipeline has steps 0-16."""
     from dissect.pipeline import load_sections
     hooks = _make_test_hooks()
-    secs = dict(load_sections("dissect", "dissect.md"))
+    secs = dict(load_sections("dissect", "dissect.md"))  # copy: build_pipeline mutates input
     specs = build_pipeline(secs, hooks)
     assert len(specs) == 17
     assert specs[0].meta.number == 0
@@ -198,7 +198,7 @@ def test_pipeline_has_17_steps():
 def test_dissect_prompt_has_required_system_prompts():
     from dissect.pipeline import load_sections
     hooks = _make_test_hooks()
-    secs = dict(load_sections("dissect", "dissect.md"))
+    secs = dict(load_sections("dissect", "dissect.md"))  # copy: build_pipeline mutates input
     specs = build_pipeline(secs, hooks)
     by_number = {spec.meta.number: spec for spec in specs}
 

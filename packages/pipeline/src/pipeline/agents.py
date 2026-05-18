@@ -23,7 +23,7 @@ Pipelines create named agents by intent::
 
 from __future__ import annotations
 
-from typing import Any, Callable, TypeVar
+from typing import Callable, TypeVar
 
 from pydantic import BaseModel
 

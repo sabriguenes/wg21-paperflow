@@ -38,7 +38,6 @@ def main() -> None:
     from dissect.harness import (
         _blank_non_prose, _chunk_paper, _decompose_sentences,
     )
-    from dissect.models import Chunk
 
     source = md_path.read_text(encoding="utf-8")
     blanked, n_blanked = _blank_non_prose(source)

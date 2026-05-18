@@ -37,11 +37,16 @@ def study_is_structural_skip(text: str) -> bool:
     PUNCT_ONLY = re.compile(r"^[\W\d]+$", re.UNICODE)
     EXAMPLE_BLOCK = re.compile(r"^\[\*Example\b.*\*end example\*\]", re.DOTALL)
     t = text.strip()
-    if NUMBER_ONLY.match(t): return True
-    if ELLIPSIS_PREFIX.match(t): return True
-    if PUNCT_ONLY.match(t): return True
-    if len(t.split()) < 3: return True
-    if EXAMPLE_BLOCK.match(t): return True
+    if NUMBER_ONLY.match(t):
+        return True
+    if ELLIPSIS_PREFIX.match(t):
+        return True
+    if PUNCT_ONLY.match(t):
+        return True
+    if len(t.split()) < 3:
+        return True
+    if EXAMPLE_BLOCK.match(t):
+        return True
     return False
 
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 

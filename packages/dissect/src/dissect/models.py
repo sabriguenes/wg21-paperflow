@@ -16,10 +16,9 @@ AI's ``output_type``. Frozen domain models are updated via
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal, Optional, Self
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
-from pydantic_ai import ModelRetry
+from pydantic import BaseModel, Field
 
 from paperstore import SourceLoc
 

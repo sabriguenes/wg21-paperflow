@@ -20,10 +20,11 @@ the test).
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 
 import pytest
 from pipeline import StepContext
+from pipeline.agents import AgentBackend
+from pipeline.model_backends import Llama3Backend
 
 from dissect import pipeline
 from dissect.models import (
@@ -36,6 +37,11 @@ from dissect.models import (
     VerifyProposition,
 )
 from dissect.pipeline import _custom_verify, _normalize
+
+
+def _stub_agents() -> dict[str, AgentBackend]:
+    stub = AgentBackend(Llama3Backend(base_url="", api_key="", model=""))
+    return {"fast": stub, "default": stub, "tool": stub}
 
 
 # ---- _normalize ----------------------------------------------------------
@@ -174,19 +180,14 @@ async def test_custom_verify_drops_identical_text_pair(monkeypatch):
         lambda a, b: _ones(len(a), len(b)) if a is not None and b is not None else None,
     )
 
-    # Resolve the model to a sentinel so the run_task stub does not
-    # need a real model object. Avoids dragging in ctx._current_spec.
-    monkeypatch.setattr(pipeline, "_resolve_model_for", lambda ctx: "test:stub")
-
     captured_payloads: list[list[dict]] = []
 
-    async def fake_run_task(*args, **kwargs):
+    async def fake_run_task(agent, system_prompt, user_message, output_type, **kwargs):
         # The Verify step calls run_task in two phases: Batched Verify
         # (output_type=BatchVerifyOutput) and Detect Disclaim
         # (output_type=DisclaimPairOutput). We only care about the
         # first; return a benign empty result for the second so the
         # call returns through to Phase 5 aggregation.
-        output_type = kwargs.get("output_type")
         if output_type is DisclaimPairOutput:
             # The harness overrides claim_a_uid/claim_b_uid via
             # model_copy after the call, so the stub values don't
@@ -194,28 +195,27 @@ async def test_custom_verify_drops_identical_text_pair(monkeypatch):
             return DisclaimPairOutput(
                 claim_a_uid=0, claim_b_uid=0, relation="none",
             )
-        user_msg: str = kwargs.get("user_message", "")
         captured_payloads.append([
             {"claim_uid": cuid, "evidence_uid": euid}
-            for cuid, euid in _extract_pairs_from_msg(user_msg)
+            for cuid, euid in _extract_pairs_from_msg(user_message)
         ])
         return BatchVerifyOutput(judgements=[
             VerifyProposition(claim_uid=cuid, evidence_uid=euid, verdict="unrelated")
-            for cuid, euid in _extract_pairs_from_msg(user_msg)
+            for cuid, euid in _extract_pairs_from_msg(user_message)
         ])
 
     monkeypatch.setattr(pipeline, "run_task", fake_run_task)
 
     ctx = StepContext(
         sections={"8. Verify": "### Sub-prompt: Batched Verify\n\nstub instructions\n"},
-        model_slots={"default": "test:stub"},
+        agents=_stub_agents(),
         researcher=None,
         backend=None,
         debug=False,
         pid="P9999R0",
         tool_registry={},
     )
-    ctx._current_spec = None  # _resolve_model_for is patched; system prompt path is the empty branch.
+    ctx._current_spec = None  # run_task is stubbed; agent lookup uses ctx.agents.
 
     await _custom_verify(state, ctx)
 
@@ -262,10 +262,7 @@ async def test_custom_verify_keeps_pairs_when_no_self_collision(monkeypatch):
         "cosine_matrix",
         lambda a, b: _ones(len(a), len(b)) if a is not None and b is not None else None,
     )
-    monkeypatch.setattr(pipeline, "_resolve_model_for", lambda ctx: "test:stub")
-
-    async def fake_run_task(*args, **kwargs):
-        output_type = kwargs.get("output_type")
+    async def fake_run_task(agent, system_prompt, user_message, output_type, **kwargs):
         if output_type is DisclaimPairOutput:
             return DisclaimPairOutput(
                 claim_a_uid=0, claim_b_uid=0, relation="none",
@@ -276,7 +273,7 @@ async def test_custom_verify_keeps_pairs_when_no_self_collision(monkeypatch):
 
     ctx = StepContext(
         sections={"8. Verify": "### Sub-prompt: Batched Verify\n\nstub instructions\n"},
-        model_slots={"default": "test:stub"},
+        agents=_stub_agents(),
         researcher=None,
         backend=None,
         debug=False,

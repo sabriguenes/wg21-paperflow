@@ -30,7 +30,7 @@ Bump the version, tag, push, and create a GitHub release.
 
 4. **Run the workspace `uv sync`** to refresh `uv.lock`, then run tests per-package the way CI does (a single root `uv run pytest` collides on duplicate test module basenames):
    ```
-   for pkg in paperstore mailing tomd cli dissect web_tools; do
+   for pkg in paperstore mailing tomd cli dissect pipeline advocatus agora preview; do
      uv run pytest "packages/$pkg/tests" -q || exit 1
    done
    uv run pytest tests -q

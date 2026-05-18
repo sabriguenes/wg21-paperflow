@@ -10,7 +10,7 @@
 Closes the gap that the WebResearcher PDF-fetch bug fix exposed: when
 ``web_fetch`` returns extracted PDF text (rather than an error string),
 the resulting citation_audit row must report ``Resolved: Yes`` with an
-empty ``Discrepancy``. This test exercises ``_pure_verify_citations``
+empty ``Discrepancy``. This test exercises ``_custom_verify_citations``
 end-to-end with the LLM call stubbed and verifies both the in-memory
 ``state.citation_audit`` entries and the rendered Citation Audit row.
 """
@@ -28,8 +28,11 @@ from dissect.models import (
     CitationTaskOutput,
     PipelineState,
 )
-from dissect.pipeline import StepContext, _pure_verify_citations
+from dissect.pipeline import _custom_verify_citations
 from dissect.render import render_report
+from pipeline import StepContext
+from pipeline.agents import AgentBackend
+from pipeline.model_backends import Llama3Backend
 
 
 def _fake_run_task_returning(audit_entry: CitationAuditEntry):
@@ -52,7 +55,7 @@ async def test_successful_pdf_fetch_yields_resolved_audit_row(monkeypatch):
     # LLM then produces an audit row reporting successful resolution.
     successful_entry = CitationAuditEntry(
         paper_id="N5032",
-        resolution_method="open_std",
+        resolution_method="local_index",
         resolved=True,
         source_url="https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2025/n5032.pdf",
         quote_match="exact",
@@ -66,13 +69,14 @@ async def test_successful_pdf_fetch_yields_resolved_audit_row(monkeypatch):
         return "Extracted text from N5032 PDF."
 
     spec = MagicMock()
-    spec.meta.model_slot = "default"
+    spec.meta.model_slot = "tool"
     spec.meta.system_prompt = ""
     spec.meta.system_prompt_mode = "append"
 
+    stub_agent = AgentBackend(Llama3Backend(base_url="", api_key="", model=""))
     ctx = StepContext(
         sections={"10. Verify Citations": "stub instructions"},
-        model_slots={"default": "test:stub"},
+        agents={"tool": stub_agent, "default": stub_agent, "fast": stub_agent},
         researcher=None,
         backend=None,
         debug=False,
@@ -85,7 +89,7 @@ async def test_successful_pdf_fetch_yields_resolved_audit_row(monkeypatch):
         pipeline, "run_task", _fake_run_task_returning(successful_entry),
     )
 
-    await _pure_verify_citations(state, ctx)
+    await _custom_verify_citations(state, ctx)
 
     assert state.citation_audit is not None
     assert len(state.citation_audit) == 1
@@ -103,7 +107,7 @@ def test_citation_audit_renders_resolved_row_as_yes_with_empty_discrepancy():
         citation_audit=[
             CitationAuditEntry(
                 paper_id="N5032",
-                resolution_method="open_std",
+                resolution_method="local_index",
                 resolved=True,
                 source_url="https://example.org/n5032.pdf",
                 quote_match="exact",

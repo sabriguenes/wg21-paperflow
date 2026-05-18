@@ -103,13 +103,17 @@ def main() -> int:
 
     ok = True
     if abs(acc - expected["acc"]) > 0.001:
-        print(f"DRIFT: acc {acc:.3f} != {expected['acc']}"); ok = False
+        print(f"DRIFT: acc {acc:.3f} != {expected['acc']}")
+        ok = False
     if abs(target_recall - expected["target_recall"]) > 0.01:
-        print(f"DRIFT: TARGET recall {target_recall:.3f} != {expected['target_recall']}"); ok = False
+        print(f"DRIFT: TARGET recall {target_recall:.3f} != {expected['target_recall']}")
+        ok = False
     if abs(skip_recall - expected["skip_recall"]) > 0.01:
-        print(f"DRIFT: SKIP recall {skip_recall:.3f} != {expected['skip_recall']}"); ok = False
+        print(f"DRIFT: SKIP recall {skip_recall:.3f} != {expected['skip_recall']}")
+        ok = False
     if t_to_s != expected["t_to_s"]:
-        print(f"DRIFT: T->S {t_to_s} != {expected['t_to_s']}"); ok = False
+        print(f"DRIFT: T->S {t_to_s} != {expected['t_to_s']}")
+        ok = False
 
     if ok:
         print("=== runtime end-to-end matches final_ablation 'prefilter + small (alt)' ===")
