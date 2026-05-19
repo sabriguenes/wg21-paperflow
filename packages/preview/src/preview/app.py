@@ -54,7 +54,7 @@ def create_app(
         static_folder="static",
     )
 
-    md_cache = _MarkdownCache()
+    md_cache = _MarkdownCache(backend=backend, pid=pid)
 
     @app.get("/")
     def index() -> str:
@@ -116,12 +116,20 @@ class _MarkdownCache:
 
     Concurrent /markdown requests serialize on the lock, which is fine
     for the local preview server (one or two tabs).
+
+    Holds a ``backend`` + ``pid`` so the renderer can inline paper
+    image bytes (``![alt](<pid>-fig...)``) as ``data:`` URLs before
+    handing the markdown to scrivener. Without those, scrivener would
+    strip ``src``/``alt`` from the generated ``<img>`` tags and the
+    iframe would show broken images.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, backend: StorageBackend, pid: str) -> None:
         self._lock = threading.Lock()
         self._key: tuple[int, int] | None = None
         self._html: str = ""
+        self._backend = backend
+        self._pid = pid
 
     def get_or_render(self, path: Path, mtime_ns: int, size: int) -> str:
         key = (mtime_ns, size)
@@ -129,7 +137,9 @@ class _MarkdownCache:
             if self._key == key:
                 return self._html
             content = path.read_text(encoding="utf-8")
-            self._html = render_markdown(content)
+            self._html = render_markdown(
+                content, backend=self._backend, pid=self._pid,
+            )
             self._key = key
             return self._html
 

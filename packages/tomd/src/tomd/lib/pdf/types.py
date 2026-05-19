@@ -1,11 +1,17 @@
 """Shared data types, constants, and precompiled regex patterns for PDF conversion."""
 
+from __future__ import annotations
+
 import re
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from tomd.lib import DOC_NUM_PATTERN, SECTION_NUM_PATTERN
+
+if TYPE_CHECKING:
+    from .images import ExtractedImage
 
 
 class Confidence(Enum):
@@ -86,6 +92,7 @@ class SectionKind(Enum):
     LIST = "list"
     CODE = "code"
     TABLE = "table"
+    IMAGE = "image"
     UNCERTAIN = "uncertain"
     WORDING = "wording"
     WORDING_ADD = "wording-add"
@@ -108,6 +115,13 @@ class Section:
     columns: list[list[list[Span]]] = field(default_factory=list)
     fence_lang: str = "cpp"
     indent_level: int = 0
+    # Set only when kind == SectionKind.IMAGE. The image extractor in
+    # images.py is independent of the dual text-extraction paths (it
+    # reads the page's resource dictionary, not the rendered glyphs),
+    # so the canonical alt-text source is image_ref.suggested_alt, not
+    # Section.text. Consumers that legitimately want the alt content
+    # must route through image_ref, not text.
+    image_ref: "ExtractedImage | None" = None
 
 
 @dataclass

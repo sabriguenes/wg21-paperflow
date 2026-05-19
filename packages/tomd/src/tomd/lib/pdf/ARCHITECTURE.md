@@ -26,13 +26,13 @@ Section - A classified document region (kind, text, confidence, heading_level, l
 
 Enums:
 - `Confidence`: HIGH, MEDIUM, LOW, UNCERTAIN
-- `SectionKind`: TITLE, METADATA, HEADING, PARAGRAPH, LIST, CODE, TABLE, UNCERTAIN
+- `SectionKind`: TITLE, METADATA, HEADING, PARAGRAPH, LIST, CODE, TABLE, IMAGE, UNCERTAIN, WORDING, WORDING_ADD, WORDING_REMOVE
 
 ## Pipeline (13 steps)
 
 | Step | What | Module |
 |------|------|--------|
-| 1 | Dual extraction (MuPDF + spatial) + edge items + links + hidden scan + drawings | `extract.py`, `cleanup.py`, `wording.py`, `__init__.py` |
+| 1 | Dual extraction (MuPDF + spatial) + edge items + links + hidden scan + drawings + image extraction | `extract.py`, `cleanup.py`, `wording.py`, `images.py`, `__init__.py` |
 | 1.5 | Slide-deck / standards-draft detection (geometry or page-count early exit) | `__init__.py` |
 | 2 | Close document | `__init__.py` |
 | 3 | Hidden block stripping + readability check | `cleanup.py`, `types.py` |
@@ -92,6 +92,35 @@ Enums:
 - `extract.py:collect_links`, `extract.py:attach_links`
 - Collects `page.get_links()`, filters to http/https/mailto schemes
 - Attaches to spans by bounding rect overlap (best overlap wins)
+
+**Resource-Dictionary path (image extraction).**
+- `images.py:extract_page_images`, `images.py:finalize_extraction`
+- A fourth PDF API surface, independent of the MuPDF dict and spatial
+  rawdict text-extraction paths. Uses `page.get_images(full=True)` +
+  `page.get_image_rects(xref)` + `doc.extract_image(xref)` to enumerate
+  the raster image XObjects referenced by the page's resource dictionary,
+  not the rendered glyphs.
+- Produces `ExtractedImage` records (page, index_on_page, ext, bytes,
+  bbox, suggested_alt, stored_filename). The caller persists `bytes`;
+  this module never writes to disk.
+- Runs per page during step 1 (while the document is still open). The
+  caption-proximity heuristic uses the spatial-path text blocks already
+  produced on the same page, so no duplicate text extraction.
+- Cross-page xref deduplication and the 20-image cap are applied by
+  `finalize_extraction` after the readability check passes. Unreadable
+  PDFs and early-exit paths (slide deck, standards draft) produce
+  `PipelineResult.images = []` so the CLI never persists orphan PNGs.
+- Visible to this path: every embedded JPEG / PNG / JPX, regardless of
+  rendering.
+- Invisible to this path: vector drawings (paths and lines, e.g.
+  flowcharts, graph diagrams), scanned-page rasters that ARE the page
+  rather than embedded within it, and any structural meaning of the
+  image. The caption-proximity regex over Path 1's text is a v1
+  stopgap; the layout-aware path in `improvements.md` section 4 would
+  supersede it with structural `caption` bboxes from a layout model.
+- Named constants: `_MAX_IMAGES_PER_PAPER`,
+  `_CAPTION_SEARCH_RADIUS_BELOW_PT`, `_CAPTION_SEARCH_RADIUS_ABOVE_PT`,
+  `_CAPTION_LABEL_RE`.
 
 ### Layer 2: Cleanup (9 techniques)
 
@@ -319,9 +348,10 @@ Enums:
 
 | Module | Responsibility | Public API | Lines |
 |--------|---------------|------------|------:|
-| `__init__.py` | Pipeline orchestration, slide-deck detection | `convert_pdf`, `PipelineResult` | ~295 |
+| `__init__.py` | Pipeline orchestration, slide-deck detection | `convert_pdf`, `run_pipeline`, `PipelineResult`, `ExtractedImage` | ~295 |
 | `types.py` | Data model, enums, constants | Span, Line, Block, Section, SectionKind, Confidence, is_readable + shared constants | ~252 |
 | `extract.py` | Dual-path text extraction | `extract_mupdf`, `extract_spatial`, `collect_links`, `attach_links` | ~249 |
+| `images.py` | Resource-Dictionary path: embedded raster extraction | `ExtractedImage`, `ExtractionResult`, `extract_page_images`, `finalize_extraction` | ~250 |
 | `mono.py` | Monospace font detection | `classify_monospace`, `propagate_monospace` | ~222 |
 | `wording.py` | Wording section detection (ins/del) | `classify_wording`, `collect_line_drawings` | ~250 |
 | `cleanup.py` | Text cleanup, header/footer, hidden regions | `detect_repeating`, `strip_repeating`, `cleanup_text`, `find_hidden_regions`, `strip_hidden_blocks` | ~373 |

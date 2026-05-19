@@ -181,6 +181,9 @@ def _render_element(el: Tag, generator: str) -> str | None:
     if tag == "table":
         return _render_table(el)
 
+    if tag == "img":
+        return _render_img(el)
+
     if tag == "blockquote":
         return _render_blockquote(el, generator)
 
@@ -230,6 +233,59 @@ def _render_element(el: Tag, generator: str) -> str | None:
     _render_children(el, parts, generator)
     result = "\n\n".join(p for p in parts if p.strip())
     return result if result else None
+
+
+_ALT_TEXT_ESCAPE_RE = re.compile(r"([\[\]\\])")
+
+
+def _render_img(el: Tag) -> str | None:
+    """Render ``<img>`` as ``![alt](src)``. Skips when ``src`` is absent.
+
+    HTML rendering is opt-in via :func:`rewrite_imgs_via_manifest`: that
+    pre-pass mutates the soup so each ``<img>`` carries the on-disk
+    stored filename in ``src`` and the prioritized caption text in
+    ``alt``. When the caller does not run that pre-pass (e.g. test
+    fixtures), ``<img>`` elements lack a manifest mapping and are
+    suppressed - we never emit a giant ``data:`` URI or an unresolvable
+    remote URL into markdown.
+    """
+    src = (el.get("src") or "").strip()
+    if not src:
+        return None
+    alt = (el.get("alt") or "").strip()
+    alt = _ALT_TEXT_ESCAPE_RE.sub(r"\\\1", alt)
+    return f"![{alt}]({src})"
+
+
+def rewrite_imgs_via_manifest(
+    soup: BeautifulSoup,
+    src_to_entry: dict,
+) -> None:
+    """Mutate each ``<img>`` so its ``src`` and ``alt`` reflect the manifest.
+
+    ``src_to_entry`` maps the original ``src=`` attribute (data: URI or
+    URL) to the :class:`HtmlImageEntry` produced by the mailing fetcher.
+    For each ``<img>``:
+
+    - When the original src is in the map: replace ``src`` with the
+      stored filename and ``alt`` with the prioritized caption
+      (``caption_text`` from a sibling ``<figcaption>``, falling back
+      to the original ``alt`` attribute).
+    - When not in the map (over the 20-image cap, or fetch failed
+      during mailing): strip ``src`` so :func:`_render_img` skips the
+      element. This is how the cap excludes images from markdown
+      without raising.
+    """
+    for img in soup.find_all("img"):
+        src = (img.get("src") or "").strip()
+        entry = src_to_entry.get(src)
+        if entry is None:
+            if "src" in img.attrs:
+                del img.attrs["src"]
+            continue
+        img["src"] = entry.stored_filename
+        alt = entry.caption_text or entry.alt_attr or ""
+        img["alt"] = alt
 
 
 _HEADING_SKIP_CLASSES = frozenset({"header-section-number", "secno", "self-link"})
@@ -787,6 +843,17 @@ def _inline_text(el: Tag) -> str:
 
             if tag == "br":
                 parts.append("\n")
+                continue
+
+            if tag == "img":
+                # Inline-context <img> (typical: inside <p>). Routed
+                # through the same _render_img + manifest rewrite the
+                # block-level path uses, so an <img> nested in a
+                # paragraph still becomes ![alt](filename) and inherits
+                # the cap + truncation behaviour.
+                rendered = _render_img(child)
+                if rendered:
+                    parts.append(rendered)
                 continue
 
             if tag == "ins":

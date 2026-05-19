@@ -1,10 +1,12 @@
 """Markdown and companion prompts file generation."""
 
 import logging
+import re
 
 from .. import format_front_matter, dedup_paragraphs, strip_redundant_body_meta, strip_leading_h1, DEFAULT_FENCE_LANG
 from ..shared import _find_front_matter_end
 from .cleanup import normalize_whitespace
+from .images import TRUNCATION_MARKER_TEMPLATE
 from .types import Line, Span, Section, SectionKind, BULLET_CHARS
 
 _log = logging.getLogger(__name__)
@@ -281,6 +283,39 @@ def _render_table(sec: Section) -> str:
     return "\n".join(lines)
 
 
+_ALT_TEXT_ESCAPE_RE = re.compile(r"([\[\]\\])")
+
+
+def _escape_alt_text(text: str) -> str:
+    """Escape ``[``, ``]``, and ``\\`` so they survive inside ``![alt](...)``.
+
+    Markdown image alt-text grammar is permissive but it does break on
+    unbalanced brackets and unescaped backslashes. Captions like
+    ``Figure 1 [revised]: ...`` would otherwise truncate the alt at
+    the literal ``]``.
+    """
+    return _ALT_TEXT_ESCAPE_RE.sub(r"\\\1", text)
+
+
+def _render_image(sec: Section) -> str:
+    """Render a :class:`SectionKind.IMAGE` section as ``![alt](filename)``.
+
+    Reads the alt text from :attr:`Section.image_ref.suggested_alt`
+    (not :attr:`Section.text` - IMAGE sections carry empty text by
+    design, see types.py). The filename is the stable on-disk basename
+    assigned by :func:`finalize_extraction`, kept on
+    :attr:`ExtractedImage.stored_filename` so the markdown reference
+    matches what the CLI will write via
+    :meth:`StorageBackend.write_paper_image`.
+    """
+    if sec.image_ref is None:
+        # Defensive: an IMAGE section without a payload would be a
+        # programming error in the pipeline, but emit must not crash.
+        return ""
+    alt = _escape_alt_text(sec.image_ref.suggested_alt)
+    return f"![{alt}]({sec.image_ref.stored_filename})"
+
+
 def _render_section_md(sec: Section) -> str:
     """Render a single section to Markdown."""
     if sec.kind in (SectionKind.TITLE, SectionKind.HEADING):
@@ -288,6 +323,9 @@ def _render_section_md(sec: Section) -> str:
 
     if sec.kind == SectionKind.TABLE:
         return _render_table(sec)
+
+    if sec.kind == SectionKind.IMAGE:
+        return _render_image(sec)
 
     if sec.kind == SectionKind.CODE:
         return _render_code_block(sec)
@@ -305,11 +343,22 @@ def _render_section_md(sec: Section) -> str:
     return sec.text
 
 
-def emit_markdown(metadata: dict, sections: list[Section]) -> str:
+def emit_markdown(
+    metadata: dict,
+    sections: list[Section],
+    *,
+    images_truncated: bool = False,
+    source_image_count: int = 0,
+) -> str:
     """Generate the output Markdown from structured sections.
 
     Confident sections are clean Markdown. Uncertain sections emit
     the MuPDF version marked with an HTML comment.
+
+    When ``images_truncated`` is True, an HTML comment is appended at
+    end-of-body recording how many images were kept versus how many
+    the source contained. The comment is invisible in rendered HTML
+    but visible to anyone grepping the raw markdown for "truncated".
     """
     parts: list[str] = []
 
@@ -335,6 +384,18 @@ def emit_markdown(metadata: dict, sections: list[Section]) -> str:
             continue
         parts.append(rendered)
         line_num += rendered.count("\n") + 2
+
+    if images_truncated and source_image_count > 0:
+        kept_count = sum(
+            1 for sec in sections if sec.kind == SectionKind.IMAGE
+        )
+        dropped = source_image_count - kept_count
+        if dropped > 0:
+            parts.append(TRUNCATION_MARKER_TEMPLATE.format(
+                kept=kept_count,
+                total=source_image_count,
+                dropped=dropped,
+            ))
 
     md = "\n\n".join(parts)
     md = dedup_paragraphs(md)

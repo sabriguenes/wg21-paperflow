@@ -21,13 +21,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from paperstore.backend import PaperRow, StorageBackend, parse_authors_raw
+from paperstore.backend import ClearedSet, PaperRow, StorageBackend, parse_authors_raw
 from paperstore.extract_rows import (
     CaputCausaeRow,
     CitationAuditRow,
@@ -261,6 +263,33 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("DROP TABLE rhetorical_markers")
 
     conn.executescript(_SCHEMA)
+
+
+# Extracted image filenames are ``<pid>-fig{page}-{index}.{ext}`` with the
+# pid lowercased. The mandatory ``-fig`` separator prevents pid-prefix
+# collisions (e.g. ``p30-fig...`` cannot match ``p301-fig...`` because the
+# greedy ``\d+`` consumes the full pid run before the ``-fig`` literal).
+# Used by ``iter_paper_image_paths`` / ``delete_paper_images`` to authoritatively
+# filter candidate filenames returned by ``Path.iterdir()``.
+_IMAGE_FILENAME_RE = re.compile(
+    r"^(?P<pid>[a-z]\d+(?:r\d+)?)-fig(?P<page>\d+)-(?P<index>\d+)\.(?P<ext>[a-z0-9]+)$"
+)
+
+
+# Tables that hold dissect-pipeline outputs keyed on ``paper_id``. All
+# carry ``loc.line`` offsets recorded against the previous markdown,
+# so all are wiped together by ``clear_downstream_outputs`` when a
+# re-convert changes the file.
+_DISSECT_EXTRACT_TABLES: tuple[str, ...] = (
+    "claims",
+    "evidence",
+    "paper_citations",
+    "external_citations",
+    "questions",
+    "rhetoric",
+    "caput_causae",
+    "citation_audit",
+)
 
 
 def _now_iso() -> str:
@@ -838,6 +867,83 @@ class SqliteBackend(StorageBackend):
                     counts["line_counts"] += 1
         return counts
 
+    # ---- image artifacts and downstream invalidation ---------------------
+
+    def get_paper_image_path(
+        self, paper_id: str, page: int, index: int, ext: str
+    ) -> Path:
+        pid = paper_id.strip().lower()
+        ext = ext.lstrip(".").lower()
+        return self._papers_dir / f"{pid}-fig{page}-{index}.{ext}"
+
+    def write_paper_image(
+        self,
+        paper_id: str,
+        page: int,
+        index: int,
+        ext: str,
+        data: bytes,
+    ) -> Path:
+        final_path = self.get_paper_image_path(paper_id, page, index, ext)
+        return self._atomic_write_bytes(final_path, data)
+
+    def iter_paper_image_paths(self, paper_id: str) -> Iterator[Path]:
+        target = paper_id.strip().lower()
+        # Materialize before yielding so a concurrent ``delete_paper_images``
+        # call can safely consume this iterator without racing iterdir().
+        matches: list[Path] = []
+        for p in self._papers_dir.iterdir():
+            if not p.is_file():
+                continue
+            m = _IMAGE_FILENAME_RE.match(p.name)
+            if m and m.group("pid") == target:
+                matches.append(p)
+        matches.sort(key=lambda path: path.name)
+        return iter(matches)
+
+    def delete_paper_images(self, paper_id: str) -> int:
+        count = 0
+        for path in self.iter_paper_image_paths(paper_id):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                continue
+            count += 1
+        return count
+
+    def get_html_images_manifest_path(self, paper_id: str) -> Path:
+        pid = paper_id.strip().lower()
+        return self._papers_dir / f"{pid}.html-images.json"
+
+    def clear_downstream_outputs(self, paper_id: str) -> ClearedSet:
+        pid = paper_id.strip().upper()
+        try:
+            meta = self.get_meta(pid)
+        except MissingMetaError:
+            return ClearedSet()
+
+        dissect_present = bool(meta.dissect_path)
+        advocatus_present = bool(meta.advocatus_path)
+        agora_present = bool(meta.agora_path)
+
+        if dissect_present:
+            self.clear_dissect(pid)
+            with self._conn:
+                for table in _DISSECT_EXTRACT_TABLES:
+                    self._conn.execute(
+                        f"DELETE FROM {table} WHERE paper_id = ?", (pid,)
+                    )
+        if advocatus_present:
+            self.clear_advocatus(pid)
+        if agora_present:
+            self.clear_agora(pid)
+
+        return ClearedSet(
+            dissect=dissect_present,
+            advocatus=advocatus_present,
+            agora=agora_present,
+        )
+
     # ---- reads ------------------------------------------------------------
 
     def get_meta(self, paper_id: str) -> PaperRow:
@@ -886,6 +992,18 @@ class SqliteBackend(StorageBackend):
                 f"Markdown file missing for {paper_id!r}: {path}. "
                 f"Run 'paperflow convert {paper_id}' again."
             )
+        return path.read_text(encoding="utf-8")
+
+    def try_read_paper_md(self, paper_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT markdown_path FROM papers WHERE paper_id = ?",
+            (paper_id.strip().upper(),),
+        ).fetchone()
+        if row is None or not row["markdown_path"]:
+            return None
+        path = Path(row["markdown_path"])
+        if not path.exists():
+            return None
         return path.read_text(encoding="utf-8")
 
     def get_paper_md_path(self, paper_id: str) -> Path:

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from tomd.lib import (
@@ -42,9 +43,35 @@ from tomd.lib import (
     EMAIL_RE,
 )
 from tomd.lib.html import convert_html
-from tomd.lib.pdf import convert_pdf
+from tomd.lib.pdf import ExtractedImage, convert_pdf, run_pipeline
 
-__all__ = ["convert_paper"]
+__all__ = ["ConvertedPaper", "convert_paper", "convert_paper_full"]
+
+
+@dataclass(frozen=True)
+class ConvertedPaper:
+    """Full output of one ``convert_paper_full`` invocation.
+
+    Adds image-extraction fields on top of the markdown / prompts /
+    intent triple that ``convert_paper`` returns. Consumers that don't
+    care about images can keep calling ``convert_paper``; the CLI
+    convert orchestration uses this structured form to persist image
+    bytes and decide whether to invalidate downstream pipelines.
+
+    ``skipped`` is True for slide-decks, standards-draft early exits,
+    or unreadable sources. In that case ``markdown`` is the empty
+    string and ``images`` is empty - the caller writes nothing to
+    disk and accumulates the paper in a "skipped" report bucket.
+    """
+
+    markdown: str
+    prompts: list[str] | None
+    intent: str
+    images: list[ExtractedImage] = field(default_factory=list)
+    source_image_count: int = 0
+    images_truncated: bool = False
+    skipped: bool = False
+    skip_reason: str = ""
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +336,70 @@ def _convert_with_tomd(path: Path) -> tuple[str, list[str] | None]:
     )
 
 
+@dataclass(frozen=True)
+class _RawConversion:
+    """Internal shape returned by :func:`_convert_with_tomd_full`."""
+    md: str
+    prompts: list[str] | None
+    images: list[ExtractedImage]
+    source_image_count: int
+    images_truncated: bool
+    skipped: bool
+    skip_reason: str
+
+
+def _convert_with_tomd_full(
+    path: Path,
+    *,
+    html_images_manifest=None,
+) -> _RawConversion:
+    """Dispatch by file suffix, returning the full pipeline output.
+
+    For PDF sources, routes through :func:`run_pipeline` so the caller
+    has access to the extracted image bytes alongside the markdown.
+    For HTML sources with a manifest, runs the HTML renderer with
+    manifest-driven ``<img>`` rewriting and surfaces the ExtractedImage
+    list (bytes already on disk from mailing - they aren't re-persisted
+    by the convert stage).
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        r = run_pipeline(path)
+        return _RawConversion(
+            md=r.md,
+            prompts=r.prompts,
+            images=list(r.images),
+            source_image_count=r.source_image_count,
+            images_truncated=r.images_truncated,
+            skipped=r.skipped,
+            skip_reason=r.skip_reason,
+        )
+    if suffix in (".html", ".htm"):
+        html_result = None
+        if html_images_manifest is not None:
+            from tomd.lib.html.images import load_html_images
+
+            html_result = load_html_images(html_images_manifest)
+        md, prompts = convert_html(path, html_images_result=html_result)
+        if html_result is None:
+            return _RawConversion(
+                md=md, prompts=prompts,
+                images=[], source_image_count=0, images_truncated=False,
+                skipped=False, skip_reason="",
+            )
+        return _RawConversion(
+            md=md, prompts=prompts,
+            images=list(html_result.images),
+            source_image_count=html_result.source_image_count,
+            images_truncated=html_result.images_truncated,
+            skipped=False, skip_reason="",
+        )
+    raise ValueError(
+        f"Unsupported source format {suffix!r} for {path.name}; "
+        f"expected .pdf, .html, or .htm"
+    )
+
+
 _INTENT_LINE_RE = re.compile(r"^intent\s*:\s*(\S+)", re.MULTILINE)
 
 
@@ -324,53 +415,66 @@ def _extract_intent_from_front_matter(md: str) -> str:
     return intent_match.group(1).strip().strip('"\'')
 
 
-def convert_paper(
+def convert_paper_full(
     paper_id: str,
     source_path: Path,
     meta: dict,
-) -> tuple[str, list[str] | None, str]:
-    """Convert a staged source file to markdown. Pure: no database or
-    filesystem writes.
+    *,
+    html_images_manifest=None,
+) -> ConvertedPaper:
+    """Convert a staged source file, returning markdown AND image data.
 
     All inputs are pre-fetched by the caller. Reads ``source_path`` from
     disk, runs the appropriate converter, applies YAML front-matter
     fallback from ``meta``, canonicalizes front-matter key order, strips
-    TOC blocks, and returns the result. The caller is responsible for
-    persisting the markdown (and optional prompts) through the storage
-    backend.
+    TOC blocks, and returns a :class:`ConvertedPaper` carrying both the
+    markdown and the list of extracted images.
+
+    For HTML sources, pass the parsed
+    :class:`paperstore.html_manifest.HtmlImagesManifest` (or None)
+    via ``html_images_manifest``. With a manifest, ``<img>`` tags in
+    the source HTML are rewritten to point at the mailing-fetched
+    on-disk filenames; without one, ``<img>`` tags are suppressed so
+    no raw ``data:`` URI leaks into the markdown.
+
+    Slide-deck, standards-draft, and unreadable PDFs produce a
+    ``ConvertedPaper`` with ``skipped=True``, empty markdown, and
+    empty images. The caller writes nothing to disk for skipped
+    papers and accumulates them in a "skipped" summary bucket.
 
     The returned markdown's YAML front matter is guaranteed to use the
     strict canonical key order ``title, document, date, intent,
-    audience, reply-to``. Missing keys are skipped; unknown keys are
-    placed after ``audience`` so ``reply-to`` is always last.
-
-    Returns ``(markdown, prompts, extracted_intent)``:
-
-    * ``markdown`` is the converted markdown text.
-    * ``prompts`` is the JSON-serializable list of LLM reconcile prompts
-      tomd produced for uncertain regions, or ``None`` when there are
-      none.
-    * ``extracted_intent`` is the ``intent`` value from the markdown's
-      YAML front matter (``""`` if absent).
-
-    Raises:
-        RuntimeError: tomd produced no usable markdown.
+    audience, reply-to``.
     """
-    md, prompts = _convert_with_tomd(source_path)
+    raw = _convert_with_tomd_full(
+        source_path, html_images_manifest=html_images_manifest,
+    )
 
-    if prompts:
+    if raw.prompts:
         logger.warning(
             "tomd [%s] flagged %d uncertain region(s)",
-            paper_id, len(prompts),
+            paper_id, len(raw.prompts),
         )
 
-    if not md or not md.strip():
+    if raw.skipped:
+        return ConvertedPaper(
+            markdown="",
+            prompts=raw.prompts,
+            intent="",
+            images=[],
+            source_image_count=0,
+            images_truncated=False,
+            skipped=True,
+            skip_reason=raw.skip_reason,
+        )
+
+    if not raw.md or not raw.md.strip():
         raise RuntimeError(
             f"tomd produced empty markdown for {paper_id} (slide deck, "
             f"standards draft, or unreadable source)."
         )
 
-    md = _normalize_front_matter(md, meta)
+    md = _normalize_front_matter(raw.md, meta)
     md = _strip_body_metadata_text(md)
     md = strip_freeform_metadata_lines(md)
 
@@ -390,4 +494,38 @@ def convert_paper(
     md = _strip_toc(md)
 
     extracted_intent = _extract_intent_from_front_matter(md)
-    return md, prompts, extracted_intent
+    return ConvertedPaper(
+        markdown=md,
+        prompts=raw.prompts,
+        intent=extracted_intent,
+        images=raw.images,
+        source_image_count=raw.source_image_count,
+        images_truncated=raw.images_truncated,
+        skipped=False,
+        skip_reason="",
+    )
+
+
+def convert_paper(
+    paper_id: str,
+    source_path: Path,
+    meta: dict,
+) -> tuple[str, list[str] | None, str]:
+    """Convert a staged source file to markdown. Pure: no database or
+    filesystem writes.
+
+    Thin wrapper over :func:`convert_paper_full` that returns the
+    historical ``(markdown, prompts, extracted_intent)`` triple. New
+    callers that need the extracted image data should call
+    :func:`convert_paper_full` directly.
+
+    Raises:
+        RuntimeError: tomd produced no usable markdown.
+    """
+    r = convert_paper_full(paper_id, source_path, meta)
+    if r.skipped:
+        raise RuntimeError(
+            f"tomd produced empty markdown for {paper_id} "
+            f"({r.skip_reason or 'slide deck, standards draft, or unreadable source'})."
+        )
+    return r.markdown, r.prompts, r.intent

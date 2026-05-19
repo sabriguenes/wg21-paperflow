@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -95,6 +96,34 @@ class PaperRow:
     line_count: int = 0
     status: int = 0
     error: str = ""
+
+
+@dataclass(frozen=True)
+class ClearedSet:
+    """Record of which downstream pipelines a ``clear_downstream_outputs`` call wiped.
+
+    The CLI consumes this to build a per-paper summary line such as
+    ``P3556R0 (dissect, advocatus)`` after a re-convert. ``bool(set)`` is
+    True iff anything was cleared (so the CLI can skip empty summaries).
+    """
+
+    dissect: bool = False
+    advocatus: bool = False
+    agora: bool = False
+
+    def __bool__(self) -> bool:
+        return self.dissect or self.advocatus or self.agora
+
+    def names(self) -> list[str]:
+        """Return the pipeline names that were cleared, in stable order."""
+        out: list[str] = []
+        if self.dissect:
+            out.append("dissect")
+        if self.advocatus:
+            out.append("advocatus")
+        if self.agora:
+            out.append("agora")
+        return out
 
 
 class StorageBackend(ABC):
@@ -267,6 +296,82 @@ class StorageBackend(ABC):
         command.
         """
 
+    # ---- image artifacts and downstream invalidation ---------------------
+
+    @abstractmethod
+    def get_paper_image_path(
+        self, paper_id: str, page: int, index: int, ext: str
+    ) -> Path:
+        """Return the canonical path for an extracted paper image.
+
+        File name: ``<pid>-fig{page}-{index}.{ext}`` under the
+        ``paperstore/`` subdirectory, with ``pid`` lowercased. Does not
+        check existence. ``page=0`` is the "HTML, no page concept"
+        sentinel used by the mailing-side HTML image fetcher.
+        """
+
+    @abstractmethod
+    def write_paper_image(
+        self,
+        paper_id: str,
+        page: int,
+        index: int,
+        ext: str,
+        data: bytes,
+    ) -> Path:
+        """Persist extracted image bytes atomically. Returns the final path.
+
+        Caller is the CLI orchestration in :mod:`cli.convert` (for PDF
+        sources) or the mailing fetcher (for HTML sources). Library
+        extractors return bytes; persistence is a CLI concern.
+        """
+
+    @abstractmethod
+    def iter_paper_image_paths(self, paper_id: str) -> Iterator[Path]:
+        """Yield existing image paths for ``paper_id`` in deterministic order.
+
+        Order is alphanumeric on filename, which equals ``(page, index)``
+        ascending by construction. Yields nothing when the paper has no
+        extracted images.
+        """
+
+    @abstractmethod
+    def delete_paper_images(self, paper_id: str) -> int:
+        """Delete all extracted images for ``paper_id``. Returns count removed.
+
+        Called by ``paperflow convert`` before writing the new image set
+        so a re-convert leaves no stale figures from a previous run.
+        """
+
+    @abstractmethod
+    def get_html_images_manifest_path(self, paper_id: str) -> Path:
+        """Return the canonical path for the mailing -> tomd HTML manifest.
+
+        File name: ``<pid>.html-images.json``. Does not check existence.
+        The schema is :class:`paperstore.html_manifest.HtmlImagesManifest`.
+        """
+
+    @abstractmethod
+    def clear_downstream_outputs(self, paper_id: str) -> ClearedSet:
+        """Invalidate dissect, advocatus, and agora artifacts for ``paper_id``.
+
+        Called by ``paperflow convert`` after a re-convert that changed
+        the markdown content. The stored ``loc.line`` offsets in
+        dissect's extract tables (claims, evidence, questions,
+        rhetoric, ...) are recorded against the previous markdown and
+        become stale on any change. This method:
+
+        - Deletes the ``.dissect.md`` / ``.advocatus.md`` / ``.agora.json``
+          files (if present) and clears their path columns.
+        - Deletes the extract-table rows (claims, evidence,
+          paper_citations, external_citations, questions, rhetoric,
+          caput_causae, citation_audit) for ``paper_id``.
+
+        Does not touch ``paper.md`` or extracted images. Returns a
+        :class:`ClearedSet` describing which of the three pipelines had
+        artifacts to clear.
+        """
+
     # ---- reads ------------------------------------------------------------
 
     @abstractmethod
@@ -291,6 +396,17 @@ class StorageBackend(ABC):
 
         Raises:
             paperstore.MissingPaperMdError: markdown not written.
+        """
+
+    @abstractmethod
+    def try_read_paper_md(self, paper_id: str) -> str | None:
+        """Return the converted markdown, or None if not yet written.
+
+        Non-raising alternative to :meth:`get_paper_md`, used by the
+        convert orchestration to perform the byte-equality check that
+        gates downstream invalidation. A first conversion returns None;
+        a re-convert producing the same bytes leaves dissect /
+        advocatus / agora artifacts intact.
         """
 
     @abstractmethod

@@ -120,6 +120,20 @@ Run two or three layout-only detectors per page in parallel and require quorum. 
 
 **What the layout model does NOT do:** produce text. Keep text extraction strictly with MuPDF (born-digital PDFs give exact glyph data). The third path contributes geometry + typed labels + reading order, not characters. Hallucination risk stays low.
 
+**Forward integration with the embedded-raster extractor.** The Resource-Dictionary path in [`tomd/lib/pdf/images.py`](src/tomd/lib/pdf/images.py) (shipped as v1) is independent of Paths 1-3 and produces `SectionKind.IMAGE` sections with regex-derived alt text. When the layout-aware path lands, three integration points open up:
+
+- **a.** IoU each `picture` bbox from the layout model against `ExtractedImage.bbox` records. A match raises figure confidence and contributes the `picture` signal to the N-way agreement vector.
+- **b.** Treat `picture` bboxes with **no** embedded-raster match as vector-diagram candidates and rasterise that region of the rendered page. This is the current v1 non-goal (`pymupdf.get_images()` does not expose vector drawings); the layout model is the trigger that unlocks it.
+- **c.** Replace the v1 caption-proximity regex with structural `caption` labels from the layout model when present, falling back to the regex when absent. The regex stays a useful fallback because layout models occasionally miss the `caption` label on tightly-spaced figures.
+
+The N-way agreement vector documented above extends from `(mupdf_block_id, spatial_block_id, layout_label, layout_bbox)` to include a fifth element:
+
+```
+(mupdf_block_id, spatial_block_id, layout_label, layout_bbox, embedded_raster_xref)
+```
+
+`embedded_raster_xref` is the xref from `ExtractedImage` when the layout `picture` bbox IoU-matched an embedded image, or null when it didn't (the vector-diagram case). The stability commitment in `tomd/CLAUDE.md` already documents which parts of `SectionKind.IMAGE` are pinned vs. swap-points for this integration, so the layout path can plug in without breaking emit or downstream consumers.
+
 ### 4.4 A La Carte Opportunities
 
 - **Surya layout only** (`surya.layout.LayoutPredictor`): take just the layout component, ignore Surya's text detection/recognition. Output is `[{bbox, label, position}]` per page.

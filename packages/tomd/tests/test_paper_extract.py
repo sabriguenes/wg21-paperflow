@@ -27,11 +27,34 @@ def _stage(store: SqliteBackend, paper_id: str, *, suffix: str, mailing_row: dic
 
 
 def _patch_html(monkeypatch, md: str, prompts: list[str] | None = None):
-    monkeypatch.setattr(api, "convert_html", lambda _p: (md, prompts))
+    """Patch the HTML dispatch.
+
+    ``api._convert_with_tomd_full`` now forwards an optional
+    ``html_images_result`` keyword to ``convert_html``, so the fake
+    must accept it (and ignore - tests that drive the dispatch don't
+    exercise image rewriting).
+    """
+    def _fake(_p, *, html_images_result=None):
+        return md, prompts
+
+    monkeypatch.setattr(api, "convert_html", _fake)
 
 
 def _patch_pdf(monkeypatch, md: str, prompts: list[str] | None = None):
-    monkeypatch.setattr(api, "convert_pdf", lambda _p: (md, prompts))
+    """Patch the PDF dispatch by stubbing ``run_pipeline``.
+
+    ``api._convert_with_tomd_full`` routes PDFs through ``run_pipeline``
+    (not the legacy ``convert_pdf`` wrapper), so the test fake returns
+    a synthetic :class:`PipelineResult` with zero images and the caller's
+    chosen md / prompts. Matches the current behavior of papers with no
+    embedded raster images.
+    """
+    from tomd.lib.pdf import PipelineResult
+
+    def _fake(_p):
+        return PipelineResult(md=md, prompts=prompts)
+
+    monkeypatch.setattr(api, "run_pipeline", _fake)
 
 
 def _convert_and_read(store: SqliteBackend, paper_id: str) -> str:

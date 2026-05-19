@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from paperstore.backend import PaperRow, StorageBackend, parse_authors_raw
+from paperstore.backend import ClearedSet, PaperRow, StorageBackend, parse_authors_raw
 from paperstore.errors import (
     MissingAdvocatusError,
     MissingAgoraError,
@@ -32,6 +32,11 @@ from paperstore.extract_rows import (
     RhetoricRow,
 )
 from paperstore.factory import WORKSPACE_ENV_VAR, default_workspace_dir, from_uri
+from paperstore.html_manifest import (
+    HtmlImageEntry,
+    HtmlImagesManifest,
+    HtmlManifestError,
+)
 from paperstore.locs import SourceLoc, loc_from_row
 from paperstore.progress import ProgressCallback as ProgressCallback
 from paperstore.progress import ProgressEvent as ProgressEvent
@@ -40,6 +45,10 @@ from paperstore.stages import STAGES, STAGE_NAMES, failed_status, failed_stage
 from paperstore.tools import PaperstoreTools
 
 __all__ = [
+    "ClearedSet",
+    "HtmlImageEntry",
+    "HtmlImagesManifest",
+    "HtmlManifestError",
     "PaperRow",
     "StorageBackend",
     "parse_authors_raw",

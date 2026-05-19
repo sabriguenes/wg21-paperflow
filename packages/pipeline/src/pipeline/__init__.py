@@ -65,6 +65,7 @@ from pipeline.session import (
     WebResearcher,
 )
 from pipeline.postconditions import (
+    ConvertReport,
     ProcessResult,
     postcondition_satisfied,
     truthful_status,
@@ -109,6 +110,7 @@ __all__ = [
     "PipelineError",
     "postcondition_satisfied",
     "ProcessResult",
+    "ConvertReport",
     "PromptFileError",
     "resolve_slots",
     "run_agent",

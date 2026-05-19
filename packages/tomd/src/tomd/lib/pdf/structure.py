@@ -439,7 +439,17 @@ def structure_sections(sections: list[Section],
         if idx in skip_indices:
             continue
 
-        if sec.kind in (SectionKind.UNCERTAIN, SectionKind.TABLE):
+        # IMAGE participates in the y-sort but is opaque to the heading
+        # / list / code / wording passes that follow. Short-circuiting
+        # here keeps the image_ref payload intact and prevents the
+        # adjacency-based passes (paragraph merging, code-block
+        # detection, ...) from absorbing or spanning the IMAGE. Tables
+        # have the same property for the same reason.
+        if sec.kind in (
+            SectionKind.UNCERTAIN,
+            SectionKind.TABLE,
+            SectionKind.IMAGE,
+        ):
             structured.append(sec)
             continue
 
@@ -920,7 +930,8 @@ def _classify_wording_sections(sections: list[Section]) -> list[Section]:
     """Reclassify sections containing wording-marked spans."""
     for sec in sections:
         if sec.kind in (SectionKind.HEADING, SectionKind.TITLE,
-                        SectionKind.UNCERTAIN, SectionKind.TABLE):
+                        SectionKind.UNCERTAIN, SectionKind.TABLE,
+                        SectionKind.IMAGE):
             continue
         wording_spans = [s for ln in sec.lines for s in ln.spans
                          if s.wording_role and s.text.strip()]

@@ -20,6 +20,7 @@ to prepare cited papers without committing them to the full pipeline.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,6 +28,7 @@ from paperstore.backend import StorageBackend
 from paperstore.stages import STAGE_NAMES, STAGES, failed_stage
 
 from pipeline.postconditions import (
+    ConvertReport,
     ProcessResult,
     postcondition_satisfied,
     truthful_status,
@@ -48,6 +50,7 @@ async def process_paper(
     classifier_overrides: dict[str, str] | None = None,
     provider_override: str | None = None,
     force: bool = False,
+    keep_downstream: bool = False,
     on_progress: object = None,
 ) -> ProcessResult:
     """Advance a paper through pipeline stages up to ``through``.
@@ -110,6 +113,7 @@ async def process_paper(
                     p.rename(bak)
 
     stages_run: list[int] = []
+    convert_report: ConvertReport | None = None
     while 0 <= status < through:
         stage_name = STAGE_NAMES.get(status, f"stage-{status}")
         logger.info("Processing %s: %s", pid, stage_name)
@@ -122,17 +126,22 @@ async def process_paper(
                     f.write(f"\n---\n\n## {stage_name} (started {now})\n\n")
 
         try:
-            await _run_stage(pid, status, backend, debug=debug, trace=trace,
-                             stop_after=stop_after, chunk_index=chunk_index,
-                             service_overrides=service_overrides,
-                             classifier_overrides=classifier_overrides,
-                             provider_override=provider_override,
-                             on_progress=on_progress)
+            stage_result = await _run_stage(
+                pid, status, backend, debug=debug, trace=trace,
+                stop_after=stop_after, chunk_index=chunk_index,
+                service_overrides=service_overrides,
+                classifier_overrides=classifier_overrides,
+                provider_override=provider_override,
+                keep_downstream=keep_downstream,
+                on_progress=on_progress,
+            )
         except Exception as exc:
             logger.error("%s failed at %s: %s", pid, stage_name, exc)
             backend.fail_paper(pid, status, str(exc))
             raise
 
+        if isinstance(stage_result, ConvertReport):
+            convert_report = stage_result
         stages_run.append(status)
 
         if not backend.advance_status(pid, status, status + 1):
@@ -140,7 +149,11 @@ async def process_paper(
 
         status += 1
 
-    return ProcessResult(final_status=status, stages_run=stages_run)
+    return ProcessResult(
+        final_status=status,
+        stages_run=stages_run,
+        convert_report=convert_report,
+    )
 
 
 async def ensure_paper_md(pid: str, backend: StorageBackend) -> str | None:
@@ -196,13 +209,14 @@ async def _run_stage(
     service_overrides: dict[str, str] | None = None,
     classifier_overrides: dict[str, str] | None = None,
     provider_override: str | None = None,
+    keep_downstream: bool = False,
     on_progress: object = None,
 ) -> Any:
     """Execute a single pipeline stage for one paper."""
     if stage == STAGES["download"]:
         await _stage_download(pid, backend, on_progress=on_progress)
     elif stage == STAGES["convert"]:
-        await _stage_convert(pid, backend)
+        return await _stage_convert(pid, backend, keep_downstream=keep_downstream)
     elif stage == STAGES["dissect"]:
         await _stage_dissect(pid, backend, debug=debug, trace=trace,
                              stop_after=stop_after, chunk_index=chunk_index,
@@ -227,8 +241,12 @@ async def _run_stage(
 
 
 async def _stage_download(pid: str, backend: StorageBackend, *, on_progress: object = None) -> None:
-    """Download the paper's source file."""
+    """Download the paper's source file. For HTML sources, also fetch
+    referenced images and write the tomd-side handoff manifest.
+    """
+    from mailing import fetch_html_images
     from mailing.download import default_client, download_paper
+    from paperstore.html_manifest import HtmlImageEntry, HtmlImagesManifest
 
     if postcondition_satisfied(backend, pid, STAGES["download"]):
         return
@@ -238,21 +256,127 @@ async def _stage_download(pid: str, backend: StorageBackend, *, on_progress: obj
     async with default_client() as client:
         result = await download_paper(pid, source_url=paper.url, client=client,
                                       on_progress=on_progress)
-    if result is None:
-        raise RuntimeError(f"Download returned nothing for {pid}")
-    content, suffix = result
-    backend.put_source(pid, content, suffix=suffix)
+        if result is None:
+            raise RuntimeError(f"Download returned nothing for {pid}")
+        content, suffix = result
+        backend.put_source(pid, content, suffix=suffix)
+
+        # HTML papers: walk <img> refs, fetch each, persist alongside the
+        # source. The manifest is the convert-time handoff so tomd never
+        # has to re-parse the HTML or hit the network.
+        if suffix in (".html", ".htm"):
+            try:
+                fetched = await fetch_html_images(
+                    content, source_url=paper.url, client=client,
+                )
+            except Exception as exc:  # Per-paper firewall: image flow
+                # failures must not fail the whole download stage. The
+                # paper's source is already on disk; the manifest just
+                # ends up missing or partial.
+                logger.warning(
+                    "html image walk failed for %s: %s", pid, exc,
+                )
+                fetched = []
+            if fetched:
+                # Re-fetching is destructive: wipe any prior set first so
+                # a re-run with different image refs doesn't leave
+                # orphans on disk.
+                backend.delete_paper_images(pid)
+                entries: list[HtmlImageEntry] = []
+                for img in fetched:
+                    backend.write_paper_image(
+                        pid, page=0, index=img.document_order,
+                        ext=img.ext, data=img.bytes,
+                    )
+                    entries.append(HtmlImageEntry(
+                        original_src=img.original_src,
+                        stored_filename=(
+                            f"{pid.lower()}-fig0-{img.document_order}.{img.ext}"
+                        ),
+                        document_order=img.document_order,
+                        caption_text=img.caption_text,
+                        alt_attr=img.alt_attr,
+                    ))
+                manifest = HtmlImagesManifest(pid=pid, entries=entries)
+                manifest_path = backend.get_html_images_manifest_path(pid)
+                manifest_path.write_text(
+                    manifest.to_json(), encoding="utf-8",
+                )
+                logger.info(
+                    "%s: persisted %d HTML image(s) + manifest",
+                    pid, len(entries),
+                )
 
 
-async def _stage_convert(pid: str, backend: StorageBackend) -> None:
-    """Convert source file to markdown."""
+def _warn_if_html_image_files_missing(
+    backend: StorageBackend,
+    pid: str,
+    manifest,
+    source_path: str,
+) -> int:
+    """Surface a warning when manifest entries reference files that are
+    no longer on disk. Returns the count of missing files.
+
+    Edge case the convert stage cannot recover on its own: HTML image
+    files are persisted at mailing time, not convert time. If they
+    later go missing (manual deletion, filesystem failure, ...), the
+    rendered preview will show broken ``<img>`` tags silently. The
+    warning's hint points at the recovery flow.
+    """
+    missing = [
+        e.stored_filename for e in manifest.entries
+        if not backend.get_paper_image_path(
+            pid,
+            page=0,
+            index=e.document_order,
+            ext=Path(e.stored_filename).suffix.lstrip(".").lower(),
+        ).exists()
+    ]
+    if missing:
+        logger.warning(
+            "%s: html-images manifest references %d missing file(s) "
+            "(first few: %s). Preview will show broken images. "
+            "Recover with: rm %s && paperflow download %s",
+            pid, len(missing), ", ".join(missing[:3]),
+            Path(source_path).name, pid,
+        )
+    return len(missing)
+
+
+async def _stage_convert(
+    pid: str,
+    backend: StorageBackend,
+    *,
+    keep_downstream: bool = False,
+) -> ConvertReport:
+    """Convert source file to markdown, persist extracted images, and
+    conditionally invalidate downstream pipelines.
+
+    No artifact-exists short-circuit: ``truthful_status`` upstream
+    already decided we need to run. (The dissect / advocatus / agora
+    stages follow the same pattern; only ``--force`` reruns reach this
+    body with a still-good prior markdown_path.)
+
+    For skipped papers (slide-deck, standards-draft, unreadable):
+    nothing is written to disk and no DB state is touched. The caller
+    treats the stage as failed (raise) so that the paper's status is
+    not advanced past ``download``.
+
+    Otherwise: byte-equality check against any prior markdown decides
+    whether downstream pipelines (dissect, advocatus, agora) should be
+    invalidated. A re-convert that produces identical markdown leaves
+    extract-table rows intact, since their stored ``loc.line`` offsets
+    are still valid. When the markdown does change AND
+    ``keep_downstream`` is False, the .dissect.md / .advocatus.md /
+    .agora.json files and the dissect-pipeline extract rows are wiped.
+    """
     import asyncio
     from pathlib import Path
 
-    from tomd.api import convert_paper
+    from paperstore.html_manifest import HtmlImagesManifest, HtmlManifestError
 
-    if postcondition_satisfied(backend, pid, STAGES["convert"]):
-        return
+    from tomd.api import convert_paper_full
+
     paper = backend.get_meta(pid)
     source_path = paper.source_file
     if not source_path:
@@ -265,10 +389,92 @@ async def _stage_convert(pid: str, backend: StorageBackend) -> None:
         "url": paper.url,
         "document_date": paper.document_date,
     }
-    markdown, _prompts, _intent = await asyncio.to_thread(
-        convert_paper, pid, Path(source_path), meta,
+
+    # HTML papers carry a sidecar manifest written by mailing's HTML
+    # image fetcher. Convert reads it from disk so it never hits the
+    # network and never re-parses the source HTML for image refs.
+    html_images_manifest = None
+    if Path(source_path).suffix.lower() in (".html", ".htm"):
+        manifest_path = backend.get_html_images_manifest_path(pid)
+        if manifest_path.exists():
+            try:
+                html_images_manifest = HtmlImagesManifest.from_json(
+                    manifest_path.read_text(encoding="utf-8"),
+                )
+            except HtmlManifestError as exc:
+                logger.warning(
+                    "%s: html images manifest unreadable (%s); continuing "
+                    "without image refs", pid, exc,
+                )
+
+        # Manifest entries claim per-image filenames on disk. Check
+        # them up front: a missing image file makes the rendered
+        # preview show broken images silently. Surface the hint here
+        # rather than letting the failure leak downstream.
+        if html_images_manifest is not None:
+            _warn_if_html_image_files_missing(
+                backend, pid, html_images_manifest, source_path,
+            )
+
+    result = await asyncio.to_thread(
+        convert_paper_full, pid, Path(source_path), meta,
+        html_images_manifest=html_images_manifest,
     )
-    backend.write_paper_md(pid, markdown)
+
+    if result.skipped:
+        # The convert stage cannot make this paper into markdown.
+        # Raise so process_paper records the failure and does not
+        # advance status past download. ``skip_reason`` distinguishes
+        # this from a genuine conversion error.
+        raise RuntimeError(f"convert skipped ({result.skip_reason})")
+
+    if result.images_truncated:
+        logger.warning(
+            "%s: kept %d of %d images (capped). The truncation marker is "
+            "in the markdown body.",
+            pid, len(result.images), result.source_image_count,
+        )
+
+    existing = backend.try_read_paper_md(pid)
+    content_changed = existing is None or existing != result.markdown
+
+    # HTML images carry empty bytes - mailing already persisted them
+    # at download time, alongside the manifest. The PDF case has bytes
+    # in memory and needs the delete-then-write rebuild to stay in sync
+    # with the canonical (page, y0, x0) order.
+    pdf_images = [img for img in result.images if img.bytes]
+    if pdf_images:
+        backend.delete_paper_images(pid)
+        for img in pdf_images:
+            backend.write_paper_image(
+                pid, img.page, img.index_on_page, img.ext, img.bytes,
+            )
+        logger.info("%s: persisted %d image(s)", pid, len(pdf_images))
+    backend.write_paper_md(pid, result.markdown)
+
+    downstream_cleared: tuple[str, ...] = ()
+    if content_changed and not keep_downstream:
+        cleared = backend.clear_downstream_outputs(pid)
+        if cleared:
+            downstream_cleared = tuple(cleared.names())
+            logger.warning(
+                "%s: cleared downstream artifacts (%s) - markdown content "
+                "changed and stored loc.line offsets would be stale. "
+                "Re-run those pipelines to refresh.",
+                pid, ", ".join(downstream_cleared),
+            )
+    elif content_changed and keep_downstream:
+        logger.warning(
+            "%s: markdown changed; downstream preserved per "
+            "--keep-downstream (loc.line offsets may be stale).", pid,
+        )
+
+    return ConvertReport(
+        images_kept=len(result.images),
+        source_image_count=result.source_image_count,
+        images_truncated=result.images_truncated,
+        downstream_cleared=downstream_cleared,
+    )
 
 
 async def _stage_dissect(

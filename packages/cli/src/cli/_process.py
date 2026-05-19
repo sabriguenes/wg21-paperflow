@@ -78,6 +78,8 @@ def run_process_command(
     stop_after = step_val
     chunk_index = getattr(args, "chunk", None)
     force = getattr(args, "force", False)
+    keep_downstream = getattr(args, "keep_downstream", False)
+    skip_prompt = getattr(args, "yes", False)
     service_overrides = _parse_service_overrides(getattr(args, "service", None))
     classifier_overrides = _parse_classifier_overrides(getattr(args, "classifier", None))
     provider_override = getattr(args, "provider", None)
@@ -107,6 +109,51 @@ def run_process_command(
     papers.sort(key=lambda p: (p.mailing_date or ""), reverse=True)
     papers.sort(key=lambda p: -(p.status or 0))
 
+    # Pre-batch confirmation gate (plan section 3.1). For multi-paper
+    # convert invocations, count how many papers would have their
+    # downstream artifacts invalidated. The trigger is the upper bound
+    # "has paper.md AND has dissect/advocatus/agora"; we can't predict
+    # whether the convert will produce different markdown bytes, so we
+    # treat all existing-markdown papers as "might change". --yes /
+    # non-TTY / single-paper / --keep-downstream all skip the prompt.
+    if (
+        verb == "convert"
+        and len(papers) > 1
+        and not keep_downstream
+        and not skip_prompt
+        and sys.stdin.isatty()
+    ):
+        dissect_n = sum(1 for p in papers if p.markdown_path and p.dissect_path)
+        advocatus_n = sum(
+            1 for p in papers if p.markdown_path and p.advocatus_path
+        )
+        agora_n = sum(1 for p in papers if p.markdown_path and p.agora_path)
+        affected = sum(
+            1 for p in papers
+            if p.markdown_path and (
+                p.dissect_path or p.advocatus_path or p.agora_path
+            )
+        )
+        if affected > 0:
+            print(
+                f"convert: this batch will invalidate downstream artifacts "
+                f"for {affected} paper(s)"
+            )
+            if dissect_n:
+                print(f"  - dissect outputs:   {dissect_n} papers")
+            if advocatus_n:
+                print(f"  - advocatus outputs: {advocatus_n} papers")
+            if agora_n:
+                print(f"  - agora outputs:     {agora_n} papers")
+            print("re-run those pipelines after convert finishes to refresh.")
+            try:
+                answer = input("Continue? [y/N] ").strip().lower()
+            except EOFError:
+                answer = ""
+            if answer != "y":
+                print("aborted.")
+                return 0
+
     progress_ctx, on_progress = make_progress_handler(verb.capitalize())
 
     from paperstore.progress import ProgressEvent
@@ -114,6 +161,10 @@ def run_process_command(
     failed = 0
     total = len(papers)
     last_result = None
+    # Per-paper convert telemetry, rolled up into the end-of-batch
+    # summaries below. (pid, ConvertReport) pairs - one entry per
+    # paper whose convert stage actually ran.
+    convert_reports: list = []
     with progress_ctx:
         for i, paper in enumerate(papers):
             if on_progress:
@@ -135,9 +186,12 @@ def run_process_command(
                         classifier_overrides=classifier_overrides,
                         provider_override=provider_override,
                         force=force,
+                        keep_downstream=keep_downstream,
                         on_progress=on_progress,
                     )
                 )
+                if last_result is not None and last_result.convert_report is not None:
+                    convert_reports.append((paper.paper_id, last_result.convert_report))
             except PipelineError as exc:
                 print(f"{paper.paper_id}: {exc}", file=sys.stderr)
                 failed += 1
@@ -157,6 +211,37 @@ def run_process_command(
         on_progress(ProgressEvent(
             step=total, total=total, name="done", pct=1.0,
         ))
+
+    # End-of-batch convert summaries (plan section 3.1). Two
+    # independently-printed blocks: papers truncated to the 20-image
+    # cap, and papers whose downstream artifacts were invalidated.
+    # Suppressed for verbs other than convert (other stages don't
+    # produce ConvertReport).
+    truncated = [(pid, r) for pid, r in convert_reports if r.images_truncated]
+    if truncated:
+        print(
+            f"\nconvert: {len(truncated)} paper(s) truncated to the "
+            f"{truncated[0][1].images_kept}-image cap:"
+        )
+        for pid, r in truncated:
+            print(f"  {pid} (kept {r.images_kept} of {r.source_image_count})")
+        print(
+            "  hint: vector diagrams and scanned-page PDFs are not handled "
+            "in v1 - see `improvements.md` section 4.\n"
+            "  The dropped images are noted in each paper.md as an HTML comment."
+        )
+    invalidated = [(pid, r) for pid, r in convert_reports if r.downstream_cleared]
+    if invalidated:
+        print(
+            f"\nconvert: {len(invalidated)} paper(s) had downstream artifacts "
+            f"invalidated by re-convert:"
+        )
+        for pid, r in invalidated:
+            print(f"  {pid} ({', '.join(r.downstream_cleared)})")
+        print(
+            "  re-run `paperflow dissect` / `paperflow advocatus` / "
+            "`paperflow agora` to refresh."
+        )
 
     ok = total - failed
     if total > 1:

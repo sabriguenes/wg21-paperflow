@@ -1,7 +1,9 @@
 """PDF to Markdown converter."""
 
+from tomd.lib.pdf.images import ExtractedImage
 from tomd.lib.pdf.pipeline import (
     convert_pdf,
+    run_pipeline,
     PipelineResult,
     _enrich_pdf_reply_to,
     _is_slide_deck,
@@ -12,6 +14,8 @@ from tomd.lib.pdf.pipeline import (
 
 __all__ = [
     "convert_pdf",
+    "run_pipeline",
+    "ExtractedImage",
     "PipelineResult",
     "_enrich_pdf_reply_to",
     "_is_slide_deck",

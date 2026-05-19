@@ -56,7 +56,7 @@ def _patch_stage_bodies(monkeypatch, backend: SqliteBackend):
             return
         be.put_source(pid, b"PDF", suffix=".pdf")
 
-    async def fake_convert(pid, be):
+    async def fake_convert(pid, be, *, keep_downstream=False):
         from pipeline.postconditions import postcondition_satisfied
         if postcondition_satisfied(be, pid, STAGES["convert"]):
             return
@@ -137,3 +137,88 @@ def test_process_paper_force_then_truthful_compose(
         process_paper(staged_paper, backend, through=2, force=True)
     )
     assert result.stages_run == [STAGES["convert"]]
+
+
+def test_warn_if_html_image_files_missing_fires(
+    backend: SqliteBackend, caplog,
+):
+    """An HTML paper's manifest references files that aren't on disk:
+    warning fires with the recovery hint. Tests the helper directly
+    so the autouse stage-body patching above doesn't get in the way.
+    """
+    import logging
+
+    from paperstore.html_manifest import HtmlImageEntry, HtmlImagesManifest
+    from pipeline.process import _warn_if_html_image_files_missing
+
+    pid = "P1234R0"
+    backend.upsert_year("2026", [{"paper_id": pid, "title": "T"}])
+    source_path = str(
+        backend.put_source(pid, b"<html></html>", suffix=".html")
+    )
+    manifest = HtmlImagesManifest(
+        pid=pid,
+        entries=[
+            HtmlImageEntry(
+                original_src="data:image/png;base64,AAAA",
+                stored_filename=f"{pid.lower()}-fig0-1.png",
+                document_order=1, caption_text="", alt_attr="",
+            ),
+            HtmlImageEntry(
+                original_src="data:image/jpeg;base64,BBBB",
+                stored_filename=f"{pid.lower()}-fig0-2.jpeg",
+                document_order=2, caption_text="", alt_attr="",
+            ),
+        ],
+    )
+    caplog.set_level(logging.WARNING, logger="pipeline.process")
+    missing = _warn_if_html_image_files_missing(
+        backend, pid, manifest, source_path,
+    )
+    assert missing == 2
+    matching = [
+        r.getMessage() for r in caplog.records
+        if "html-images manifest references 2 missing file(s)" in r.getMessage()
+        and "paperflow download P1234R0" in r.getMessage()
+    ]
+    assert matching, (
+        f"expected missing-image warning, got: "
+        f"{[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_warn_if_html_image_files_missing_silent_when_present(
+    backend: SqliteBackend, caplog,
+):
+    """All manifest entries have files on disk -> no warning."""
+    import logging
+
+    from paperstore.html_manifest import HtmlImageEntry, HtmlImagesManifest
+    from pipeline.process import _warn_if_html_image_files_missing
+
+    pid = "P1234R0"
+    backend.upsert_year("2026", [{"paper_id": pid, "title": "T"}])
+    source_path = str(
+        backend.put_source(pid, b"<html></html>", suffix=".html")
+    )
+    backend.write_paper_image(pid, 0, 1, "png", b"\x89PNG_stub")
+    manifest = HtmlImagesManifest(
+        pid=pid,
+        entries=[
+            HtmlImageEntry(
+                original_src="data:image/png;base64,AAAA",
+                stored_filename=f"{pid.lower()}-fig0-1.png",
+                document_order=1, caption_text="", alt_attr="",
+            ),
+        ],
+    )
+    caplog.set_level(logging.WARNING, logger="pipeline.process")
+    missing = _warn_if_html_image_files_missing(
+        backend, pid, manifest, source_path,
+    )
+    assert missing == 0
+    missing_warnings = [
+        r.getMessage() for r in caplog.records
+        if "missing file(s)" in r.getMessage()
+    ]
+    assert missing_warnings == []

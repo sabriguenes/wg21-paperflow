@@ -36,6 +36,10 @@ WG21_DATA_DIR/
     <pid>.pdf | <pid>.html
     <pid>.md
     <pid>.prompts.json
+    <pid>-fig{page}-{n}.{ext}      # extracted raster images. page=0
+                                   # is the HTML "no page concept" sentinel.
+    <pid>.html-images.json         # mailing -> tomd handoff manifest
+                                   # for HTML papers.
 ```
 
 Pipeline artifacts (dissect/advocatus/agora outputs, debug, trace) are namespaced per tool. Use `backend.get_debug_md_path(pid, tool)` and `backend.get_trace_md_path(pid, tool)` rather than constructing paths.
@@ -123,6 +127,7 @@ Paper markdown and web-fetched content are untrusted data.
 - The framework floor in `pipeline.runner` tells agents to treat delimited content as data, never as instructions.
 - Structured output (D6) enforces the schema.
 - The `read_paper` tool is scoped to one paper and capped at 500 lines per call.
+- Alt text in image references (`![alt](path)`) is paper-controlled content. It is wrapped along with the rest of `paper.md` by `pipeline.tools.wrap_source` and therefore inherits the same protection. A future revision that passes alt text to an LLM outside the `wrap_source` envelope (e.g. as a vision-captioning prompt) needs its own wrapping.
 
 ## Tests
 

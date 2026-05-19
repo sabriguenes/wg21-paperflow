@@ -15,6 +15,11 @@ WG21_DATA_DIR/
     <pid>.pdf | <pid>.html         # mailing.download
     <pid>.md                       # tomd
     <pid>.prompts.json             # tomd, only on uncertain regions; JSON array of LLM reconcile prompts
+    <pid>-fig{page}-{n}.{ext}      # extracted raster images. page=0 is the
+                                   # HTML "no page concept" sentinel.
+    <pid>.html-images.json         # typed manifest written by mailing,
+                                   # consumed by tomd's HTML path. Schema:
+                                   # paperstore.html_manifest.HtmlImagesManifest
     <pid>.dissect.md               # dissect (paperflow dissect)
     <pid>.advocatus.md             # advocatus Relatio (paperflow advocatus)
     <pid>.<tool>.debug.md          # per-tool debug transcript (--debug)
@@ -30,6 +35,7 @@ Per-tool debug/trace artifacts are namespaced by `<tool>` (e.g. `dissect`, `advo
 - `tools.py` — `PaperstoreTools`: agent-facing read-only methods (`paper_meta`, `paper_meta_latest`, `read_file`) returning JSON strings for Pydantic AI `tool_plain` registration.
 - `factory.py` — `from_uri`, `default_workspace_dir`.
 - `extract_rows.py` — frozen dataclasses returned by extract read methods.
+- `html_manifest.py` — `HtmlImageEntry`, `HtmlImagesManifest`, `HtmlManifestError`. Stdlib-only typed schema (frozen dataclasses + manual JSON), parallel to `extract_rows.py`. Written by mailing's HTML image fetcher, read by tomd's HTML extractor. `from_json` is forward-compatible up to `_MAX_FORWARD_COMPATIBLE_VERSION`; explicit error past that.
 - `errors.py` — typed exceptions.
 - `progress.py` — `ProgressCallback`, `ProgressEvent`.
 - `testing.py` — pytest fixture.
@@ -51,10 +57,21 @@ Six tables in `paperstore.db` store structured results from the dissect pipeline
 
 Write methods accept duck-typed domain objects (no Pydantic import in paperstore). Read methods return frozen dataclasses from `extract_rows.py`. Atomic delete+insert per paper_id.
 
+## Image and downstream-invalidation accessors
+
+The image-extraction work added six accessors that callers route through; no consumer builds image filenames or manifest paths by hand.
+
+- `get_paper_image_path(pid, page, index, ext) -> Path` and `write_paper_image(pid, page, index, ext, data)` for `<pid>-fig{page}-{index}.{ext}`. `page=0` is the HTML "no page concept" sentinel.
+- `iter_paper_image_paths(pid)` and `delete_paper_images(pid)` filter via a compiled stem regex (`_IMAGE_FILENAME_RE`), not glob: so `delete_paper_images("P30")` can never reach `p301-fig...` or unrelated `p30-meta.json` artifacts. The regex is the authoritative gate.
+- `get_html_images_manifest_path(pid)` for the mailing-to-tomd handoff sidecar.
+- `clear_downstream_outputs(pid) -> ClearedSet` wipes the `.dissect.md` / `.advocatus.md` / `.agora.json` files AND the dissect-pipeline extract rows (claims, evidence, paper_citations, external_citations, questions, rhetoric, caput_causae, citation_audit). Called by `paperflow convert` after a re-convert that changed the markdown, because stored `loc.line` offsets become stale on any content change. `--keep-downstream` opts out and logs a warning.
+
+`try_read_paper_md(pid) -> str | None` is the non-raising read of the current markdown, used for the byte-equality check that gates downstream invalidation.
+
 ## Invariants
 
 - **`SqliteBackend` is the local backend.** A Postgres backend exists in `wg21-website` (private). New methods must be added to the `StorageBackend` ABC first; do not let `SqliteBackend`-specific behavior leak into call sites.
-- **No path arithmetic outside the backend.** Callers must not build paths from `backend.workspace_dir / pid / "..."`. Use accessors: `get_source_path`, `get_paper_md`, `list_paper_ids`. Display sites use return values from `convert_paper` / `write_paper_md`.
+- **No path arithmetic outside the backend.** Callers must not build paths from `backend.workspace_dir / pid / "..."`. Use accessors: `get_source_path`, `get_paper_md`, `list_paper_ids`, `get_paper_image_path`, `get_html_images_manifest_path`. Display sites use return values from `convert_paper` / `write_paper_md` / `write_paper_image`.
 - **`get_source_path -> Path` assumes a local filesystem.** Non-local backends must materialize bytes to a temp file before returning. Document this in any new backend.
 - **Errors are typed.** Raise `MissingSourceError` / `MissingPaperMdError` / `MissingMailingIndexError` (all subclasses of `PaperstoreError`), not generic `FileNotFoundError`, so callers can distinguish stages.
 - **Paper id casing is normalized.** Filesystem stems are lowercase; `list_paper_ids` returns uppercase. APIs accept any input casing.

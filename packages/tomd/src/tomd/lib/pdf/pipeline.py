@@ -9,6 +9,11 @@ from pathlib import Path
 from .cleanup import (get_edge_items, detect_repeating, strip_repeating,
                       cleanup_text, find_hidden_regions, strip_hidden_blocks)
 from .extract import extract_mupdf, extract_spatial, collect_links, attach_links
+from .images import (
+    ExtractedImage,
+    extract_page_images,
+    finalize_extraction,
+)
 from .mono import propagate_monospace
 from .wording import classify_wording, collect_line_drawings
 from .spans import normalize_spans
@@ -16,10 +21,10 @@ from .structure import compare_extractions, structure_sections
 from .table import detect_tables, exclude_table_regions
 from .wg21 import extract_metadata_from_blocks
 from .emit import emit_markdown, emit_prompts
-from .types import KNOWN_SECTIONS, Section, SectionKind, is_readable
+from .types import KNOWN_SECTIONS, Confidence, Section, SectionKind, is_readable
 from ..toc import find_toc_indices
 
-__all__ = ["convert_pdf", "PipelineResult"]
+__all__ = ["convert_pdf", "run_pipeline", "PipelineResult", "ExtractedImage"]
 
 _log = logging.getLogger(__name__)
 
@@ -142,9 +147,72 @@ def _is_standards_draft(doc) -> bool:
     return doc.page_count >= _STANDARDS_DRAFT_MIN_PAGES
 
 
+def _make_image_section(img: ExtractedImage) -> Section:
+    """Build a :class:`SectionKind.IMAGE` Section from one extraction record.
+
+    Section.text and the per-path text fields are intentionally empty
+    (plan N4): an image has no text content, and Section.text drives
+    consumers like ``qa.compute_metrics`` whose word counts would be
+    inflated by alt text. The canonical alt-text source is
+    ``image_ref.suggested_alt``, read by the emit step.
+    """
+    return Section(
+        kind=SectionKind.IMAGE,
+        text="",
+        confidence=Confidence.HIGH,
+        page_num=img.page - 1,    # Section.page_num is 0-based
+        image_ref=img,
+    )
+
+
+def _insert_image_sections(
+    sections: list[Section],
+    images: list[ExtractedImage],
+) -> list[Section]:
+    """Insert IMAGE sections into a sorted section list at the right y-position.
+
+    Mirrors the table-insertion logic: walk the existing sections by
+    ``(page_num, first_line.bbox[1])`` and slot each IMAGE in just
+    before the first section that comes after it. Appends if the
+    image is at end-of-document.
+    """
+    out = list(sections)
+    for img in images:
+        img_sec = _make_image_section(img)
+        inserted = False
+        for i, sec in enumerate(out):
+            if sec.page_num > img_sec.page_num:
+                out.insert(i, img_sec)
+                inserted = True
+                break
+            if (sec.page_num == img_sec.page_num
+                    and sec.lines
+                    and sec.lines[0].bbox[1] > img.bbox[1]):
+                out.insert(i, img_sec)
+                inserted = True
+                break
+        if not inserted:
+            out.append(img_sec)
+    return out
+
+
 @dataclass
 class PipelineResult:
-    """Full output of the PDF conversion pipeline, used for QA scoring."""
+    """Full output of the PDF conversion pipeline, used for QA scoring.
+
+    Image fields:
+
+    - ``images``: up to ``_MAX_IMAGES_PER_PAPER`` :class:`ExtractedImage`
+      records, sorted by ``(page, bbox.y0, bbox.x0)``. The CLI consumes
+      this list to persist bytes via ``backend.write_paper_image``.
+      Always empty when ``skipped`` is True - early-exit paths discard
+      any partial extraction state to avoid orphan PNGs on disk without
+      a referencing markdown.
+    - ``source_image_count``: unique-xref total for the source,
+      regardless of the cap. Drives the CLI's "kept M of N" line.
+    - ``images_truncated``: True iff ``source_image_count`` exceeded
+      the cap and the emit step appended the truncation HTML comment.
+    """
     md: str = ""
     prompts: list[str] | None = None
     sections: list[Section] = field(default_factory=list)
@@ -154,6 +222,9 @@ class PipelineResult:
     readable: bool = True
     skipped: bool = False
     skip_reason: str = ""
+    images: list[ExtractedImage] = field(default_factory=list)
+    source_image_count: int = 0
+    images_truncated: bool = False
 
 
 def _parse_pdf_info_date(raw: str) -> str:
@@ -242,7 +313,7 @@ def _enrich_pdf_reply_to(
     metadata["reply-to"] = existing
 
 
-def _run_pipeline(path: Path) -> PipelineResult:
+def run_pipeline(path: Path) -> PipelineResult:
     """Run the full PDF conversion pipeline, returning all intermediate data."""
     import fitz
 
@@ -278,6 +349,10 @@ def _run_pipeline(path: Path) -> PipelineResult:
         all_mupdf_blocks = []
         all_spatial_blocks = []
         all_edge_items = []
+        # Per-page image candidates accumulated while the document is
+        # open. Finalized (deduped + capped) after the readability
+        # check passes, so unreadable PDFs produce result.images = [].
+        per_page_image_candidates: list = []
 
         for pg_num in range(result.page_count):
             page = doc[pg_num]
@@ -294,6 +369,10 @@ def _run_pipeline(path: Path) -> PipelineResult:
             links = collect_links(page)
             attach_links(mupdf_blocks, links)
             attach_links(spatial_blocks, links)
+
+            per_page_image_candidates.append(
+                extract_page_images(page, spatial_blocks)
+            )
 
             all_mupdf_blocks.extend(mupdf_blocks)
             all_spatial_blocks.extend(spatial_blocks)
@@ -336,6 +415,13 @@ def _run_pipeline(path: Path) -> PipelineResult:
         _log.warning("Extracted text is not readable (encrypted/scanned PDF?)")
         result.readable = False
         return result
+
+    extraction_result = finalize_extraction(
+        per_page_image_candidates, path.stem.lower()
+    )
+    result.images = extraction_result.images
+    result.source_image_count = extraction_result.source_image_count
+    result.images_truncated = extraction_result.images_truncated
 
     repeating = detect_repeating(all_edge_items, result.page_count)
     if repeating:
@@ -380,6 +466,12 @@ def _run_pipeline(path: Path) -> PipelineResult:
                 break
         if not inserted:
             sections.append(ts)
+
+    if result.images:
+        _log.info("Extracted %d image(s) (cap %s)",
+                   len(result.images),
+                   "tripped" if result.images_truncated else "ok")
+        sections = _insert_image_sections(sections, result.images)
 
     has_title = "title" in wg21_metadata
     # Three metadata pathways, merged here in precedence order (last wins):
@@ -449,9 +541,24 @@ def _run_pipeline(path: Path) -> PipelineResult:
     structural_hints = _toc_structural_hints(sections) if not heading_texts else None
     toc_indices = find_toc_indices(texts, heading_texts, structural_hints)
     if toc_indices:
+        # IMAGE sections are never TOC content. find_toc_indices walks
+        # by section text and includes any "gap" index between matches
+        # as a gap-fill TOC entry; without this filter a figure that
+        # happens to sit between two heading-matched sections gets
+        # swept up and disappears from the markdown.
+        toc_indices = {
+            i for i in toc_indices
+            if sections[i].kind is not SectionKind.IMAGE
+        }
+    if toc_indices:
         sections = [s for i, s in enumerate(sections) if i not in toc_indices]
 
-    md = emit_markdown(metadata, sections)
+    md = emit_markdown(
+        metadata,
+        sections,
+        images_truncated=result.images_truncated,
+        source_image_count=result.source_image_count,
+    )
     prompts = emit_prompts(sections)
 
     if wording_problems:
@@ -484,5 +591,5 @@ def convert_pdf(path: Path) -> tuple[str, list[str] | None]:
     unreadable PDFs. Raises fitz exceptions for corrupt or inaccessible
     files.
     """
-    r = _run_pipeline(path)
+    r = run_pipeline(path)
     return r.md, r.prompts

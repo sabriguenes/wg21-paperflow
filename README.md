@@ -56,6 +56,19 @@ uv run pytest
 - **tomd** - Converts paper PDFs and HTML to clean markdown.
 - **cli** - Ingestion and conversion CLI (`paperflow`).
 
+## Images
+
+PDFs and HTML papers with embedded raster images get those images extracted to `paperstore/<pid>-fig{page}-{n}.{ext}` and referenced in the converted markdown as `![caption](file)`. PDF captions come from "Figure N: ..."-style labels near the image; HTML captions come from `<figcaption>` or the `alt` attribute. HTML papers also get a `<pid>.html-images.json` sidecar manifest that records the mailing-to-tomd handoff.
+
+**Out of scope for v1:**
+
+- **Vector diagrams** drawn with PDF path/line operators (flowcharts, graph diagrams) are not extracted - `pymupdf` does not expose them as images and a page-region rasteriser has not yet been added.
+- **Scanned-page PDFs** whose body is one image per page are similarly out of scope.
+
+See `packages/tomd/improvements.md` §4 for the layout-aware extraction path that would unlock both cases.
+
+Papers with more than 20 unique embedded images keep the first 20 in source order and append a `<!-- tomd:images-truncated: ... -->` HTML comment at end-of-body recording the cap.
+
 ## License
 
 Boost Software License 1.0

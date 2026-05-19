@@ -35,6 +35,23 @@ __all__ = [
 ]
 
 
+@dataclass(frozen=True)
+class ConvertReport:
+    """Per-paper convert-stage telemetry, surfaced to the CLI for
+    end-of-batch summaries.
+
+    Populated by ``_stage_convert`` when it ran. ``downstream_cleared``
+    is the names list from :class:`paperstore.ClearedSet` for papers
+    whose markdown content changed and where ``--keep-downstream`` was
+    not set.
+    """
+
+    images_kept: int = 0
+    source_image_count: int = 0
+    images_truncated: bool = False
+    downstream_cleared: tuple[str, ...] = ()
+
+
 @dataclass
 class ProcessResult:
     """Result of one ``process_paper`` invocation.
@@ -43,10 +60,15 @@ class ProcessResult:
     ``_stage_*`` body actually executed. An empty list means the verb
     short-circuited (paper already at or past ``through`` with all
     artifacts intact).
+
+    ``convert_report`` is set when the convert stage ran in this
+    invocation (so the CLI can roll up truncation and invalidation
+    summaries across the batch).
     """
 
     final_status: int
     stages_run: list[int] = field(default_factory=list)
+    convert_report: ConvertReport | None = None
 
 
 def postcondition_satisfied(
