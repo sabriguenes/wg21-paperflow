@@ -27,7 +27,7 @@ from typing import Callable, TypeVar
 
 from pydantic import BaseModel
 
-from pipeline.model_backends import ModelBackend
+from pipeline.model_backends import DEFAULT_REQUEST_LIMIT, ModelBackend
 
 _T = TypeVar("_T", bound=BaseModel)
 
@@ -61,8 +61,12 @@ class AgentBackend:
         tools: dict[str, Callable] | None = None,
         label: str = "",
         debug_log: list[str] | None = None,
+        request_limit: int = DEFAULT_REQUEST_LIMIT,
     ) -> _T:
         """Send a prompt and return validated structured output.
+
+        ``request_limit`` caps total model requests inside this call;
+        forwarded to the underlying ``ModelBackend``.
 
         Raises ``NotImplementedError`` if ``tools`` is non-empty and
         the underlying ``ModelBackend`` declares ``tools_capable=False``.
@@ -80,4 +84,5 @@ class AgentBackend:
             thinking_budget=self._thinking_budget,
             label=label,
             debug_log=debug_log,
+            request_limit=request_limit,
         )

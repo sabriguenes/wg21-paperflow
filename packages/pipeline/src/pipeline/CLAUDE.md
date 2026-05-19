@@ -39,12 +39,13 @@ from pipeline import (
 
 ## ModelBackend contract
 
-Each backend implements `async def run(system_prompt, user_message, output_type, *, tools, thinking_budget, label, debug_log) -> T`. The contract:
+Each backend implements `async def run(system_prompt, user_message, output_type, *, tools, thinking_budget, label, debug_log, request_limit) -> T`. The contract:
 
 - Return a validated instance of `output_type` (a Pydantic `BaseModel`).
 - Apply all model-family-specific workarounds internally (BPE cleanup, `<think>` stripping, schema-in-prompt, JSON extraction, retry).
 - Raise on unrecoverable failure after exhausting internal retries.
 - Append debug entries to `debug_log` when provided.
+- Honor `request_limit` as a cap on total model requests issued in this call (model calls + tool calls + output-validator retries). Backends without an agentic loop bound their internal retry budget by this value; pydantic-ai-backed backends pass it through as `UsageLimits.request_limit`. Reject `request_limit < 1` at entry. Default value is `DEFAULT_REQUEST_LIMIT` from `model_backends.py`.
 
 ### Adding a backend
 

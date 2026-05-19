@@ -45,6 +45,17 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*", re.IGNORECASE)
 
 _BPE_ARTIFACTS = str.maketrans({"\u0120": " ", "\u010a": "\n"})
 
+DEFAULT_REQUEST_LIMIT = 500
+"""Default cap on pydantic-ai's UsageLimits.request_limit.
+
+This counts every model request, tool call, and output-validator retry
+issued inside one Agent.run(). 500 is high enough for tool-free synthesis
+under retries=3 (effective ceiling ~4 model calls), and low enough that a
+runaway tool loop terminates in single-digit minutes at typical hosted-LLM
+latency. Lower it per-step via StepHooks.request_limit when the tool-call
+shape is known.
+"""
+
 
 def _clean_bpe(text: str) -> str:
     """Replace leaked BPE token markers with the characters they represent.
@@ -130,8 +141,15 @@ class ModelBackend(ABC):
         thinking_budget: int | None = None,
         label: str = "",
         debug_log: list[str] | None = None,
+        request_limit: int = DEFAULT_REQUEST_LIMIT,
     ) -> _T:
-        """Send a prompt and return validated structured output."""
+        """Send a prompt and return validated structured output.
+
+        ``request_limit`` caps the total model requests (model calls,
+        tool calls, output-validator retries) issued in this call.
+        Backends without an agentic loop bound their internal retry
+        budget by this value.
+        """
         ...
 
 
@@ -174,11 +192,16 @@ class DeepSeekR1DistillVllm021Backend(ModelBackend):
         thinking_budget: int | None = None,
         label: str = "",
         debug_log: list[str] | None = None,
+        request_limit: int = DEFAULT_REQUEST_LIMIT,
     ) -> _T:
         if tools:
             raise NotImplementedError(
                 f"{type(self).__name__} does not support tools. "
                 "Use a tools_capable backend for tool-using steps."
+            )
+        if request_limit < 1:
+            raise ValueError(
+                f"request_limit must be >= 1, got {request_limit}"
             )
 
         schema_block = _schema_instruction(output_type)
@@ -189,7 +212,8 @@ class DeepSeekR1DistillVllm021Backend(ModelBackend):
             {"role": "user", "content": user_message},
         ]
 
-        for attempt in range(2):
+        max_attempts = min(2, request_limit)
+        for attempt in range(max_attempts):
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=messages,
@@ -220,9 +244,10 @@ class DeepSeekR1DistillVllm021Backend(ModelBackend):
                     )
                 return result
             except (ValueError, json.JSONDecodeError, ValidationError) as exc:
-                if attempt == 0:
+                if attempt < max_attempts - 1:
                     logger.warning(
-                        "Raw JSON parse failed (attempt 1), retrying: %s", exc,
+                        "Raw JSON parse failed (attempt %d), retrying: %s",
+                        attempt + 1, exc,
                     )
                     messages.append({"role": "assistant", "content": raw_content})
                     messages.append({
@@ -234,11 +259,13 @@ class DeepSeekR1DistillVllm021Backend(ModelBackend):
                     })
                     continue
                 raise ValueError(
-                    f"Raw JSON completion failed after retry: {exc}\n"
+                    f"Raw JSON completion failed after {attempt + 1} attempt(s): {exc}\n"
                     f"Content: {content[:500]!r}"
                 ) from exc
 
-        raise RuntimeError("unreachable")
+        raise AssertionError(
+            f"unreachable: loop must return or raise (max_attempts={max_attempts})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -279,8 +306,10 @@ class Llama3Backend(ModelBackend):
         thinking_budget: int | None = None,
         label: str = "",
         debug_log: list[str] | None = None,
+        request_limit: int = DEFAULT_REQUEST_LIMIT,
     ) -> _T:
         from pydantic_ai import Agent
+        from pydantic_ai.exceptions import UsageLimitExceeded
         from pydantic_ai.settings import ModelSettings
         from pydantic_ai.usage import UsageLimits
         from pydantic_ai.models.openai import OpenAIChatModel
@@ -311,10 +340,14 @@ class Llama3Backend(ModelBackend):
             for name, fn in tools.items():
                 agent.tool_plain(fn)
 
-        result = await agent.run(
-            user_message,
-            usage_limits=UsageLimits(request_limit=500),
-        )
+        try:
+            result = await agent.run(
+                user_message,
+                usage_limits=UsageLimits(request_limit=request_limit),
+            )
+        except UsageLimitExceeded as exc:
+            exc.add_note(f"request_limit={request_limit}")
+            raise
 
         if debug_log is not None:
             from pipeline.tasks import render_debug_md
@@ -360,8 +393,10 @@ class Qwen3Backend(ModelBackend):
         thinking_budget: int | None = None,
         label: str = "",
         debug_log: list[str] | None = None,
+        request_limit: int = DEFAULT_REQUEST_LIMIT,
     ) -> _T:
         from pydantic_ai import Agent
+        from pydantic_ai.exceptions import UsageLimitExceeded
         from pydantic_ai.settings import ModelSettings
         from pydantic_ai.usage import UsageLimits
         from pydantic_ai.models.openai import OpenAIChatModel
@@ -395,10 +430,14 @@ class Qwen3Backend(ModelBackend):
             for name, fn in tools.items():
                 agent.tool_plain(fn)
 
-        result = await agent.run(
-            user_message,
-            usage_limits=UsageLimits(request_limit=500),
-        )
+        try:
+            result = await agent.run(
+                user_message,
+                usage_limits=UsageLimits(request_limit=request_limit),
+            )
+        except UsageLimitExceeded as exc:
+            exc.add_note(f"request_limit={request_limit}")
+            raise
 
         if debug_log is not None:
             from pipeline.tasks import render_debug_md
@@ -439,8 +478,10 @@ class AnthropicBackend(ModelBackend):
         thinking_budget: int | None = None,
         label: str = "",
         debug_log: list[str] | None = None,
+        request_limit: int = DEFAULT_REQUEST_LIMIT,
     ) -> _T:
         from pydantic_ai import Agent
+        from pydantic_ai.exceptions import UsageLimitExceeded
         from pydantic_ai.settings import ModelSettings
         from pydantic_ai.usage import UsageLimits
 
@@ -462,10 +503,14 @@ class AnthropicBackend(ModelBackend):
             for name, fn in tools.items():
                 agent.tool_plain(fn)
 
-        result = await agent.run(
-            user_message,
-            usage_limits=UsageLimits(request_limit=500),
-        )
+        try:
+            result = await agent.run(
+                user_message,
+                usage_limits=UsageLimits(request_limit=request_limit),
+            )
+        except UsageLimitExceeded as exc:
+            exc.add_note(f"request_limit={request_limit}")
+            raise
 
         if debug_log is not None:
             from pipeline.tasks import render_debug_md

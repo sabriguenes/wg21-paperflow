@@ -39,6 +39,7 @@ from pipeline.errors import (
     PromptFileError,
     StepError,
 )
+from pipeline.model_backends import DEFAULT_REQUEST_LIMIT
 from pipeline.markdown import sections
 from pipeline.prompt import StepSpec
 from pipeline.tasks import render_debug_prompt
@@ -141,7 +142,7 @@ async def run_agent(
     spec: StepSpec,
     user_msg: str,
     *,
-    request_limit: int = 500,
+    request_limit: int = DEFAULT_REQUEST_LIMIT,
 ) -> Any:
     """Dispatch a single LLM call through the step's assigned agent.
 
@@ -174,6 +175,7 @@ async def run_agent(
             tools=tools,
             label=spec.meta.name,
             debug_log=ctx.debug_log if ctx.debug else None,
+            request_limit=request_limit,
         )
     except Exception as exc:
         raise StepError(spec.meta.number, spec.meta.name, exc) from exc
@@ -244,6 +246,12 @@ async def dispatch(
             t0 = time.monotonic()
             metrics = StepMetrics(name=spec.meta.name)
 
+            effective_request_limit = (
+                spec.hooks.request_limit
+                if spec.hooks.request_limit is not None
+                else DEFAULT_REQUEST_LIMIT
+            )
+
             try:
                 if spec.hooks.custom:
                     await spec.hooks.custom(state, ctx)
@@ -261,7 +269,7 @@ async def dispatch(
                     for msg in user_msgs:
                         results.append(await run_agent(
                             ctx, spec, msg,
-                            request_limit=spec.hooks.request_limit or 500,
+                            request_limit=effective_request_limit,
                         ))
                     if spec.hooks.extract:
                         spec.hooks.extract(state, results)
@@ -270,7 +278,7 @@ async def dispatch(
                     user_msg = spec.hooks.prepare(state, ctx)
                     result = await run_agent(
                         ctx, spec, user_msg,
-                        request_limit=spec.hooks.request_limit or 500,
+                        request_limit=effective_request_limit,
                     )
                     if spec.hooks.extract:
                         spec.hooks.extract(state, result)
