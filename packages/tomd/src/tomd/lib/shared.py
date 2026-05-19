@@ -109,17 +109,9 @@ def dedup_paragraphs(md: str) -> str:
     return "\n\n".join(result)
 
 
-FRONT_MATTER_ORDER = ("title", "document", "revision", "date", "intent", "audience", "reply-to")
+FRONT_MATTER_ORDER = ("title", "document", "date", "intent", "audience", "reply-to")
 
 DEFAULT_FENCE_LANG = "cpp"
-
-_PID_REVISION_RE = re.compile(r"[PDpd]\d{3,5}[Rr](\d+)")
-
-
-def extract_revision(document: str) -> int | None:
-    """Extract revision number from a paper ID like P2583R3 -> 3."""
-    m = _PID_REVISION_RE.search(document)
-    return int(m.group(1)) if m else None
 
 _TITLE_LABEL_RE = re.compile(
     r"(?:Paper\s*Number|Document(?:\s*Number)?|Title|Authors?|"
@@ -187,11 +179,6 @@ def sanitize_metadata(metadata: dict) -> dict:
         else:
             del md["reply-to"]
 
-    if "revision" not in md and "document" in md:
-        rev = extract_revision(str(md["document"]))
-        if rev is not None:
-            md["revision"] = rev
-
     return md
 
 
@@ -215,7 +202,7 @@ def format_front_matter(metadata: dict) -> str:
     """Format metadata dict as YAML front matter in strict canonical order.
 
     Strict-order contract: keys are emitted exactly in the order
-    ``title, document, revision, date, intent, audience, reply-to``. Missing keys
+    ``title, document, date, intent, audience, reply-to``. Missing keys
     are skipped (no placeholders, no blank lines). Unknown keys appear
     after ``audience`` so ``reply-to`` is always last. Callers and
     downstream tools may rely on this ordering for diffs and parsing.
@@ -233,11 +220,6 @@ def format_front_matter(metadata: dict) -> str:
         title = re.sub(r"\s*::\s*", "::", title)
         title = re.sub(r"  +", " ", title).strip()
         metadata["title"] = title
-
-    if "revision" not in metadata and "document" in metadata:
-        rev = extract_revision(str(metadata["document"]))
-        if rev is not None:
-            metadata["revision"] = rev
 
     if "intent" not in metadata:
         title = metadata.get("title", "")

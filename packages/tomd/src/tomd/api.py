@@ -21,7 +21,7 @@ from the source paper is filled in from the mailing-index row for the
 paper. Fields already present in the paper's front matter win.
 
 The returned markdown's front matter is always emitted in the strict
-canonical key order ``title, document, revision, date, intent, audience,
+canonical key order ``title, document, date, intent, audience,
 reply-to`` (unknown keys after ``audience``, ``reply-to`` always last),
 regardless of the source format or the order in which fallback fields
 were merged. The ``_normalize_front_matter`` pass enforces this
@@ -340,7 +340,7 @@ def convert_paper(
     backend.
 
     The returned markdown's YAML front matter is guaranteed to use the
-    strict canonical key order ``title, document, revision, date, intent,
+    strict canonical key order ``title, document, date, intent,
     audience, reply-to``. Missing keys are skipped; unknown keys are
     placed after ``audience`` so ``reply-to`` is always last.
 

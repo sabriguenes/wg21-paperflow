@@ -15,7 +15,6 @@ from tomd.lib.shared import (  # noqa: F401
     dedup_paragraphs,
     deobfuscate_email,
     enrich_reply_to_names,
-    extract_revision,
     format_front_matter,
     normalize_date,
     parse_author_lines,
