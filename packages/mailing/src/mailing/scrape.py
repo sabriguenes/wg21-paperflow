@@ -57,10 +57,10 @@ def _extract_paper_metadata_from_row(
 
     Handles both 8-column (current year) and 5-column (older) layouts.
 
-    The returned dict carries (a) parsed convenience fields and (b)
-    ``raw_columns`` / ``raw_links``: every cell text and first-cell
-    anchor verbatim so downstream consumers can read columns the scraper
-    does not interpret (e.g. previous-version links, disposition columns).
+    The returned dict carries (a) parsed convenience fields including
+    ``previous_version``, ``previous_version_url``, and ``disposition``
+    (8-column layout only), and (b) ``raw_columns`` / ``raw_links``:
+    every cell text and first-cell anchor verbatim.
     """
     if not cells:
         return None
@@ -91,6 +91,21 @@ def _extract_paper_metadata_from_row(
         subgroup = cells[6].text.strip()
     elif len(cells) > 4:
         subgroup = cells[4].text.strip()
+
+    previous_version = ""
+    previous_version_url = ""
+    disposition = ""
+    if len(cells) >= 8:
+        prev_cell = cells[5]
+        prev_link = prev_cell.find("a", href=True)
+        if prev_link:
+            prev_text = prev_link.text.strip()
+            if prev_text:
+                previous_version = prev_text.lower()
+                previous_version_url = urllib.parse.urljoin(
+                    page_url, prev_link.get("href", "")
+                )
+        disposition = cells[7].text.strip()
 
     raw_links: list[dict] = []
     matched_url: str | None = None
@@ -127,6 +142,9 @@ def _extract_paper_metadata_from_row(
         "authors": authors,
         "document_date": document_date,
         "subgroup": subgroup,
+        "previous_version": previous_version,
+        "previous_version_url": previous_version_url,
+        "disposition": disposition,
         "raw_columns": raw_columns,
         "raw_links": raw_links,
     }
@@ -192,8 +210,10 @@ def parse_papers_for_mailing(
     """Parse papers for a single mailing from a year index HTML page.
 
     Returns list of dicts with: paper_id, url, filename, type, title,
-    authors, document_date, subgroup, raw_columns, raw_links, and optionally
-    intent (``"info"`` or ``"ask"`` when the title carries the prefix).
+    authors, document_date, subgroup, previous_version,
+    previous_version_url, disposition, mailing_label, raw_columns,
+    raw_links, and optionally intent (``"info"`` or ``"ask"`` when
+    the title carries the prefix).
     """
     soup = BeautifulSoup(html, "html.parser")
     anchor_id = f"mailing{mailing_date}"
@@ -208,9 +228,29 @@ def parse_papers_for_mailing(
         return []
 
     papers = _parse_table_rows(table, page_url)
+    mailing_label = _extract_mailing_label(anchor, mailing_date)
     for paper in papers:
         paper["mailing_date"] = mailing_date
+        paper["mailing_label"] = mailing_label
     return papers
+
+
+def _extract_mailing_label(anchor, anchor_id_value: str) -> str:
+    """Extract the human-readable label suffix from a mailing anchor.
+
+    The anchor text is e.g. ``"mailing2026-04 post-Croydon"``; this
+    returns ``"post-Croydon"``. Returns ``""`` when the anchor text
+    carries no suffix beyond the bare mailing identifier.
+    """
+    text = anchor.text.strip() if hasattr(anchor, "text") else ""
+    prefix = f"mailing{anchor_id_value}"
+    if text.startswith(prefix):
+        label = text[len(prefix):].strip()
+        # Strip trailing filler words like "mailing"
+        if label.lower().endswith(" mailing"):
+            label = label[: -len(" mailing")].strip()
+        return label
+    return ""
 
 
 def parse_all_mailings(
@@ -234,8 +274,10 @@ def parse_all_mailings(
             continue
         papers = _parse_table_rows(table, page_url)
         if papers:
+            mailing_label = _extract_mailing_label(anchor, mailing_id)
             for paper in papers:
                 paper["mailing_date"] = mailing_id
+                paper["mailing_label"] = mailing_label
             result[mailing_id] = papers
 
     for anchor in soup.find_all(attrs={"name": _MAILING_ANCHOR_RE}):
@@ -249,8 +291,10 @@ def parse_all_mailings(
             continue
         papers = _parse_table_rows(table, page_url)
         if papers:
+            mailing_label = _extract_mailing_label(anchor, mailing_id)
             for paper in papers:
                 paper["mailing_date"] = mailing_id
+                paper["mailing_label"] = mailing_label
             result[mailing_id] = papers
 
     return result

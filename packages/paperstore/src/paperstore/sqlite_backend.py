@@ -50,24 +50,26 @@ from paperstore.errors import (
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS papers (
-    paper_id      TEXT PRIMARY KEY,
-    year          TEXT DEFAULT '',
-    title         TEXT DEFAULT '',
-    authors       TEXT DEFAULT '',
-    target_group  TEXT DEFAULT '',
-    intent        TEXT DEFAULT '',
-    url           TEXT DEFAULT '',
-    document_date TEXT DEFAULT '',
-    mailing_date  TEXT DEFAULT '',
-    source_file    TEXT DEFAULT '',
-    markdown_path  TEXT DEFAULT '',
-    dissect_path   TEXT DEFAULT '',
-    advocatus_path TEXT DEFAULT '',
-    agora_path     TEXT DEFAULT '',
-    line_count     INTEGER DEFAULT 0,
-    status         INTEGER NOT NULL DEFAULT 0,
-    error          TEXT DEFAULT '',
-    updated_at     TEXT DEFAULT ''
+    paper_id         TEXT PRIMARY KEY,
+    year             TEXT DEFAULT '',
+    title            TEXT DEFAULT '',
+    authors          TEXT DEFAULT '',
+    target_group     TEXT DEFAULT '',
+    intent           TEXT DEFAULT '',
+    url              TEXT DEFAULT '',
+    document_date    TEXT DEFAULT '',
+    mailing_date     TEXT DEFAULT '',
+    disposition      TEXT DEFAULT '',
+    previous_version TEXT DEFAULT '',
+    source_file      TEXT DEFAULT '',
+    markdown_path    TEXT DEFAULT '',
+    dissect_path     TEXT DEFAULT '',
+    advocatus_path   TEXT DEFAULT '',
+    agora_path       TEXT DEFAULT '',
+    line_count       INTEGER DEFAULT 0,
+    status           INTEGER NOT NULL DEFAULT 0,
+    error            TEXT DEFAULT '',
+    updated_at       TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -78,6 +80,12 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS years (
     year   TEXT PRIMARY KEY,
     added  TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS mailings (
+    mailing_id TEXT PRIMARY KEY,
+    label      TEXT DEFAULT '',
+    added      TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS claims (
@@ -209,6 +217,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
                     ELSE 0
                 END
         """)
+
+    if "disposition" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN disposition TEXT DEFAULT ''")
+    if "previous_version" not in cols:
+        conn.execute(
+            "ALTER TABLE papers ADD COLUMN previous_version TEXT DEFAULT ''"
+        )
 
     conn.executescript(
         "CREATE TABLE IF NOT EXISTS settings ("
@@ -374,6 +389,8 @@ class SqliteBackend(StorageBackend):
             url=d.get("url", ""),
             document_date=d.get("document_date", ""),
             mailing_date=d.get("mailing_date", ""),
+            disposition=d.get("disposition", ""),
+            previous_version=d.get("previous_version", ""),
             source_file=d.get("source_file", ""),
             markdown_path=d.get("markdown_path", ""),
             dissect_path=d.get("dissect_path", ""),
@@ -395,6 +412,7 @@ class SqliteBackend(StorageBackend):
     def upsert_year(self, year: str, papers: list[dict]) -> list[PaperRow]:
         """Insert or update all papers for year. Returns merged list."""
         now = datetime.now(timezone.utc).isoformat()
+        mailing_labels: dict[str, str] = {}
         with self._conn:
             self._conn.execute(
                 "INSERT OR IGNORE INTO years (year, added) VALUES (?, ?)",
@@ -414,8 +432,9 @@ class SqliteBackend(StorageBackend):
                     """
                     INSERT INTO papers
                         (paper_id, year, title, authors, target_group, intent,
-                         url, document_date, mailing_date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         url, document_date, mailing_date, disposition,
+                         previous_version)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(paper_id) DO UPDATE SET
                         year = excluded.year,
                         title = excluded.title,
@@ -426,7 +445,9 @@ class SqliteBackend(StorageBackend):
                                       ELSE papers.intent END,
                         url = excluded.url,
                         document_date = excluded.document_date,
-                        mailing_date = excluded.mailing_date
+                        mailing_date = excluded.mailing_date,
+                        disposition = excluded.disposition,
+                        previous_version = excluded.previous_version
                     """,
                     (
                         pid,
@@ -438,7 +459,20 @@ class SqliteBackend(StorageBackend):
                         p.get("url") or "",
                         p.get("document_date") or "",
                         p.get("mailing_date") or "",
+                        p.get("disposition") or "",
+                        p.get("previous_version") or "",
                     ),
+                )
+                mid = (p.get("mailing_date") or "").strip()
+                ml = (p.get("mailing_label") or "").strip()
+                if mid and ml:
+                    mailing_labels[mid] = ml
+            for mid, label in mailing_labels.items():
+                self._conn.execute(
+                    "INSERT INTO mailings (mailing_id, label, added) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(mailing_id) DO UPDATE SET label = excluded.label",
+                    (mid, label, now),
                 )
         return self.list_papers_for_year(year)
 
@@ -465,6 +499,23 @@ class SqliteBackend(StorageBackend):
             return None
         paper = self._row_to_paper(row)
         return paper.year, paper
+
+    def upsert_mailing_label(self, mailing_id: str, label: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO mailings (mailing_id, label, added) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(mailing_id) DO UPDATE SET label = excluded.label",
+                (mailing_id.strip(), label, now),
+            )
+
+    def get_mailing_label(self, mailing_id: str) -> str:
+        row = self._conn.execute(
+            "SELECT label FROM mailings WHERE mailing_id = ?",
+            (mailing_id.strip(),),
+        ).fetchone()
+        return str(row["label"]) if row else ""
 
     def find_latest_revision(self, base_id: str) -> str | None:
         """Find the latest revision for a paper number without revision suffix.

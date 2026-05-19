@@ -16,15 +16,15 @@ from mailing.scrape import (
 
 YEAR_PAGE_HTML = """\
 <html><body>
-<a id="mailing2026-04">2026-04 post-Croydon mailing</a>
+<a id="mailing2026-04">mailing2026-04 post-Croydon</a>
 <table>
-<tr><td><a href="p3000r5.pdf">P3000R5</a></td><td>Contracts</td><td>Berne</td><td>2026-03-15</td><td></td><td></td><td>CWG</td><td></td></tr>
-<tr><td><a href="p3100r1.html">P3100R1</a></td><td>Reflection</td><td>Childers</td><td>2026-03-10</td><td></td><td></td><td>EWG</td><td></td></tr>
+<tr><td><a href="p3000r5.pdf">P3000R5</a></td><td>Contracts</td><td>Berne</td><td>2026-03-15</td><td>2026-04</td><td><a href="../2025/p3000r4.pdf">P3000R4</a></td><td>CWG</td><td>Adopted 2026-03</td></tr>
+<tr><td><a href="p3100r1.html">P3100R1</a></td><td>Reflection</td><td>Childers</td><td>2026-03-10</td><td>2026-04</td><td><a href="p3100r0.html">P3100R0</a></td><td>EWG</td><td></td></tr>
 </table>
 
-<a id="mailing2026-02">2026-02 pre-Croydon mailing</a>
+<a id="mailing2026-02">mailing2026-02 pre-Croydon</a>
 <table>
-<tr><td><a href="p2900r14.pdf">P2900R14</a></td><td>Old Contracts</td><td>Berne</td><td>2026-01-20</td><td></td><td></td><td>CWG</td><td></td></tr>
+<tr><td><a href="p2900r14.pdf">P2900R14</a></td><td>Old Contracts</td><td>Berne</td><td>2026-01-20</td><td>2026-02</td><td><a href="../2025/p2900r13.pdf">P2900R13</a></td><td>CWG</td><td></td></tr>
 </table>
 </body></html>
 """
@@ -138,3 +138,70 @@ def test_discover_years_parses_root_relative_hrefs(monkeypatch):
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResponse())
     years = discover_years()
     assert years == ["1989", "2025", "2026"]
+
+
+# --- previous_version, disposition, mailing_label ---
+
+
+def test_parse_paper_extracts_previous_version():
+    result = parse_all_mailings(YEAR_PAGE_HTML, _BASE)
+    p3000 = [p for p in result["2026-04"] if p["paper_id"] == "p3000r5"][0]
+    assert p3000["previous_version"] == "p3000r4"
+    assert p3000["previous_version_url"].endswith("/2025/p3000r4.pdf")
+
+
+def test_parse_paper_previous_version_relative_url():
+    """Previous-version link with a relative href is resolved to absolute."""
+    result = parse_all_mailings(YEAR_PAGE_HTML, _BASE)
+    p3100 = [p for p in result["2026-04"] if p["paper_id"] == "p3100r1"][0]
+    assert p3100["previous_version"] == "p3100r0"
+    assert p3100["previous_version_url"].startswith("https://")
+
+
+def test_parse_paper_previous_version_empty_for_r0():
+    """Papers with no prior revision have empty previous_version."""
+    html = """\
+<html><body>
+<a id="mailing2026-01">mailing2026-01</a>
+<table>
+<tr><td><a href="p4000r0.pdf">P4000R0</a></td><td>New Paper</td><td>Author</td><td>2026-01-10</td><td>2026-01</td><td></td><td>EWG</td><td></td></tr>
+</table>
+</body></html>
+"""
+    result = parse_all_mailings(html, _BASE)
+    paper = result["2026-01"][0]
+    assert paper["previous_version"] == ""
+    assert paper["previous_version_url"] == ""
+
+
+def test_parse_paper_extracts_disposition():
+    result = parse_all_mailings(YEAR_PAGE_HTML, _BASE)
+    p3000 = [p for p in result["2026-04"] if p["paper_id"] == "p3000r5"][0]
+    assert p3000["disposition"] == "Adopted 2026-03"
+
+
+def test_parse_paper_disposition_empty_when_not_adopted():
+    result = parse_all_mailings(YEAR_PAGE_HTML, _BASE)
+    p3100 = [p for p in result["2026-04"] if p["paper_id"] == "p3100r1"][0]
+    assert p3100["disposition"] == ""
+
+
+def test_parse_paper_extracts_mailing_label():
+    result = parse_all_mailings(YEAR_PAGE_HTML, _BASE)
+    for paper in result["2026-04"]:
+        assert paper["mailing_label"] == "post-Croydon"
+    for paper in result["2026-02"]:
+        assert paper["mailing_label"] == "pre-Croydon"
+
+
+def test_mailing_label_empty_when_no_suffix():
+    html = """\
+<html><body>
+<a id="mailing2026-01">mailing2026-01</a>
+<table>
+<tr><td><a href="p4000r0.pdf">P4000R0</a></td><td>Paper</td><td>A</td><td>2026-01-10</td><td>2026-01</td><td></td><td>EWG</td><td></td></tr>
+</table>
+</body></html>
+"""
+    result = parse_all_mailings(html, _BASE)
+    assert result["2026-01"][0]["mailing_label"] == ""

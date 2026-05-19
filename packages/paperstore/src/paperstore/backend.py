@@ -85,6 +85,8 @@ class PaperRow:
     url: str = ""
     document_date: str = ""
     mailing_date: str = ""
+    disposition: str = ""
+    previous_version: str = ""
     source_file: str = ""
     markdown_path: str = ""
     dissect_path: str = ""
@@ -143,6 +145,20 @@ class StorageBackend(ABC):
         Returns ``(year, paper_row)`` on success, ``None`` if not found.
         The match is case-insensitive.
         """
+
+    # ---- mailing metadata -------------------------------------------------
+
+    @abstractmethod
+    def upsert_mailing_label(self, mailing_id: str, label: str) -> None:
+        """Insert or update the descriptive label for a mailing.
+
+        ``label`` is the human-readable suffix from the open-std heading
+        (e.g. ``"post-Croydon"``). Empty string clears the label.
+        """
+
+    @abstractmethod
+    def get_mailing_label(self, mailing_id: str) -> str:
+        """Return the descriptive label for ``mailing_id``, or ``""``."""
 
     # ---- writes -----------------------------------------------------------
 

@@ -715,3 +715,76 @@ def test_list_papers_since(store: SqliteBackend):
     ids = {r.paper_id for r in rows}
     assert ids == {"P3", "P4"}
     assert all(r.mailing_date >= "2026-03" for r in rows)
+
+
+# ---- disposition + previous_version round-trip -----------------------------
+
+
+def test_upsert_year_stores_disposition_and_previous_version(store: SqliteBackend):
+    papers = [
+        {
+            "paper_id": "P1000R8",
+            "title": "Schedule",
+            "disposition": "Adopted 2026-03",
+            "previous_version": "p1000r7",
+        },
+    ]
+    store.upsert_year("2026", papers)
+    row = store.get_meta("P1000R8")
+    assert row.disposition == "Adopted 2026-03"
+    assert row.previous_version == "p1000r7"
+
+
+def test_upsert_year_disposition_defaults_to_empty(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1"}])
+    row = store.get_meta("P1")
+    assert row.disposition == ""
+    assert row.previous_version == ""
+
+
+def test_upsert_year_updates_disposition_on_reupsert(store: SqliteBackend):
+    store.upsert_year("2026", [{"paper_id": "P1", "disposition": ""}])
+    store.upsert_year("2026", [{"paper_id": "P1", "disposition": "Adopted 2026-03"}])
+    row = store.get_meta("P1")
+    assert row.disposition == "Adopted 2026-03"
+
+
+# ---- mailing label ---------------------------------------------------------
+
+
+def test_upsert_year_populates_mailings_table(store: SqliteBackend):
+    papers = [
+        {
+            "paper_id": "P1",
+            "mailing_date": "2026-04",
+            "mailing_label": "post-Croydon",
+        },
+        {
+            "paper_id": "P2",
+            "mailing_date": "2026-04",
+            "mailing_label": "post-Croydon",
+        },
+    ]
+    store.upsert_year("2026", papers)
+    assert store.get_mailing_label("2026-04") == "post-Croydon"
+
+
+def test_upsert_mailing_label_standalone(store: SqliteBackend):
+    store.upsert_mailing_label("2026-02", "pre-Croydon")
+    assert store.get_mailing_label("2026-02") == "pre-Croydon"
+
+
+def test_get_mailing_label_missing_returns_empty(store: SqliteBackend):
+    assert store.get_mailing_label("9999-01") == ""
+
+
+def test_upsert_mailing_label_updates_existing(store: SqliteBackend):
+    store.upsert_mailing_label("2026-04", "old")
+    store.upsert_mailing_label("2026-04", "post-Croydon")
+    assert store.get_mailing_label("2026-04") == "post-Croydon"
+
+
+def test_upsert_year_skips_mailing_label_when_absent(store: SqliteBackend):
+    """Papers without mailing_label don't insert empty labels."""
+    store.upsert_year("2026", [{"paper_id": "P1", "mailing_date": "2026-01"}])
+    assert store.get_mailing_label("2026-01") == ""
