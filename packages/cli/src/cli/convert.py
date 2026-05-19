@@ -9,7 +9,53 @@
 
 from __future__ import annotations
 
+import argparse
+import sys
 
-def command(args, backend):
+from paperstore.backend import StorageBackend
+
+
+_CONTENT_CHECK_WORKERS = 1
+_CONTENT_CHECK_TIMEOUT = 120
+
+
+def command(args: argparse.Namespace, backend: StorageBackend) -> int:
+    if getattr(args, "check_content", False) or getattr(args, "check_content_json", None):
+        return _check_content_command(args, backend)
     from cli._process import run_process_command
     return run_process_command(args, backend, through=2)
+
+
+def _check_content_command(
+    args: argparse.Namespace, backend: StorageBackend,
+) -> int:
+    """Run the content-coverage check instead of converting.
+
+    Short-circuits the convert pipeline. Reads each paper's staged
+    source and converted markdown, scores coverage, and emits a ranked
+    report.
+    """
+    from cli.jobs import run_content_check
+
+    result = run_content_check(
+        args.targets,
+        backend,
+        json_path=args.check_content_json,
+        workers=_CONTENT_CHECK_WORKERS,
+        timeout=_CONTENT_CHECK_TIMEOUT,
+    )
+
+    for entry in result["skipped"]:
+        print(
+            f"Skipping {entry['paper_id']}: {entry['reason']}.",
+            file=sys.stderr,
+        )
+
+    if not result["succeeded"]:
+        print(
+            "No papers available for content check. Run "
+            "'paperflow convert' to produce markdown first.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0

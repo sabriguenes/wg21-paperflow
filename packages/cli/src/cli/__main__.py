@@ -102,7 +102,7 @@ _COMMANDS = {
 _VERB_FLAGS: dict[str, set[str]] = {
     "mailing":   set(),
     "download":  {"force", "concurrency"},
-    "convert":   {"force", "concurrency"},
+    "convert":   {"force", "concurrency", "check_content", "check_content_json"},
     "dissect":   {"debug", "trace", "step", "chunk", "service", "classifier", "provider", "force"},
     "advocatus": {"debug", "trace", "step", "service", "provider", "force"},
     "agora":     {"debug", "trace", "step", "service", "provider", "force"},
@@ -114,6 +114,13 @@ _FLAG_DEFS: list[dict] = [
          default=False, help="Redo stage even if already complete."),
     dict(name="concurrency", flags=["--concurrency"], type=int,
          default=None, metavar="N", help="Number of parallel workers."),
+    dict(name="check_content", flags=["--check-content"], action="store_true",
+         default=False,
+         help="Compare source text against converted markdown for content coverage."),
+    dict(name="check_content_json", flags=["--check-content-json"],
+         type=Path, default=None, metavar="PATH",
+         help="Write per-paper content-check metrics as JSON to PATH "
+              "(implies --check-content)."),
     dict(name="debug", flags=["--debug"], action="store_true",
          default=False,
          help="Write full LLM transcripts per step to paperstore as a single .debug.md file."),

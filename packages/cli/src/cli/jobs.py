@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from paperstore import parse_authors_raw
 from paperstore.backend import PaperRow, StorageBackend
 from paperstore.errors import (
@@ -403,6 +404,101 @@ async def run_convert(
                 on_progress = None
 
     return {"succeeded": succeeded, "skipped": skipped, "failed": failed}
+
+
+# ---------------------------------------------------------------------------
+# run_content_check
+# ---------------------------------------------------------------------------
+
+def _rows_for_content_check_targets(
+    targets: list[str], backend: StorageBackend,
+) -> list[PaperRow]:
+    """Resolve CLI targets (paper id, year, year-month) to paper rows.
+
+    Mirrors the dispatch in :func:`cli._process.run_process_command` so
+    every target shape `paperflow convert` advertises (paper id, year,
+    year-month) reaches :func:`run_content_check`. The older
+    :func:`_papers_from_scope` predates year-month targets.
+    """
+    from cli.targets import MONTH_RE, resolve_pid
+
+    seen: set[str] = set()
+    rows: list[PaperRow] = []
+
+    def _add(row: PaperRow) -> None:
+        if row.paper_id in seen:
+            return
+        seen.add(row.paper_id)
+        rows.append(row)
+
+    for target in targets:
+        if MONTH_RE.match(target):
+            for row in backend.list_papers_since(target):
+                _add(row)
+        elif target.isdigit() and len(target) == 4:
+            try:
+                for row in backend.list_papers_for_year(target):
+                    _add(row)
+            except MissingMailingIndexError:
+                logger.warning(
+                    "No papers found for year %s; run 'paperflow mailing' first.",
+                    target,
+                )
+        else:
+            pid = resolve_pid(target, backend)
+            result = backend.resolve_year_for_paper(pid)
+            if result is None:
+                logger.warning("Paper %s not found in database.", target)
+                continue
+            _add(result[1])
+
+    return rows
+
+
+def run_content_check(
+    targets: list[str],
+    backend: StorageBackend,
+    *,
+    json_path: Path | None = None,
+    workers: int = 1,
+    timeout: int = 120,
+) -> dict:
+    """Compare source text against converted markdown for the given targets.
+
+    Synchronous. ``run_content_check_report`` does its own
+    ``ProcessPoolExecutor`` parallelism; workers re-open the backend
+    from the workspace path. Skips papers missing either source or
+    markdown.
+    """
+    from tomd.lib.check_content import run_content_check_report
+
+    workers = max(1, workers)
+    rows = _rows_for_content_check_targets(targets, backend)
+
+    items: list[tuple[str, Path]] = []
+    skipped: list[dict] = []
+    workspace_dir = backend.workspace_dir
+    for row in rows:
+        pid = row.paper_id
+        if not row.source_file:
+            skipped.append({"paper_id": pid, "reason": "no_source"})
+            continue
+        if not row.markdown_path:
+            skipped.append({"paper_id": pid, "reason": "no_markdown"})
+            continue
+        items.append((pid, workspace_dir))
+
+    if not items:
+        return {"succeeded": [], "skipped": skipped, "failed": []}
+
+    run_content_check_report(
+        items, json_path=json_path, workers=workers, timeout=timeout,
+    )
+    return {
+        "succeeded": [pid for pid, _ in items],
+        "skipped": skipped,
+        "failed": [],
+    }
 
 
 # ---------------------------------------------------------------------------
