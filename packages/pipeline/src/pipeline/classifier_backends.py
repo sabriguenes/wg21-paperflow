@@ -9,7 +9,7 @@
 
 These classes are thin adapters over :mod:`pipeline.transformer_backend`.
 They preserve the original ``ClassifierBackend.classify(...)`` API so
-dissect Step 1 (Tag Sentences) keeps working without edits.
+existing classifier consumers keep working without edits.
 
 Two adapters are registered:
 

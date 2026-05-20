@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bureau of Assayment</title>
+  <style>
+    :root {
+      --bg: #fafaf8;
+      --fg: #1a1a1a;
+      --accent: #4a4a4a;
+      --border: #d4d0c8;
+      --heading: #2c2c2c;
+      --max-width: 42rem;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Georgia', serif;
+      font-size: 1.05rem;
+      line-height: 1.7;
+      color: var(--fg);
+      background: var(--bg);
+      padding: 3rem 1.5rem;
+    }
+
+    main {
+      max-width: var(--max-width);
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: var(--heading);
+      margin-bottom: 1.5rem;
+      border-bottom: 2px solid var(--border);
+      padding-bottom: 0.5rem;
+    }
+
+    h2 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      color: var(--heading);
+      margin-top: 2.5rem;
+      margin-bottom: 0.8rem;
+      clear: both;
+    }
+
+    h3 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin-top: 1.8rem;
+      margin-bottom: 0.6rem;
+      clear: both;
+    }
+
+    p {
+      margin-bottom: 1.2rem;
+    }
+
+    strong {
+      font-weight: 700;
+    }
+
+    .illus {
+      height: calc(3 * 1.7 * 1.05rem);
+      width: auto;
+      margin-bottom: 0.4rem;
+      mix-blend-mode: multiply;
+    }
+
+    .illus-right {
+      float: right;
+      margin-left: 1rem;
+    }
+
+    .illus-left {
+      float: left;
+      margin-right: 1rem;
+    }
+
+    .bureau-hero {
+      display: block;
+      width: 70%;
+      height: auto;
+      margin: 0 auto 1.5rem;
+      mix-blend-mode: multiply;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Bureau of Assayment</h1>
+
+    <img src="images/bureau.png" alt="Bureau of Assayment" class="bureau-hero">
+
+    <p>The Bureau of Assayment processes every paper in the WG21 mailing as it is published. Your submission was received, cataloged, divided into sections, inspected under six categories, challenged on five grounds, and assessed. The report you are reading is the result. The Bureau does not have opinions about your paper. It has procedures, and the procedures were followed.</p>
+
+    <h2>The Office</h2>
+
+    <img src="images/window.png" alt="" class="illus illus-left">
+    <p>Every organization that reviews enough documents eventually builds an office to read them. Not to judge them - judgment is above the Bureau's remit - but to determine whether the claims inside are supported by the evidence provided. This is a narrower question than it appears, and it takes considerably longer than anyone anticipated when the office was established. The Bureau inspects submissions under six categories: Performance, Design, Specification, Usability, Ecosystem, and Rationale. A paper that passes every inspection is not necessarily good. A paper that fails several is not necessarily bad. The Bureau files what it finds. Interpretation is someone else's department.</p>
+
+    <h2>The Process</h2>
+
+    <p>Your paper was processed in two stages.</p>
+
+    <h3>Intake</h3>
+
+    <img src="images/forms.png" alt="" class="illus illus-right">
+    <p>Your paper entered at the intake window. It was verified against the archive and assigned a case number. A clerk scanned every citation, cross-referenced each one against the archive, and flagged stale editions. Referenced papers that were on file were retrieved, sectioned, indexed, and placed in the case folder. Your paper was then divided into sections and surveyed. If it consisted primarily of specification wording or was a reference document with no structural claims, processing would have ended here. Most papers continue.</p>
+
+    <img src="images/cabinet.png" alt="" class="illus illus-left">
+    <p>Each section was read twice, independently. The first reading extracted every item of structural interest - claims, evidence, concessions, questions, dependencies, scope statements, and any explicit asks of the committee - each recorded with its exact text and line number. The second reading inspected each section for gaps: claims without evidence, design choices without rationale, performance assertions without benchmarks, comparisons without data. Each gap was recorded as a deficiency notice, tagged by category and severity.</p>
+
+    <img src="images/pen.png" alt="" class="illus illus-right">
+    <p>The forms were collated. Duplicates were absorbed. A senior clerk reviewed the complete file and produced a one-sentence case summary: what the paper argues, what problem it addresses, what it covers and what it does not, and which claims are load-bearing - meaning their retraction would collapse the thesis. Deficiency notices filed during intake were re-evaluated against the summary. A gap that touches the central thesis was upgraded to critical. The file went upstairs.</p>
+
+    <h3>Review</h3>
+
+    <img src="images/ticket.png" alt="" class="illus illus-left">
+    <p>A reviewer received your file with the case summary attached. For each of the six inspection categories, a research request was sent out - three searches maximum per category, closed early if the first two returned nothing relevant. Only findings connecting to your paper's thesis were retained. The Bureau does not collect information recreationally.</p>
+
+    <img src="images/clipboard.png" alt="" class="illus illus-right">
+    <p>The citation file from intake was compared against extraction annotations. Discrepancies were noted. Each section of your paper was then examined against the case summary, deficiency notices from other sections, research findings, and twenty-five standard test patterns covering the range of structural concerns a committee reviewer might raise. A separate compliance checklist was run: five items derived from SD-4 guidelines, each marked pass or fail with a location and a note. Then the findings went to the appeals desk.</p>
+
+    <h3>Appeals</h3>
+
+    <img src="images/seal.png" alt="" class="illus illus-left">
+    <p>Not everything that was filed deserved to be filed. The appeals desk exists to strike findings that should not have survived this far. Five grounds, applied in order. A finding struck at any ground does not proceed to the next.</p>
+
+    <p>Does the paper already concede the point? If the author named the limitation openly, the finding restates what the paper already said. Struck. Does the paper actually claim what the finding attacks? If the finding targets an inference rather than a statement, it attacks a phantom. Struck. Does the paper's own text resolve the concern? If the answer is in the paper - even in another section, even implicitly - the finding failed to read the submission. Struck. Would a real committee member raise this? If only exhaustive mechanical analysis could have produced the finding, it models a threat that does not exist in a room full of humans. Struck. Is the finding structural? If it is editorial, formatting, or stylistic, it does not belong in a structural assessment. Struck.</p>
+
+    <img src="images/bell.png" alt="" class="illus illus-right">
+    <p>The report records how many findings were generated, how many survived, how many were struck, and which ground struck them. The ratio is part of the record.</p>
+
+    <img src="images/ledger.png" alt="" class="illus illus-left">
+    <p>After appeals, surviving findings were reviewed together. Some findings combine. A missing benchmark in one section and an unjustified design choice in another may, together, produce a risk that neither finding captures alone. These compound dynamics are identified, named, and described in the report. When they exist, one is designated the dominant dynamic.</p>
+
+    <h2>The Three Determinations</h2>
+
+    <p>Your paper received one of three determinations. <strong>Sound</strong> means the thesis survives and findings, if any, do not undermine it. The paperwork is in order. <strong>Weakened</strong> means the thesis survives but surviving findings weaken the structural support; specific sections need reinforcement. <strong>Undermined</strong> means the thesis does not survive the examination; the structural support is insufficient and the submission requires substantial revision.</p>
+
+    <p>Three minor findings in the periphery do not weaken a paper whose thesis is sound. Zero findings do not strengthen a paper whose thesis is unsupported. The Bureau weighs the structure, not the count.</p>
+
+    <h2>The Report</h2>
+
+    <p>The report delivers the determination first. A reader who must process twenty findings before learning the outcome has been subjected to a processing delay, not an assessment. After the determination: the asks the paper makes of the committee, the structural assessment, any compound dynamics, major findings in order of severity, regular findings, strengths, the rationale checklist, the reference table, and the complete inventory of what was extracted, filed, challenged, and survived.</p>
+
+    <img src="images/stamp.png" alt="" class="illus illus-right">
+    <p>The Bureau would prefer to file nothing. An empty findings section means the claims were supported, the design choices justified, the citations verified, and the rationale complete. That is not a formality. It is the outcome that makes every actual finding honest. A reviewer who expects to find deficiencies in every submission has stopped reviewing and started processing a foregone conclusion. The Bureau does not process foregone conclusions. It processes papers.</p>
+  </main>
+</body>
+</html>

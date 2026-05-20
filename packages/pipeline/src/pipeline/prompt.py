@@ -32,7 +32,7 @@ from pipeline.errors import (
 )
 
 _STEP_RE = re.compile(r"^(?:Step\s+)?(\d+)")
-_META_RE = re.compile(r"^-\s+\*\*([\w ]+):\*\*\s*(.+)$", re.MULTILINE)
+_META_RE = re.compile(r"^-\s+\*\*([\w \-]+):\*\*\s*(.+)$", re.MULTILINE)
 _STEP_SYSTEM_RE = re.compile(
     r"^### System Prompt\s*\n(?P<body>.*?)(?=^### |\Z)",
     re.MULTILINE | re.DOTALL,
@@ -70,6 +70,24 @@ class StepMeta:
 
     system_prompt_mode: str = "append"
     """How the step prompt combines with the pipeline prompt: append or replace."""
+
+    max_output_tokens: int = 0
+    """Per-step override for the agent's ``max_tokens``. ``0`` means
+    "use the agent's default" (the framework path falls back via
+    ``AgentBackend.run(max_tokens=None)``; custom hooks must fall back
+    explicitly)."""
+
+    thinking_budget: int = 0
+    """Per-step thinking token budget for reasoning models. ``0`` means
+    "use the agent's default". Parsed from ``**thinking-budget:**``."""
+
+    chunk_tokens: int = 0
+    """Max tokens per chunk for steps that chunk the paper. ``0`` means
+    "use the pipeline default". Parsed from ``**chunk-tokens:**``."""
+
+    concurrency: int = 0
+    """Max concurrent LLM calls for fan-out steps. ``0`` means
+    "use the pipeline default from ## Services". Parsed from ``**concurrency:**``."""
 
     @property
     def is_custom(self) -> bool:
@@ -167,6 +185,10 @@ def parse_step_meta(name: str, body: str) -> StepMeta:
         condition=fields.get("condition"),
         system_prompt=system_prompt,
         system_prompt_mode=system_prompt_mode,
+        max_output_tokens=int(fields.get("max-output", 0) or 0),
+        thinking_budget=int(fields.get("thinking-budget", 0) or 0),
+        chunk_tokens=int(fields.get("chunk-tokens", 0) or 0),
+        concurrency=int(fields.get("concurrency", 0) or 0),
     )
 
 

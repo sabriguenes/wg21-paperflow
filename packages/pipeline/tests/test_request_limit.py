@@ -19,7 +19,7 @@ from pipeline.agents import AgentBackend
 from pipeline.model_backends import (
     DEFAULT_REQUEST_LIMIT,
     AnthropicBackend,
-    DeepSeekR1DistillVllm021Backend,
+    VllmThinkingBackend,
     Llama3Backend,
     ModelBackend,
     Qwen3Backend,
@@ -47,6 +47,7 @@ class _RecordingBackend(ModelBackend):
         user_message: str,
         output_type: type[Any],
         *,
+        max_tokens: int = 16384,
         tools: dict[str, Any] | None = None,
         thinking_budget: int | None = None,
         label: str = "",
@@ -147,7 +148,7 @@ def test_parallel_step_with_chunk_index_propagates_request_limit():
         Llama3Backend,
         Qwen3Backend,
         AnthropicBackend,
-        DeepSeekR1DistillVllm021Backend,
+        VllmThinkingBackend,
     ],
 )
 def test_concrete_backend_signatures_use_named_default(backend_cls):
@@ -224,7 +225,7 @@ def test_deepseek_backend_honors_request_limit(
 
     monkeypatch.setattr("openai.AsyncOpenAI", _FakeOpenAI)
 
-    backend = DeepSeekR1DistillVllm021Backend(
+    backend = VllmThinkingBackend(
         base_url="http://x", api_key="y", model="z",
     )
 

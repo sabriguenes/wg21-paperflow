@@ -93,6 +93,7 @@ class PaperRow:
     dissect_path: str = ""
     advocatus_path: str = ""
     agora_path: str = ""
+    assay_path: str = ""
     line_count: int = 0
     status: int = 0
     error: str = ""
@@ -103,22 +104,19 @@ class ClearedSet:
     """Record of which downstream pipelines a ``clear_downstream_outputs`` call wiped.
 
     The CLI consumes this to build a per-paper summary line such as
-    ``P3556R0 (dissect, advocatus)`` after a re-convert. ``bool(set)`` is
+    ``P3556R0 (advocatus)`` after a re-convert. ``bool(set)`` is
     True iff anything was cleared (so the CLI can skip empty summaries).
     """
 
-    dissect: bool = False
     advocatus: bool = False
     agora: bool = False
 
     def __bool__(self) -> bool:
-        return self.dissect or self.advocatus or self.agora
+        return self.advocatus or self.agora
 
     def names(self) -> list[str]:
         """Return the pipeline names that were cleared, in stable order."""
         out: list[str] = []
-        if self.dissect:
-            out.append("dissect")
         if self.advocatus:
             out.append("advocatus")
         if self.agora:
@@ -202,18 +200,6 @@ class StorageBackend(ABC):
     @abstractmethod
     def write_paper_md(self, paper_id: str, markdown: str) -> Path:
         """Persist the converted markdown. Atomic write. Returns path."""
-
-    @abstractmethod
-    def write_dissect_md(self, paper_id: str, markdown: str) -> Path:
-        """Persist the dissect markdown. Atomic write. Returns path."""
-
-    @abstractmethod
-    def clear_dissect(self, paper_id: str) -> None:
-        """Delete the dissect file and clear its path in the store.
-
-        Called at the start of a dissect run so a crash does not leave
-        a stale dissect from a previous run.
-        """
 
     @abstractmethod
     def write_advocatus_md(self, paper_id: str, markdown: str) -> Path:
@@ -353,23 +339,17 @@ class StorageBackend(ABC):
 
     @abstractmethod
     def clear_downstream_outputs(self, paper_id: str) -> ClearedSet:
-        """Invalidate dissect, advocatus, and agora artifacts for ``paper_id``.
+        """Invalidate advocatus and agora artifacts for ``paper_id``.
 
         Called by ``paperflow convert`` after a re-convert that changed
-        the markdown content. The stored ``loc.line`` offsets in
-        dissect's extract tables (claims, evidence, questions,
-        rhetoric, ...) are recorded against the previous markdown and
-        become stale on any change. This method:
+        the markdown content. This method:
 
-        - Deletes the ``.dissect.md`` / ``.advocatus.md`` / ``.agora.json``
-          files (if present) and clears their path columns.
-        - Deletes the extract-table rows (claims, evidence,
-          paper_citations, external_citations, questions, rhetoric,
-          caput_causae, citation_audit) for ``paper_id``.
+        - Deletes the ``.advocatus.md`` / ``.agora.json`` files (if
+          present) and clears their path columns.
 
         Does not touch ``paper.md`` or extracted images. Returns a
-        :class:`ClearedSet` describing which of the three pipelines had
-        artifacts to clear.
+        :class:`ClearedSet` describing which pipelines had artifacts
+        to clear.
         """
 
     # ---- reads ------------------------------------------------------------
@@ -405,8 +385,8 @@ class StorageBackend(ABC):
         Non-raising alternative to :meth:`get_paper_md`, used by the
         convert orchestration to perform the byte-equality check that
         gates downstream invalidation. A first conversion returns None;
-        a re-convert producing the same bytes leaves dissect /
-        advocatus / agora artifacts intact.
+        a re-convert producing the same bytes leaves advocatus / agora
+        artifacts intact.
         """
 
     @abstractmethod
@@ -417,14 +397,6 @@ class StorageBackend(ABC):
         (which raises :class:`MissingPaperMdError` if not yet written). This
         accessor exists for callers that need a stable filesystem path
         before the file exists, such as file watchers.
-        """
-
-    @abstractmethod
-    def get_dissect_path(self, paper_id: str) -> Path:
-        """Return the local path to the dissect file.
-
-        Raises:
-            paperstore.MissingDissectError: no dissect for ``paper_id``.
         """
 
     @abstractmethod
@@ -444,20 +416,22 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
-    def get_debug_md_path(self, paper_id: str) -> Path:
+    def get_debug_md_path(self, paper_id: str, tool: str = "") -> Path:
         """Return the canonical path for a paper's unified debug transcript.
 
-        File: ``paperstore/<pid>.debug.md``. The path is returned
-        whether or not the file exists; callers write to it or check
-        ``.exists()`` themselves.
+        File: ``paperstore/<pid>.debug.md``. When ``tool`` is non-empty,
+        the path is ``paperstore/<pid>.debug.<tool>.md``. The path is
+        returned whether or not the file exists; callers write to it or
+        check ``.exists()`` themselves.
         """
 
     @abstractmethod
-    def get_trace_md_path(self, paper_id: str) -> Path:
+    def get_trace_md_path(self, paper_id: str, tool: str = "") -> Path:
         """Return the canonical path for a paper's unified pipeline trace.
 
-        File: ``paperstore/<pid>.trace.md``. Same semantics as
-        :meth:`get_debug_md_path`.
+        File: ``paperstore/<pid>.trace.md``. When ``tool`` is non-empty,
+        the path is ``paperstore/<pid>.trace.<tool>.md``. Same semantics
+        as :meth:`get_debug_md_path`.
         """
 
     @abstractmethod
@@ -485,6 +459,114 @@ class StorageBackend(ABC):
     @abstractmethod
     def set_setting(self, key: str, value: str) -> None:
         """Insert or replace a setting value."""
+
+    # ---- assay writes ---------------------------------------------------------
+
+    @abstractmethod
+    def store_assay_claims(self, paper_id: str, claims) -> None:
+        """Replace assay claim entries for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_evidence(self, paper_id: str, evidence) -> None:
+        """Replace assay evidence entries for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_concessions(self, paper_id: str, concessions) -> None:
+        """Replace assay concession entries for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_breadcrumbs(self, paper_id: str, breadcrumbs) -> None:
+        """Replace assay breadcrumb entries for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_thesis(self, paper_id: str, thesis) -> None:
+        """Store or replace assay thesis for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_findings(self, paper_id: str, findings) -> None:
+        """Replace assay finding entries for ``paper_id``."""
+
+    # ---- assay reads ----------------------------------------------------------
+
+    @abstractmethod
+    def get_assay_claims(self, paper_id: str) -> list:
+        """Return all assay claims for ``paper_id``."""
+
+    @abstractmethod
+    def get_assay_evidence(self, paper_id: str) -> list:
+        """Return all assay evidence for ``paper_id``."""
+
+    @abstractmethod
+    def get_assay_concessions(self, paper_id: str) -> list:
+        """Return all assay concessions for ``paper_id``."""
+
+    @abstractmethod
+    def get_assay_breadcrumbs(self, paper_id: str) -> list:
+        """Return all assay breadcrumbs for ``paper_id``."""
+
+    @abstractmethod
+    def get_assay_thesis(self, paper_id: str):
+        """Return the assay thesis for ``paper_id``, or None."""
+
+    @abstractmethod
+    def get_assay_findings(self, paper_id: str) -> list:
+        """Return all assay findings for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_asks(self, paper_id: str, asks) -> None:
+        """Replace assay ask entries for ``paper_id``."""
+
+    @abstractmethod
+    def get_assay_asks(self, paper_id: str) -> list:
+        """Return all assay asks for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_references(self, paper_id: str, refs) -> None:
+        """Replace assay reference registry entries for ``paper_id``."""
+
+    @abstractmethod
+    def get_assay_references(self, paper_id: str) -> list:
+        """Return all assay references for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_strengths(self, paper_id: str, strengths) -> None:
+        """Replace assay strength entries for ``paper_id``."""
+
+    @abstractmethod
+    def get_assay_strengths(self, paper_id: str) -> list:
+        """Return all assay strengths for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_checklist(self, paper_id: str, items) -> None:
+        """Replace assay SD-4 checklist entries for ``paper_id``."""
+
+    @abstractmethod
+    def get_assay_checklist(self, paper_id: str) -> list:
+        """Return all assay checklist items for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_compounds(self, paper_id: str, compounds) -> None:
+        """Replace assay compound dynamic entries for ``paper_id``."""
+
+    @abstractmethod
+    def get_assay_compounds(self, paper_id: str) -> list:
+        """Return all assay compounds for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_synthesis(self, paper_id: str, synthesis) -> None:
+        """Store or replace assay synthesis (verdict, counts) for ``paper_id``."""
+
+    @abstractmethod
+    def get_assay_synthesis(self, paper_id: str):
+        """Return assay synthesis for ``paper_id``, or None."""
+
+    @abstractmethod
+    def write_assay_md(self, paper_id: str, markdown: str):
+        """Write assay report markdown and update DB path."""
+
+    @abstractmethod
+    def clear_assay(self, paper_id: str) -> None:
+        """Clear all assay artifacts for ``paper_id``."""
 
     # ---- extract writes ---------------------------------------------------
 

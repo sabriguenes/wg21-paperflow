@@ -49,7 +49,7 @@ You serve the tribunal of the *Advocatus Diaboli* examining a WG21 paper. Your o
 
 - **Model:** none
 
-Loads the paper source and all dissect outputs from paperstore. If no claims are found, sets seal to *sine causa* and the tribunal does not convene.
+Loads the paper source and all extract-table data from paperstore. If no claims are found, sets seal to *sine causa* and the tribunal does not convene.
 
 ---
 
@@ -60,15 +60,15 @@ Loads the paper source and all dissect outputs from paperstore. If no claims are
 
 Read the paper end to end. Four readings, each with a different lens.
 
-**First reading (the head of the cause).** Identify the central thesis in one sentence. The dissect-derived `caput_causae` is a starting point; refine it if the paper's emphasis differs. This becomes `central_thesis_recap`.
+**First reading (the head of the cause).** Identify the central thesis in one sentence. The stored `caput_causae` is a starting point; refine it if the paper's emphasis differs. This becomes `central_thesis_recap`.
 
-**Second reading (factual articuli).** For every factual claim already extracted by dissect (`kind: factual`), confirm or correct the question. Add any factual claim dissect missed. Each articulus carries `loc`, `text`, `section`, `kind=factual`, and a `question` whose answer would constitute sufficient evidence.
+**Second reading (factual articuli).** For every factual claim already extracted (`kind: factual`), confirm or correct the question. Add any factual claim the extraction missed. Each articulus carries `loc`, `text`, `section`, `kind=factual`, and a `question` whose answer would constitute sufficient evidence.
 
 **Third reading (normative articuli).** Same for normative claims (`kind: normative`).
 
 **Fourth reading (boundaries).** Identify what the paper does NOT claim. What does it explicitly disclaim, concede, or defer to another paper? These boundaries are the law of the tribunal. Each boundary carries `loc`, `text`, and `kind` (`disclaim` / `concede` / `defer`).
 
-The articuli output is the union of dissect's articuli and any additions from this reading. Do not invent articuli that are not anchored to a quoted line in the paper.
+The articuli output is the union of the stored articuli and any additions from this reading. Do not invent articuli that are not anchored to a quoted line in the paper.
 
 ---
 
@@ -102,7 +102,7 @@ Concurrency is capped at 5 by the pipeline-wide semaphore.
 
 - **Model:** none
 
-Converts dissect's citation audit rows into tabula fontium entries for the Relatio. If no audit data exists, emits an empty table.
+Converts the stored citation audit rows into tabula fontium entries for the Relatio. If no audit data exists, emits an empty table.
 
 ---
 
@@ -151,7 +151,7 @@ For each candidate charge, spawn an isolated sub-agent (parallel, capped by the 
 - The candidate charge text and its quoted paper passage (with `SourceLoc`)
 - The relevant dossier slice (entries that touch the same topic)
 - The boundaries from Step 1
-- The concession rhetoric from dissect (concessions, scope deflections)
+- The concession rhetoric (concessions, scope deflections)
 - The six-challenge rubric below
 
 The sub-agent does **not** receive the prosecution's drafting context, sibling charges, or the rest of the articuli. This is the structural adversarial separation.

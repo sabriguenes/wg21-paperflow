@@ -31,11 +31,13 @@ from typing import Any
 
 from paperstore.backend import ClearedSet, PaperRow, StorageBackend, parse_authors_raw
 from paperstore.extract_rows import (
+    CandidateRow,
     CaputCausaeRow,
     CitationAuditRow,
     ClaimRow,
     EvidenceRow,
     ExternalCitationRow,
+    FindingRow,
     RhetoricRow,
     PaperCitationRow,
     QuestionRow,
@@ -46,7 +48,6 @@ from paperstore.errors import (
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
-    MissingDissectError,
     MissingSourceError,
 )
 
@@ -65,7 +66,7 @@ CREATE TABLE IF NOT EXISTS papers (
     previous_version TEXT DEFAULT '',
     source_file      TEXT DEFAULT '',
     markdown_path    TEXT DEFAULT '',
-    dissect_path     TEXT DEFAULT '',
+    dissect_path     TEXT DEFAULT '',  -- deprecated, kept for migration safety
     advocatus_path   TEXT DEFAULT '',
     agora_path       TEXT DEFAULT '',
     line_count       INTEGER DEFAULT 0,
@@ -181,6 +182,160 @@ CREATE TABLE IF NOT EXISTS citation_audit (
     PRIMARY KEY (paper_id, cited_paper_id)
 );
 
+CREATE TABLE IF NOT EXISTS candidates (
+    paper_id TEXT NOT NULL,
+    rule     TEXT NOT NULL,
+    label    TEXT NOT NULL,
+    detail   TEXT DEFAULT '',
+    data     TEXT DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS findings (
+    paper_id    TEXT NOT NULL,
+    id          TEXT NOT NULL,
+    lens        TEXT NOT NULL,
+    severity    TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    quoted_text TEXT DEFAULT '',
+    source_line INTEGER DEFAULT 0,
+    explanation TEXT DEFAULT '',
+    PRIMARY KEY (paper_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS signals (
+    paper_id     TEXT NOT NULL,
+    section_idx  INTEGER NOT NULL,
+    heading      TEXT DEFAULT '',
+    loc_line     INTEGER NOT NULL,
+    loc_start    INTEGER DEFAULT 0,
+    loc_end      INTEGER DEFAULT 0,
+    signal_type  TEXT NOT NULL,
+    quote        TEXT DEFAULT '',
+    observation  TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS assay_claims (
+    paper_id     TEXT NOT NULL,
+    uid          INTEGER NOT NULL,
+    loc_line     INTEGER NOT NULL,
+    quote        TEXT NOT NULL,
+    section      TEXT DEFAULT '',
+    kind         TEXT DEFAULT 'normative',
+    load_bearing INTEGER DEFAULT 0,
+    PRIMARY KEY (paper_id, uid)
+);
+CREATE TABLE IF NOT EXISTS assay_evidence (
+    paper_id     TEXT NOT NULL,
+    uid          INTEGER NOT NULL,
+    loc_line     INTEGER NOT NULL,
+    quote        TEXT NOT NULL,
+    section      TEXT DEFAULT '',
+    subtype      TEXT DEFAULT '',
+    quality_tier TEXT DEFAULT '',
+    supports     TEXT DEFAULT '[]',
+    PRIMARY KEY (paper_id, uid)
+);
+CREATE TABLE IF NOT EXISTS assay_concessions (
+    paper_id TEXT NOT NULL,
+    uid      INTEGER NOT NULL,
+    loc_line INTEGER NOT NULL,
+    quote    TEXT NOT NULL,
+    section  TEXT DEFAULT '',
+    subtype  TEXT DEFAULT '',
+    PRIMARY KEY (paper_id, uid)
+);
+CREATE TABLE IF NOT EXISTS assay_breadcrumbs (
+    paper_id       TEXT NOT NULL,
+    uid            INTEGER NOT NULL,
+    chunk_index    INTEGER NOT NULL,
+    loc_line       INTEGER NOT NULL,
+    gap            TEXT NOT NULL,
+    why_important  TEXT DEFAULT '',
+    primary_lens   TEXT DEFAULT '',
+    secondary_lens TEXT DEFAULT '',
+    severity       TEXT DEFAULT 'minor',
+    PRIMARY KEY (paper_id, uid)
+);
+CREATE TABLE IF NOT EXISTS assay_thesis (
+    paper_id          TEXT PRIMARY KEY,
+    central_claim     TEXT NOT NULL,
+    problem_statement TEXT DEFAULT '',
+    scope_boundary    TEXT DEFAULT '',
+    ask_calibration   TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS assay_findings (
+    paper_id    TEXT NOT NULL,
+    uid         INTEGER NOT NULL,
+    title       TEXT NOT NULL,
+    lens        TEXT NOT NULL,
+    severity    TEXT NOT NULL,
+    quote       TEXT DEFAULT '',
+    loc_line    INTEGER DEFAULT 0,
+    explanation TEXT DEFAULT '',
+    test        TEXT DEFAULT '',
+    survived    INTEGER DEFAULT 1,
+    major       INTEGER DEFAULT 0,
+    challenge   TEXT DEFAULT '',
+    reasoning   TEXT DEFAULT '',
+    PRIMARY KEY (paper_id, uid)
+);
+CREATE TABLE IF NOT EXISTS assay_asks (
+    paper_id TEXT NOT NULL,
+    uid      INTEGER NOT NULL,
+    target   TEXT NOT NULL,
+    quote    TEXT NOT NULL,
+    type     TEXT NOT NULL,
+    PRIMARY KEY (paper_id, uid)
+);
+CREATE TABLE IF NOT EXISTS assay_references (
+    paper_id       TEXT NOT NULL,
+    uid            INTEGER NOT NULL,
+    ref_label      TEXT NOT NULL,
+    relationship   TEXT DEFAULT 'citation',
+    url            TEXT DEFAULT '',
+    mention_count  INTEGER DEFAULT 0,
+    PRIMARY KEY (paper_id, uid)
+);
+CREATE TABLE IF NOT EXISTS assay_strengths (
+    paper_id    TEXT NOT NULL,
+    uid         INTEGER NOT NULL,
+    title       TEXT NOT NULL,
+    quote       TEXT DEFAULT '',
+    loc_line    INTEGER DEFAULT 0,
+    explanation TEXT DEFAULT '',
+    PRIMARY KEY (paper_id, uid)
+);
+CREATE TABLE IF NOT EXISTS assay_checklist (
+    paper_id TEXT NOT NULL,
+    item_id  TEXT NOT NULL,
+    name     TEXT NOT NULL,
+    passed   INTEGER DEFAULT 0,
+    location TEXT DEFAULT '',
+    note     TEXT DEFAULT '',
+    PRIMARY KEY (paper_id, item_id)
+);
+CREATE TABLE IF NOT EXISTS assay_compounds (
+    paper_id      TEXT NOT NULL,
+    uid           INTEGER NOT NULL,
+    name          TEXT NOT NULL,
+    constituents  TEXT DEFAULT '[]',
+    mechanism     TEXT DEFAULT '',
+    cross_lens    INTEGER DEFAULT 0,
+    emergent_risk TEXT DEFAULT '',
+    PRIMARY KEY (paper_id, uid)
+);
+CREATE TABLE IF NOT EXISTS assay_synthesis (
+    paper_id           TEXT PRIMARY KEY,
+    verdict            TEXT NOT NULL,
+    verdict_confidence TEXT DEFAULT 'Medium',
+    thesis_statement   TEXT DEFAULT '',
+    thesis_survives    INTEGER DEFAULT 0,
+    central_thesis     TEXT DEFAULT '',
+    dominant_dynamic   TEXT DEFAULT '',
+    critical_count     INTEGER DEFAULT 0,
+    significant_count  INTEGER DEFAULT 0
+);
+
 """
 
 
@@ -245,7 +400,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE claims ADD COLUMN kind TEXT DEFAULT 'normative'")
 
     # SourceLoc-to-uid migration: PK changes from the loc triple to
-    # (paper_id, uid). Data is rebuilt by the next dissect run.
+    # (paper_id, uid).
     def _needs_uid(table: str) -> bool:
         cols = {r[1] for r in conn.execute(
             f"PRAGMA table_info({table})"
@@ -262,6 +417,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "rhetorical_markers" in tables:
         conn.execute("DROP TABLE rhetorical_markers")
 
+    # assay_path column
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(papers)").fetchall()}
+    if "assay_path" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN assay_path TEXT DEFAULT ''")
+
+    # assay_findings: add challenge/reasoning columns for killed finding details
+    finding_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(assay_findings)"
+    ).fetchall()}
+    if finding_cols and "challenge" not in finding_cols:
+        conn.execute(
+            "ALTER TABLE assay_findings ADD COLUMN challenge TEXT DEFAULT ''"
+        )
+        conn.execute(
+            "ALTER TABLE assay_findings ADD COLUMN reasoning TEXT DEFAULT ''"
+        )
+
     conn.executescript(_SCHEMA)
 
 
@@ -276,20 +448,12 @@ _IMAGE_FILENAME_RE = re.compile(
 )
 
 
-# Tables that hold dissect-pipeline outputs keyed on ``paper_id``. All
-# carry ``loc.line`` offsets recorded against the previous markdown,
-# so all are wiped together by ``clear_downstream_outputs`` when a
-# re-convert changes the file.
-_DISSECT_EXTRACT_TABLES: tuple[str, ...] = (
-    "claims",
-    "evidence",
-    "paper_citations",
-    "external_citations",
-    "questions",
-    "rhetoric",
-    "caput_causae",
-    "citation_audit",
-)
+_ASSAY_TABLES = [
+    "assay_claims", "assay_evidence", "assay_concessions",
+    "assay_breadcrumbs", "assay_thesis", "assay_findings",
+    "assay_asks", "assay_references", "assay_strengths",
+    "assay_checklist", "assay_compounds", "assay_synthesis",
+]
 
 
 def _now_iso() -> str:
@@ -425,6 +589,7 @@ class SqliteBackend(StorageBackend):
             dissect_path=d.get("dissect_path", ""),
             advocatus_path=d.get("advocatus_path", ""),
             agora_path=d.get("agora_path", ""),
+            assay_path=d.get("assay_path", ""),
             line_count=d.get("line_count", 0),
             status=d.get("status", 0),
             error=d.get("error", ""),
@@ -595,38 +760,6 @@ class SqliteBackend(StorageBackend):
         self.record_markdown(pid, final_path, line_count=line_count)
         return final_path
 
-    def write_dissect_md(self, paper_id: str, markdown: str) -> Path:
-        """Write dissect markdown atomically and record the path in the DB."""
-        pid = paper_id.strip().upper()
-        final_path = self._atomic_write_text(
-            self._papers_dir / f"{pid.lower()}.dissect.md", markdown
-        )
-        with self._conn:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
-            )
-            self._conn.execute(
-                "UPDATE papers SET dissect_path = ? WHERE paper_id = ?",
-                (str(final_path), pid),
-            )
-        return final_path
-
-    def clear_dissect(self, paper_id: str) -> None:
-        """Delete the dissect file and clear ``dissect_path`` in the DB."""
-        pid = paper_id.strip().upper()
-        row = self._conn.execute(
-            "SELECT dissect_path FROM papers WHERE paper_id = ?", (pid,)
-        ).fetchone()
-        if row and row["dissect_path"]:
-            path = Path(row["dissect_path"])
-            if path.exists():
-                path.unlink()
-        with self._conn:
-            self._conn.execute(
-                "UPDATE papers SET dissect_path = '' WHERE paper_id = ?",
-                (pid,),
-            )
-
     def write_advocatus_md(self, paper_id: str, markdown: str) -> Path:
         """Write advocatus markdown (Relatio) atomically and record the path."""
         pid = paper_id.strip().upper()
@@ -751,7 +884,6 @@ class SqliteBackend(StorageBackend):
         """Backfill DB rows from on-disk artifacts. See ABC for semantics."""
         sources: list[tuple[str, Path]] = []
         markdowns: list[tuple[str, Path]] = []
-        dissections: list[tuple[str, Path]] = []
         advocati: list[tuple[str, Path]] = []
         agorae: list[tuple[str, Path]] = []
 
@@ -768,12 +900,9 @@ class SqliteBackend(StorageBackend):
                 continue
             # Per-tool debug/trace artifacts are scratch outputs; never
             # reconcile them as paper-level artifacts. This must come
-            # before the .md branches below or e.g. ``<pid>.dissect.debug.md``
+            # before the .md branches below or e.g. ``<pid>.debug.assay.md``
             # would be mis-classified as markdown.
             if name.endswith(".debug.md") or name.endswith(".trace.md"):
-                continue
-            if name.endswith(".dissect.md"):
-                dissections.append((name[: -len(".dissect.md")].upper(), path))
                 continue
             if name.endswith(".advocatus.md"):
                 advocati.append((name[: -len(".advocatus.md")].upper(), path))
@@ -789,7 +918,6 @@ class SqliteBackend(StorageBackend):
         counts = {
             "sources": 0,
             "markdowns": 0,
-            "dissections": 0,
             "advocati": 0,
             "agorae": 0,
             "line_counts": 0,
@@ -817,17 +945,6 @@ class SqliteBackend(StorageBackend):
                 )
                 if cursor.rowcount > 0:
                     counts["markdowns"] += 1
-            for pid, path in dissections:
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
-                )
-                cursor = self._conn.execute(
-                    "UPDATE papers SET dissect_path = ? "
-                    "WHERE paper_id = ? AND dissect_path = ''",
-                    (str(path), pid),
-                )
-                if cursor.rowcount > 0:
-                    counts["dissections"] += 1
             for pid, path in advocati:
                 self._conn.execute(
                     "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
@@ -922,24 +1039,15 @@ class SqliteBackend(StorageBackend):
         except MissingMetaError:
             return ClearedSet()
 
-        dissect_present = bool(meta.dissect_path)
         advocatus_present = bool(meta.advocatus_path)
         agora_present = bool(meta.agora_path)
 
-        if dissect_present:
-            self.clear_dissect(pid)
-            with self._conn:
-                for table in _DISSECT_EXTRACT_TABLES:
-                    self._conn.execute(
-                        f"DELETE FROM {table} WHERE paper_id = ?", (pid,)
-                    )
         if advocatus_present:
             self.clear_advocatus(pid)
         if agora_present:
             self.clear_agora(pid)
 
         return ClearedSet(
-            dissect=dissect_present,
             advocatus=advocatus_present,
             agora=agora_present,
         )
@@ -1010,24 +1118,6 @@ class SqliteBackend(StorageBackend):
         pid = paper_id.strip().upper()
         return self._papers_dir / f"{pid.lower()}.md"
 
-    def get_dissect_path(self, paper_id: str) -> Path:
-        row = self._conn.execute(
-            "SELECT dissect_path FROM papers WHERE paper_id = ?",
-            (paper_id.strip().upper(),),
-        ).fetchone()
-        if row is None or not row["dissect_path"]:
-            raise MissingDissectError(
-                f"No dissect for {paper_id!r}. "
-                f"Run 'paperflow dissect {paper_id}' first."
-            )
-        path = Path(row["dissect_path"])
-        if not path.exists():
-            raise MissingDissectError(
-                f"Dissect file missing for {paper_id!r}: {path}. "
-                f"Run 'paperflow dissect {paper_id}' again."
-            )
-        return path
-
     def get_advocatus_path(self, paper_id: str) -> Path:
         row = self._conn.execute(
             "SELECT advocatus_path FROM papers WHERE paper_id = ?",
@@ -1064,13 +1154,15 @@ class SqliteBackend(StorageBackend):
             )
         return path
 
-    def get_debug_md_path(self, paper_id: str) -> Path:
+    def get_debug_md_path(self, paper_id: str, tool: str = "") -> Path:
         pid = paper_id.strip().upper().lower()
-        return self._papers_dir / f"{pid}.debug.md"
+        suffix = f".debug.{tool}.md" if tool else ".debug.md"
+        return self._papers_dir / f"{pid}{suffix}"
 
-    def get_trace_md_path(self, paper_id: str) -> Path:
+    def get_trace_md_path(self, paper_id: str, tool: str = "") -> Path:
         pid = paper_id.strip().upper().lower()
-        return self._papers_dir / f"{pid}.trace.md"
+        suffix = f".trace.{tool}.md" if tool else ".trace.md"
+        return self._papers_dir / f"{pid}{suffix}"
 
     def list_years(self) -> list[tuple[str, int]]:
         """Return ``[(year, paper_count)]`` sorted by year."""
@@ -1350,3 +1442,309 @@ class SqliteBackend(StorageBackend):
             resolved=bool(r["resolved"]), source_url=r["source_url"],
             quote_match=r["quote_match"], discrepancy=r["discrepancy"],
         ) for r in rows]
+
+    # ---- candidates / findings -----------------------------------------------
+
+    def store_candidates(self, paper_id: str, candidates) -> None:
+        pid = paper_id.strip().upper()
+        rows = [
+            (pid, c.rule, c.label, c.detail,
+             json.dumps(c.data) if not isinstance(c.data, str) else c.data)
+            for c in candidates
+        ]
+        with self._conn:
+            self._conn.execute("DELETE FROM candidates WHERE paper_id = ?", (pid,))
+            self._conn.executemany(
+                "INSERT INTO candidates (paper_id, rule, label, detail, data) "
+                "VALUES (?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def store_findings(self, paper_id: str, findings) -> None:
+        pid = paper_id.strip().upper()
+        rows = [
+            (pid, f.id, f.lens, f.severity, f.title,
+             f.quoted_text, f.source_line, f.explanation)
+            for f in findings
+        ]
+        with self._conn:
+            self._conn.execute("DELETE FROM findings WHERE paper_id = ?", (pid,))
+            self._conn.executemany(
+                "INSERT INTO findings (paper_id, id, lens, severity, title, "
+                "quoted_text, source_line, explanation) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def get_candidates(self, paper_id: str) -> list[CandidateRow]:
+        pid = paper_id.strip().upper()
+        rows = self._conn.execute(
+            "SELECT * FROM candidates WHERE paper_id = ?", (pid,)
+        ).fetchall()
+        return [CandidateRow(
+            paper_id=r["paper_id"], rule=r["rule"], label=r["label"],
+            detail=r["detail"], data=r["data"],
+        ) for r in rows]
+
+    def get_findings(self, paper_id: str) -> list[FindingRow]:
+        pid = paper_id.strip().upper()
+        rows = self._conn.execute(
+            "SELECT * FROM findings WHERE paper_id = ?", (pid,)
+        ).fetchall()
+        return [FindingRow(
+            paper_id=r["paper_id"], id=r["id"], lens=r["lens"],
+            severity=r["severity"], title=r["title"],
+            quoted_text=r["quoted_text"], source_line=r["source_line"],
+            explanation=r["explanation"],
+        ) for r in rows]
+
+    def store_signals(self, paper_id: str, signals) -> None:
+        pid = paper_id.strip().upper()
+        rows = [
+            (pid, s.section_idx, s.heading, s.loc_line, s.loc_start,
+             s.loc_end, s.signal_type, s.quote, s.observation)
+            for s in signals
+        ]
+        with self._conn:
+            self._conn.execute("DELETE FROM signals WHERE paper_id = ?", (pid,))
+            self._conn.executemany(
+                "INSERT INTO signals (paper_id, section_idx, heading, "
+                "loc_line, loc_start, loc_end, signal_type, quote, observation) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def get_signals(self, paper_id: str) -> list[dict]:
+        pid = paper_id.strip().upper()
+        rows = self._conn.execute(
+            "SELECT * FROM signals WHERE paper_id = ?", (pid,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- assay ----------------------------------------------------------------
+
+    def store_assay_claims(self, paper_id: str, claims) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM assay_claims WHERE paper_id = ?", (paper_id,))
+            self._conn.executemany(
+                "INSERT INTO assay_claims (paper_id, uid, loc_line, quote, section, kind, load_bearing) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(paper_id, c.uid, c.loc_line, c.quote, c.section, c.kind, int(c.load_bearing)) for c in claims],
+            )
+
+    def store_assay_evidence(self, paper_id: str, evidence) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM assay_evidence WHERE paper_id = ?", (paper_id,))
+            self._conn.executemany(
+                "INSERT INTO assay_evidence (paper_id, uid, loc_line, quote, section, subtype, quality_tier, supports) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [(paper_id, e.uid, e.loc_line, e.quote, e.section, e.subtype, e.quality_tier, e.supports) for e in evidence],
+            )
+
+    def store_assay_concessions(self, paper_id: str, concessions) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM assay_concessions WHERE paper_id = ?", (paper_id,))
+            self._conn.executemany(
+                "INSERT INTO assay_concessions (paper_id, uid, loc_line, quote, section, subtype) VALUES (?, ?, ?, ?, ?, ?)",
+                [(paper_id, c.uid, c.loc_line, c.quote, c.section, c.subtype) for c in concessions],
+            )
+
+    def get_assay_concessions(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayConcessionRow
+        rows = self._conn.execute(
+            "SELECT paper_id, uid, loc_line, quote, section, subtype FROM assay_concessions WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [AssayConcessionRow(*r) for r in rows]
+
+    def store_assay_breadcrumbs(self, paper_id: str, breadcrumbs) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM assay_breadcrumbs WHERE paper_id = ?", (paper_id,))
+            self._conn.executemany(
+                "INSERT INTO assay_breadcrumbs (paper_id, uid, chunk_index, loc_line, gap, why_important, primary_lens, secondary_lens, severity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(paper_id, b.uid, b.chunk_index, b.loc_line, b.gap, b.why_important, b.primary_lens, b.secondary_lens or "", b.severity) for b in breadcrumbs],
+            )
+
+    def store_assay_thesis(self, paper_id: str, thesis) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO assay_thesis (paper_id, central_claim, problem_statement, scope_boundary, ask_calibration) VALUES (?, ?, ?, ?, ?)",
+                (paper_id, thesis.central_claim, thesis.problem_statement, thesis.scope_boundary, thesis.ask_calibration),
+            )
+
+    def store_assay_findings(self, paper_id: str, findings) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM assay_findings WHERE paper_id = ?", (paper_id,))
+            self._conn.executemany(
+                "INSERT INTO assay_findings (paper_id, uid, title, lens, severity, quote, loc_line, explanation, test, survived, major, challenge, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(paper_id, f.uid, f.title, f.lens, f.severity, f.quote, f.loc_line, f.explanation, f.test, int(f.survived), int(f.major), getattr(f, 'challenge', ''), getattr(f, 'reasoning', '')) for f in findings],
+            )
+
+    def get_assay_claims(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayClaimRow
+        rows = self._conn.execute(
+            "SELECT paper_id, uid, loc_line, quote, section, kind, load_bearing FROM assay_claims WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [AssayClaimRow(r[0], r[1], r[2], r[3], r[4], r[5], bool(r[6])) for r in rows]
+
+    def get_assay_evidence(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayEvidenceRow
+        rows = self._conn.execute(
+            "SELECT paper_id, uid, loc_line, quote, section, subtype, quality_tier, supports FROM assay_evidence WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [AssayEvidenceRow(*r) for r in rows]
+
+    def get_assay_breadcrumbs(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayBreadcrumbRow
+        rows = self._conn.execute(
+            "SELECT paper_id, uid, chunk_index, loc_line, gap, why_important, primary_lens, secondary_lens, severity FROM assay_breadcrumbs WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [AssayBreadcrumbRow(*r) for r in rows]
+
+    def get_assay_thesis(self, paper_id: str):
+        from paperstore.extract_rows import AssayThesisRow
+        row = self._conn.execute(
+            "SELECT paper_id, central_claim, problem_statement, scope_boundary, ask_calibration FROM assay_thesis WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchone()
+        return AssayThesisRow(*row) if row else None
+
+    def get_assay_findings(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayFindingRow
+        rows = self._conn.execute(
+            "SELECT paper_id, uid, title, lens, severity, quote, loc_line, explanation, test, survived, major, challenge, reasoning FROM assay_findings WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [AssayFindingRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], bool(r[9]), bool(r[10]), r[11], r[12]) for r in rows]
+
+    def store_assay_asks(self, paper_id: str, asks) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM assay_asks WHERE paper_id = ?", (paper_id,))
+            self._conn.executemany(
+                "INSERT INTO assay_asks (paper_id, uid, target, quote, type) VALUES (?, ?, ?, ?, ?)",
+                [(paper_id, i, a.get("target", ""), a.get("quote", ""), a.get("type", "")) for i, a in enumerate(asks, 1)],
+            )
+
+    def get_assay_asks(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayAskRow
+        rows = self._conn.execute(
+            "SELECT paper_id, uid, target, quote, type FROM assay_asks WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [AssayAskRow(*r) for r in rows]
+
+    def store_assay_references(self, paper_id: str, refs) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM assay_references WHERE paper_id = ?", (paper_id,))
+            self._conn.executemany(
+                "INSERT INTO assay_references (paper_id, uid, ref_label, relationship, url, mention_count) VALUES (?, ?, ?, ?, ?, ?)",
+                [(paper_id, i, r.get("ref_label", r.get("ref_id", "")), r.get("relationship", "citation"), r.get("url", ""), r.get("mention_count", 0)) for i, r in enumerate(refs, 1)],
+            )
+
+    def get_assay_references(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayReferenceRow
+        rows = self._conn.execute(
+            "SELECT paper_id, uid, ref_label, relationship, url, mention_count FROM assay_references WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [AssayReferenceRow(*r) for r in rows]
+
+    def store_assay_strengths(self, paper_id: str, strengths) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM assay_strengths WHERE paper_id = ?", (paper_id,))
+            self._conn.executemany(
+                "INSERT INTO assay_strengths (paper_id, uid, title, quote, loc_line, explanation) VALUES (?, ?, ?, ?, ?, ?)",
+                [(paper_id, i, s.get("title", ""), s.get("quote", ""), s.get("line", 0), s.get("explanation", "")) for i, s in enumerate(strengths, 1)],
+            )
+
+    def get_assay_strengths(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayStrengthRow
+        rows = self._conn.execute(
+            "SELECT paper_id, uid, title, quote, loc_line, explanation FROM assay_strengths WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [AssayStrengthRow(*r) for r in rows]
+
+    def store_assay_checklist(self, paper_id: str, items) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM assay_checklist WHERE paper_id = ?", (paper_id,))
+            self._conn.executemany(
+                "INSERT INTO assay_checklist (paper_id, item_id, name, passed, location, note) VALUES (?, ?, ?, ?, ?, ?)",
+                [(paper_id, c.get("id", ""), c.get("name", ""), int(c.get("passed", False)), c.get("location", "") or "", c.get("note", "") or "") for c in items],
+            )
+
+    def get_assay_checklist(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayChecklistRow
+        rows = self._conn.execute(
+            "SELECT paper_id, item_id, name, passed, location, note FROM assay_checklist WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [AssayChecklistRow(r[0], r[1], r[2], bool(r[3]), r[4], r[5]) for r in rows]
+
+    def store_assay_compounds(self, paper_id: str, compounds) -> None:
+        import json
+        with self._conn:
+            self._conn.execute("DELETE FROM assay_compounds WHERE paper_id = ?", (paper_id,))
+            self._conn.executemany(
+                "INSERT INTO assay_compounds (paper_id, uid, name, constituents, mechanism, cross_lens, emergent_risk) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(paper_id, i, c.get("name", ""), json.dumps(c.get("constituents", [])), c.get("mechanism", ""), int(c.get("cross_lens", False)), c.get("emergent_risk", "") or "") for i, c in enumerate(compounds, 1)],
+            )
+
+    def get_assay_compounds(self, paper_id: str) -> list:
+        import json
+        from paperstore.extract_rows import AssayCompoundRow
+        rows = self._conn.execute(
+            "SELECT paper_id, uid, name, constituents, mechanism, cross_lens, emergent_risk FROM assay_compounds WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [AssayCompoundRow(r[0], r[1], r[2], json.loads(r[3]), r[4], bool(r[5]), r[6]) for r in rows]
+
+    def store_assay_synthesis(self, paper_id: str, synthesis) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO assay_synthesis (paper_id, verdict, verdict_confidence, thesis_statement, thesis_survives, central_thesis, dominant_dynamic, critical_count, significant_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (paper_id, synthesis.get("verdict", "Insufficient"), synthesis.get("verdict_confidence", "Medium"), synthesis.get("thesis_statement", ""), int(synthesis.get("thesis_survives", False)), synthesis.get("central_thesis", ""), synthesis.get("dominant_dynamic", "") or "", synthesis.get("critical_count", 0), synthesis.get("significant_count", 0)),
+            )
+
+    def get_assay_synthesis(self, paper_id: str):
+        from paperstore.extract_rows import AssaySynthesisRow
+        row = self._conn.execute(
+            "SELECT paper_id, verdict, verdict_confidence, thesis_statement, thesis_survives, central_thesis, dominant_dynamic, critical_count, significant_count FROM assay_synthesis WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchone()
+        return AssaySynthesisRow(row[0], row[1], row[2], row[3], bool(row[4]), row[5], row[6], row[7], row[8]) if row else None
+
+    def write_assay_md(self, paper_id: str, markdown: str) -> Path:
+        pid = paper_id.strip().upper().lower()
+        path = self._papers_dir / f"{pid}.assay.md"
+        partial = path.with_suffix(".partial")
+        partial.write_text(markdown, encoding="utf-8")
+        bak = path.with_suffix(".bak.md")
+        if path.exists():
+            bak.unlink(missing_ok=True)
+            path.rename(bak)
+        _atomic_replace(partial, path)
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (paper_id,)
+            )
+            self._conn.execute(
+                "UPDATE papers SET assay_path = ? WHERE paper_id = ?",
+                (str(path), paper_id),
+            )
+        return path
+
+    def clear_assay(self, paper_id: str) -> None:
+        meta = self._conn.execute(
+            "SELECT assay_path FROM papers WHERE paper_id = ?", (paper_id,)
+        ).fetchone()
+        if meta and meta[0]:
+            p = Path(meta[0])
+            p.unlink(missing_ok=True)
+        with self._conn:
+            self._conn.execute(
+                "UPDATE papers SET assay_path = '' WHERE paper_id = ?", (paper_id,)
+            )
+            for table in _ASSAY_TABLES:
+                self._conn.execute(f"DELETE FROM {table} WHERE paper_id = ?", (paper_id,))

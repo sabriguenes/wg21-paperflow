@@ -283,8 +283,7 @@ def _make_claim(text="claim", section="intro", question="why?", line=1, uid=1):
 
 def test_cleared_set_truthiness_and_names():
     assert not ClearedSet()
-    assert bool(ClearedSet(dissect=True))
-    assert ClearedSet(dissect=True, agora=True).names() == ["dissect", "agora"]
+    assert bool(ClearedSet(advocatus=True))
     assert ClearedSet(advocatus=True, agora=True).names() == ["advocatus", "agora"]
 
 
@@ -311,7 +310,6 @@ def test_clear_downstream_outputs_full_sweep(store: SqliteBackend):
     md_path = store.write_paper_md(pid, "# Body\n")
     image_path = store.write_paper_image(pid, 1, 1, "png", b"image-bytes")
 
-    dissect_path = store.write_dissect_md(pid, "# Dissect\n")
     advocatus_path = store.write_advocatus_md(pid, "# Relatio\n")
     agora_path = store.write_agora_json(pid, {"threads": []})
 
@@ -328,7 +326,6 @@ def test_clear_downstream_outputs_full_sweep(store: SqliteBackend):
     store.store_caput_causae(pid, "the thesis")
 
     # Pre-sweep sanity
-    assert dissect_path.exists()
     assert advocatus_path.exists()
     assert agora_path.exists()
     assert len(store.get_claims(pid)) == 1
@@ -338,11 +335,10 @@ def test_clear_downstream_outputs_full_sweep(store: SqliteBackend):
 
     cleared = store.clear_downstream_outputs(pid)
 
-    assert cleared == ClearedSet(dissect=True, advocatus=True, agora=True)
-    assert cleared.names() == ["dissect", "advocatus", "agora"]
+    assert cleared == ClearedSet(advocatus=True, agora=True)
+    assert cleared.names() == ["advocatus", "agora"]
 
     # Files gone
-    assert not dissect_path.exists()
     assert not advocatus_path.exists()
     assert not agora_path.exists()
 
@@ -354,7 +350,6 @@ def test_clear_downstream_outputs_full_sweep(store: SqliteBackend):
 
     # Meta paths cleared
     meta = store.get_meta(pid)
-    assert meta.dissect_path == ""
     assert meta.advocatus_path == ""
     assert meta.agora_path == ""
 
@@ -368,9 +363,9 @@ def test_clear_downstream_outputs_partial(store: SqliteBackend):
     """Only the pipelines that had data are reported as cleared."""
     pid = "P1000R0"
     store.upsert_year("2026", [{"paper_id": pid}])
-    store.write_dissect_md(pid, "# Dissect")
-    # advocatus and agora never ran
+    store.write_advocatus_md(pid, "# Relatio")
+    # agora never ran
 
     cleared = store.clear_downstream_outputs(pid)
-    assert cleared == ClearedSet(dissect=True)
-    assert cleared.names() == ["dissect"]
+    assert cleared == ClearedSet(advocatus=True)
+    assert cleared.names() == ["advocatus"]

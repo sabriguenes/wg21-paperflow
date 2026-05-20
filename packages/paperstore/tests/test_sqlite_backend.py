@@ -21,7 +21,6 @@ from paperstore.errors import (
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
-    MissingDissectError,
     MissingSourceError,
 )
 
@@ -242,7 +241,6 @@ def test_reconcile_empty_workspace(store: SqliteBackend):
     assert store.reconcile() == {
         "sources": 0,
         "markdowns": 0,
-        "dissections": 0,
         "advocati": 0,
         "agorae": 0,
         "line_counts": 0,
@@ -262,7 +260,6 @@ def test_reconcile_backfills_orphan_artifacts(
     assert counts == {
         "sources": 2,
         "markdowns": 1,
-        "dissections": 0,
         "advocati": 0,
         "agorae": 0,
         "line_counts": 1,
@@ -294,7 +291,6 @@ def test_reconcile_skips_intermediates_partials_and_db(
     assert counts == {
         "sources": 0,
         "markdowns": 0,
-        "dissections": 0,
         "advocati": 0,
         "agorae": 0,
         "line_counts": 0,
@@ -309,7 +305,6 @@ def test_reconcile_is_idempotent(store: SqliteBackend, tmp_path: Path):
     assert first == {
         "sources": 1,
         "markdowns": 0,
-        "dissections": 0,
         "advocati": 0,
         "agorae": 0,
         "line_counts": 0,
@@ -317,7 +312,6 @@ def test_reconcile_is_idempotent(store: SqliteBackend, tmp_path: Path):
     assert second == {
         "sources": 0,
         "markdowns": 0,
-        "dissections": 0,
         "advocati": 0,
         "agorae": 0,
         "line_counts": 0,
@@ -379,89 +373,20 @@ def test_list_years(store: SqliteBackend):
     assert ("2026", 2) in years
 
 
-# ---- dissect lifecycle -----------------------------------------------------
-
-
-def test_write_dissect_md(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    path = store.write_dissect_md("P1000R0", "# Review\n\nContent.")
-    assert path.exists()
-    assert path.name == "p1000r0.dissect.md"
-    assert path.read_text(encoding="utf-8") == "# Review\n\nContent."
-    meta = store.get_meta("P1000R0")
-    assert meta.dissect_path == str(path)
-
-
-def test_get_dissect_path(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    store.write_dissect_md("P1000R0", "# Review")
-    path = store.get_dissect_path("P1000R0")
-    assert path.exists()
-
-
-def test_get_dissect_path_missing_raises(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    with pytest.raises(MissingDissectError):
-        store.get_dissect_path("P1000R0")
-
-
-def test_get_dissect_path_no_paper_raises(store: SqliteBackend):
-    with pytest.raises(MissingDissectError):
-        store.get_dissect_path("NOPE")
-
-
-def test_clear_dissect_deletes_file(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    path = store.write_dissect_md("P1000R0", "# Review")
-    assert path.exists()
-    store.clear_dissect("P1000R0")
-    assert not path.exists()
-    with pytest.raises(MissingDissectError):
-        store.get_dissect_path("P1000R0")
-
-
-def test_clear_dissect_idempotent(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    store.clear_dissect("P1000R0")
-    store.clear_dissect("P1000R0")
-
-
-def test_write_dissect_md_overwrites(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    store.write_dissect_md("P1000R0", "# Old")
-    store.write_dissect_md("P1000R0", "# New")
-    path = store.get_dissect_path("P1000R0")
-    assert path.read_text(encoding="utf-8") == "# New"
-
-
-def test_reconcile_finds_dissect_files(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    dissect_path = store._papers_dir / "p1000r0.dissect.md"
-    dissect_path.write_text("# Review", encoding="utf-8")
-    counts = store.reconcile()
-    assert counts["dissections"] == 1
-    meta = store.get_meta("P1000R0")
-    assert meta.dissect_path == str(dissect_path)
-
-
 def test_reconcile_skips_per_tool_debug_and_trace_artifacts(store: SqliteBackend):
     """Per-tool .debug.md / .trace.md files are scratch outputs; reconcile
-    must not classify them as paper markdown, dissect, or advocatus."""
+    must not classify them as paper markdown or advocatus."""
     store.upsert_year("2026", [{"paper_id": "P1000R0"}])
     for name in (
-        "p1000r0.dissect.debug.md",
-        "p1000r0.dissect.trace.md",
         "p1000r0.advocatus.debug.md",
         "p1000r0.advocatus.trace.md",
     ):
         (store._papers_dir / name).write_text("scratch", encoding="utf-8")
     counts = store.reconcile()
     assert counts["markdowns"] == 0
-    assert counts["dissections"] == 0
     assert counts["advocati"] == 0
     meta = store.get_meta("P1000R0")
     assert meta.markdown_path == ""
-    assert meta.dissect_path == ""
     assert meta.advocatus_path == ""
 
 

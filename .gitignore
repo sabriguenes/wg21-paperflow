@@ -10,6 +10,7 @@ __pycache__/
 dist/
 build/
 .venv_min/
+study/*
 
 # macOS / Finder / AppleDouble
 .DS_Store

@@ -55,14 +55,33 @@ class AgentBackend:
         self,
         model: ModelBackend,
         *,
+        max_tokens: int = 16384,
         thinking_budget: int | None = None,
         slot_name: str = "",
         service_name: str = "",
     ) -> None:
         self._model = model
+        self._max_tokens = max_tokens
         self._thinking_budget = thinking_budget
         self._slot_name = slot_name
         self._service_name = service_name
+
+    @property
+    def max_tokens(self) -> int:
+        return self._max_tokens
+
+    @property
+    def max_context_window(self) -> int:
+        return self._model.max_context_window
+
+    @property
+    def chars_per_token(self) -> float:
+        return self._model.chars_per_token
+
+    @property
+    def token_multiplier(self) -> float:
+        """Deprecated. Use chars_per_token instead."""
+        return self._model.token_multiplier
 
     @property
     def thinking_capable(self) -> bool:
@@ -95,11 +114,23 @@ class AgentBackend:
         output_type: type[_T],
         *,
         tools: dict[str, Callable] | None = None,
+        max_tokens: int | None = None,
+        thinking_budget: int | None = None,
         label: str = "",
         debug_log: list[str] | None = None,
         request_limit: int = DEFAULT_REQUEST_LIMIT,
     ) -> _T:
         """Send a prompt and return validated structured output.
+
+        ``max_tokens`` overrides the agent's default output budget for
+        this call. ``None`` (the default) uses the value set at
+        construction time. Per-step overrides come from
+        ``StepMeta.max_output_tokens`` via the runner.
+
+        ``thinking_budget`` overrides the agent's default thinking
+        token budget for this call. ``None`` (the default) uses the
+        value set at construction time. Per-step overrides come from
+        ``StepMeta.thinking_budget``.
 
         ``request_limit`` caps total model requests inside this call;
         forwarded to the underlying ``ModelBackend``.
@@ -115,12 +146,23 @@ class AgentBackend:
                 f"{type(self._model).__name__} does not support tools. "
                 f"Assign a tools_capable service to this slot."
             )
+        resolved_max_tokens = max_tokens if max_tokens is not None else self._max_tokens
+        resolved_thinking = thinking_budget if thinking_budget is not None else self._thinking_budget
+        if debug_log is not None:
+            model_name = getattr(self._model, "_model_name", "") or getattr(self._model, "_model", "")
+            debug_log.append(
+                f"<!-- call: {label or 'unlabeled'} | "
+                f"service={self._service_name or 'unknown'} | "
+                f"model={model_name} | "
+                f"max_tokens={resolved_max_tokens} -->\n"
+            )
         return await self._model.run(
             system_prompt,
             user_message,
             output_type,
+            max_tokens=resolved_max_tokens,
             tools=tools,
-            thinking_budget=self._thinking_budget,
+            thinking_budget=resolved_thinking,
             label=label,
             debug_log=debug_log,
             request_limit=request_limit,

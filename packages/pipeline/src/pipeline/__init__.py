@@ -22,7 +22,6 @@ from pipeline.errors import (
     MissingMetadataError,
     MissingSystemPromptError,
     PaperNotConvertedError,
-    PaperNotDissectedError,
     PaperNotFoundError,
     PipelineError,
     PromptFileError,
@@ -30,7 +29,7 @@ from pipeline.errors import (
     TransientStepError,
     ValidationStepError,
 )
-from pipeline.markdown import sanitize_md, sections
+from pipeline.markdown import extract_code_blocks, sanitize_md, sections
 from pipeline.model_backends import ModelBackend
 from pipeline.prompt import StepHooks, StepMeta, StepSpec, build_pipeline, parse_step_meta
 from pipeline.runner import (
@@ -46,6 +45,8 @@ from pipeline.services import (
     load_classifiers,
     load_services,
     load_transformer_providers,
+    parse_pipeline_config,
+    parse_service_overrides,
     resolve_classifier_slots,
     resolve_slots,
     resolve_transformer_provider,
@@ -74,6 +75,7 @@ from pipeline.postconditions import (
 )
 from pipeline.process import ensure_paper_md, process_paper
 from pipeline.tasks import run_task
+from pipeline.tokens import CHARS_PER_TOKEN, est_tokens, tokens_to_chars
 from pipeline.tools import make_read_paper_tool, wrap_source
 from pipeline.validate import validate_capabilities
 
@@ -108,9 +110,10 @@ __all__ = [
     "MissingMetadataError",
     "MissingSystemPromptError",
     "PaperNotConvertedError",
-    "PaperNotDissectedError",
     "parse_step_meta",
     "PaperNotFoundError",
+    "parse_pipeline_config",
+    "parse_service_overrides",
     "PipelineError",
     "postcondition_satisfied",
     "ProcessResult",
@@ -138,4 +141,7 @@ __all__ = [
     "WebResearcher",
     "wrap_source",
     "write_debug_file",
+    "CHARS_PER_TOKEN",
+    "est_tokens",
+    "tokens_to_chars",
 ]

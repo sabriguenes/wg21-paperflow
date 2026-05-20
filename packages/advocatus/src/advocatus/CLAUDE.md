@@ -8,14 +8,14 @@ LLM-driven paper examination pipeline (the two-office tribunal). Project-wide ru
 
 ## What this pipeline does
 
-The Advocatus Diaboli drafts candidate charges; the Defensor Causae cross-examines each through six challenges (Confessio, Articulus, Testimonium, Humanitas, Prudentia, Dignitas). Surviving charges become objections in the Relatio; killed charges earn the section a probatio. The pipeline reads dissect output from paperstore and adds what dissect did not produce: stakeholder positions, candidate charges, Defensor verdicts, motivatio, the Relatio.
+The Advocatus Diaboli drafts candidate charges; the Defensor Causae cross-examines each through six challenges (Confessio, Articulus, Testimonium, Humanitas, Prudentia, Dignitas). Surviving charges become objections in the Relatio; killed charges earn the section a probatio. The pipeline reads extract tables from paperstore and adds what they do not provide: stakeholder positions, candidate charges, Defensor verdicts, motivatio, the Relatio.
 
 One-shot, fully batch. No `AskQuestion`, no human-in-the-loop, no resumable runs. A single overall `confidence: float` on the Relatio is the transparency signal.
 
 ## Layout
 
 - `advocatus.md` - prompt document and pipeline authority.
-- `about.md` - canonical office description. Mirrors `dissect/about.md`. Source of voice and rubric for `advocatus.md`.
+- `about.md` - canonical office description. Source of voice and rubric for `advocatus.md`.
 - `prompt.py` - parses step metadata, validates against registered hooks, builds the ordered `StepSpec` list.
 - `pipeline.py` - async orchestration: `StepContext`, hook registry (`_HOOKS`), dispatch loop, public `advocatus_paper()` entry point. Sub-agent dispatch goes through `pipeline.tasks.run_task`, which serializes via the shared `_task_semaphore`.
 - `render.py` - renders the Relatio (Seal, Objections, Probationes, Tabula Fontium, Acta, Notae Minores).

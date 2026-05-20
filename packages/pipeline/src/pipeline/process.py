@@ -8,13 +8,13 @@
 """Per-paper pipeline orchestration.
 
 ``process_paper`` walks one paper through the linear processing
-pipeline (download -> convert -> dissect -> advocatus -> agora ->
-herald -> ready). Each verb in the CLI maps to a ``through`` value
-that says how far to advance.
+pipeline (download -> convert -> advocatus -> agora -> herald ->
+ready). Each verb in the CLI maps to a ``through`` value that says
+how far to advance.
 
 ``ensure_paper_md`` is the citation shortcut: download + convert as
-one unit with a CAS guard, used by dissect's citation verification
-to prepare cited papers without committing them to the full pipeline.
+one unit with a CAS guard, used by citation verification to prepare
+cited papers without committing them to the full pipeline.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ async def process_paper(
     When ``force`` is True, resets status to ``through - 1`` so the
     target stage re-runs without redoing earlier stages. For example,
     ``process_paper(pid, through=3, force=True)`` resets to status 2
-    (needs dissect) without re-downloading or re-converting.
+    without re-downloading or re-converting.
 
     Before entering the work loop, the in-memory status is floored to
     :func:`truthful_status`, so a paper whose DB column claims a stage
@@ -160,7 +160,7 @@ async def ensure_paper_md(pid: str, backend: StorageBackend) -> str | None:
     """Ensure a paper's markdown is available. Returns content or None.
 
     Downloads and converts as one unit if needed. Uses CAS to advance
-    status to 2 (dissect) if currently below that. Safe for concurrent
+    status past convert if currently below that. Safe for concurrent
     callers - duplicate work is harmless, the CAS ensures status
     advances exactly once.
 
@@ -176,7 +176,7 @@ async def ensure_paper_md(pid: str, backend: StorageBackend) -> str | None:
     # Trust-but-verify: status alone is not enough, the markdown file
     # may have been deleted under us.
     if (
-        paper.status >= STAGES["dissect"]
+        paper.status > STAGES["convert"]
         and postcondition_satisfied(backend, pid, STAGES["convert"])
     ):
         return backend.get_paper_md(pid)
@@ -189,7 +189,7 @@ async def ensure_paper_md(pid: str, backend: StorageBackend) -> str | None:
         return None
 
     backend.advance_status(pid, STAGES["download"], STAGES["convert"])
-    backend.advance_status(pid, STAGES["convert"], STAGES["dissect"])
+    backend.advance_status(pid, STAGES["convert"], STAGES["advocatus"])
 
     try:
         return backend.get_paper_md(pid)
@@ -217,13 +217,6 @@ async def _run_stage(
         await _stage_download(pid, backend, on_progress=on_progress)
     elif stage == STAGES["convert"]:
         return await _stage_convert(pid, backend, keep_downstream=keep_downstream)
-    elif stage == STAGES["dissect"]:
-        await _stage_dissect(pid, backend, debug=debug, trace=trace,
-                             stop_after=stop_after, chunk_index=chunk_index,
-                             service_overrides=service_overrides,
-                             classifier_overrides=classifier_overrides,
-                             provider_override=provider_override,
-                             on_progress=on_progress)
     elif stage == STAGES["advocatus"]:
         await _stage_advocatus(pid, backend, debug=debug, trace=trace,
                                service_overrides=service_overrides,
@@ -244,20 +237,34 @@ async def _stage_download(pid: str, backend: StorageBackend, *, on_progress: obj
     """Download the paper's source file. For HTML sources, also fetch
     referenced images and write the tomd-side handoff manifest.
     """
+    import httpx
     from mailing import fetch_html_images
     from mailing.download import default_client, download_paper
     from paperstore.html_manifest import HtmlImageEntry, HtmlImagesManifest
+    from paperstore.stages import STAGES as _STAGES
 
     if postcondition_satisfied(backend, pid, STAGES["download"]):
         return
     paper = backend.get_meta(pid)
     if not paper.url:
         raise RuntimeError(f"No URL for {pid}")
-    async with default_client() as client:
-        result = await download_paper(pid, source_url=paper.url, client=client,
-                                      on_progress=on_progress)
-        if result is None:
-            raise RuntimeError(f"Download returned nothing for {pid}")
+    try:
+        async with default_client() as client:
+            result = await download_paper(pid, source_url=paper.url, client=client,
+                                          on_progress=on_progress)
+    except httpx.HTTPStatusError as exc:
+        error_msg = f"{exc.response.status_code} {exc.response.reason_phrase}: {paper.url}"
+        logger.warning("%s failed at download: %s", pid, error_msg)
+        backend.fail_paper(pid, stage=_STAGES["download"], error=error_msg)
+        return
+    except httpx.RequestError as exc:
+        error_msg = f"{type(exc).__name__}: {exc}"
+        logger.warning("%s failed at download: %s", pid, error_msg)
+        backend.fail_paper(pid, stage=_STAGES["download"], error=error_msg)
+        return
+
+    if result is None:
+        raise RuntimeError(f"Download returned nothing for {pid}")
         content, suffix = result
         backend.put_source(pid, content, suffix=suffix)
 
@@ -353,9 +360,9 @@ async def _stage_convert(
     conditionally invalidate downstream pipelines.
 
     No artifact-exists short-circuit: ``truthful_status`` upstream
-    already decided we need to run. (The dissect / advocatus / agora
-    stages follow the same pattern; only ``--force`` reruns reach this
-    body with a still-good prior markdown_path.)
+    already decided we need to run. (The advocatus / agora stages
+    follow the same pattern; only ``--force`` reruns reach this body
+    with a still-good prior markdown_path.)
 
     For skipped papers (slide-deck, standards-draft, unreadable):
     nothing is written to disk and no DB state is touched. The caller
@@ -363,12 +370,12 @@ async def _stage_convert(
     not advanced past ``download``.
 
     Otherwise: byte-equality check against any prior markdown decides
-    whether downstream pipelines (dissect, advocatus, agora) should be
+    whether downstream pipelines (advocatus, agora) should be
     invalidated. A re-convert that produces identical markdown leaves
     extract-table rows intact, since their stored ``loc.line`` offsets
     are still valid. When the markdown does change AND
-    ``keep_downstream`` is False, the .dissect.md / .advocatus.md /
-    .agora.json files and the dissect-pipeline extract rows are wiped.
+    ``keep_downstream`` is False, the .advocatus.md / .agora.json
+    files and the extract rows are wiped.
     """
     import asyncio
     from pathlib import Path
@@ -477,34 +484,6 @@ async def _stage_convert(
     )
 
 
-async def _stage_dissect(
-    pid: str, backend: StorageBackend, *, debug: bool = False, trace: bool = False,
-    stop_after: int | None = None, chunk_index: int | None = None,
-    service_overrides: dict[str, str] | None = None,
-    classifier_overrides: dict[str, str] | None = None,
-    provider_override: str | None = None,
-    on_progress: object = None,
-) -> None:
-    """Run dissect pipeline on the paper.
-
-    No artifact-exists short-circuit: this stage is only reached from
-    ``process_paper``, which already used ``truthful_status`` to decide
-    we needed to run. Adding a postcondition check here would silently
-    no-op ``--force`` reruns when the prior ``dissect.md`` still exists.
-    """
-    from dissect import dissect_paper
-
-    report = await dissect_paper(
-        pid, backend, debug=debug, trace=trace,
-        stop_after=stop_after, chunk_index=chunk_index,
-        service_overrides=service_overrides,
-        classifier_overrides=classifier_overrides,
-        provider_override=provider_override,
-        on_progress=on_progress,
-    )
-    backend.write_dissect_md(pid, report)
-
-
 async def _stage_advocatus(
     pid: str, backend: StorageBackend, *, debug: bool = False, trace: bool = False,
     service_overrides: dict[str, str] | None = None,
@@ -513,8 +492,9 @@ async def _stage_advocatus(
 ) -> None:
     """Run advocatus pipeline on the paper.
 
-    See ``_stage_dissect`` for why no postcondition short-circuit lives
-    here.
+    No artifact-exists short-circuit: this stage is only reached from
+    ``process_paper``, which already used ``truthful_status`` to decide
+    we needed to run.
     """
     from advocatus import advocatus_paper
 
@@ -538,8 +518,9 @@ async def _stage_agora(
 ) -> None:
     """Run agora pipeline on the paper.
 
-    See ``_stage_dissect`` for why no postcondition short-circuit lives
-    here.
+    No artifact-exists short-circuit: this stage is only reached from
+    ``process_paper``, which already used ``truthful_status`` to decide
+    we needed to run.
     """
     from agora import agora_paper
 

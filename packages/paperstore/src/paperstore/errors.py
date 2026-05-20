@@ -37,10 +37,6 @@ class MissingPaperMdError(MissingPaperError):
     """Raised when no converted markdown is stored for the paper."""
 
 
-class MissingDissectError(MissingPaperError):
-    """Raised when no dissect file is stored for the paper."""
-
-
 class MissingAdvocatusError(MissingPaperError):
     """Raised when no advocatus file (Relatio) is stored for the paper."""
 

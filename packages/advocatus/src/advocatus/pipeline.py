@@ -34,6 +34,7 @@ from pipeline import (
     AgentBackend,
     StepContext,
     StepHooks,
+    StepSpec,
     WebResearcher,
     build_pipeline,
     dispatch,
@@ -44,7 +45,6 @@ from pipeline import (
 )
 from pipeline.errors import (
     PaperNotConvertedError,
-    PaperNotDissectedError,
     PaperNotFoundError,
     PromptFileError,
 )
@@ -71,6 +71,8 @@ from advocatus.render import render_relatio, render_trace
 
 logger = logging.getLogger(__name__)
 
+MAX_OUTPUT_TOKENS = 16384
+
 # Step name constants - must match exactly the ## headers in advocatus.md.
 _STEP_0_LOAD = "Step 0 - Load"
 _STEP_1_READ_SCRIPTA = "Step 1 - Read Scripta"
@@ -96,8 +98,8 @@ def _guard_not_sine_causa(state: PipelineState) -> bool:
 # -- Step 0 - Load -----------------------------------------------------------
 
 
-async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
-    """Load paper + dissect data from paperstore. Sine causa early exit."""
+async def _pure_load(state: PipelineState, ctx: StepContext, spec: StepSpec) -> None:
+    """Load paper + extract data from paperstore. Sine causa early exit."""
     assert ctx.backend is not None
     pid = ctx.pid
 
@@ -116,15 +118,6 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
             f"Paper '{pid}' has no converted markdown. "
             f"Run 'paperflow convert {pid}' first."
         ) from exc
-
-    # Fail-fast: the advocatus pipeline consumes dissect data. If the paper
-    # has never been dissected, emitting Sine causa would silently mask the
-    # real "you forgot to run paperflow dissect first" condition.
-    if not meta.dissect_path:
-        raise PaperNotDissectedError(
-            f"Paper '{pid}' has no dissect output. "
-            f"Run 'paperflow dissect {pid}' first."
-        )
 
     state.paper_id = pid
     state.paper_source = paper_md
@@ -229,11 +222,11 @@ def _prepare_read_scripta(state: PipelineState, ctx: StepContext) -> str:
         [a.model_dump(mode="json") for a in seed],
         ensure_ascii=False, default=str,
     )
-    caput = state.dissect_caput_causae or "(no caput causae from dissect)"
+    caput = state.dissect_caput_causae or "(no caput causae)"
     paper = state.paper_source or ""
     return (
-        f"## Caput Causae (from dissect)\n\n{caput}\n\n"
-        f"## Seed Articuli (from dissect, with locs)\n\n{seed_json}\n\n"
+        f"## Caput Causae\n\n{caput}\n\n"
+        f"## Seed Articuli (with locs)\n\n{seed_json}\n\n"
         f"## Paper Source\n\n{paper}\n\n"
         f"## Instructions\n\n{body}"
     )
@@ -248,7 +241,7 @@ def _extract_read_scripta(state: PipelineState, output: ScriptaOutput) -> None:
 # -- Step 2 - Survey Public Record -------------------------------------------
 
 
-async def _pure_public_record(state: PipelineState, ctx: StepContext) -> None:
+async def _pure_public_record(state: PipelineState, ctx: StepContext, spec: StepSpec) -> None:
     """Spawn parallel sub-agents for public-record search."""
     body = ctx.sections.get(_STEP_2_PUBLIC_RECORD, "")
     deep_search = ctx.tool_registry.get("deep_search")
@@ -319,7 +312,7 @@ def _public_record_domains(state: PipelineState) -> list[str]:
 # -- Step 3 - Map Stakeholders ----------------------------------------------
 
 
-async def _pure_stakeholders(state: PipelineState, ctx: StepContext) -> None:
+async def _pure_stakeholders(state: PipelineState, ctx: StepContext, spec: StepSpec) -> None:
     body = ctx.sections.get(_STEP_3_STAKEHOLDERS, "")
     deep_search = ctx.tool_registry.get("deep_search")
     web_fetch = ctx.tool_registry.get("web_fetch")
@@ -383,15 +376,15 @@ def _stakeholder_targets(state: PipelineState) -> list[str]:
 # -- Step 4 - Verify Citations -----------------------------------------------
 
 
-async def _pure_verify_citations(state: PipelineState, ctx: StepContext) -> None:
-    """Pure conversion of dissect's citation_audit into tabula_fontium."""
+async def _pure_verify_citations(state: PipelineState, ctx: StepContext, spec: StepSpec) -> None:
+    """Pure conversion of citation_audit into tabula_fontium."""
     state.tabula_fontium = list(state.dissect_citation_audit or [])
 
 
 # -- Step 5 - Examine Articuli -----------------------------------------------
 
 
-async def _pure_examine(state: PipelineState, ctx: StepContext) -> None:
+async def _pure_examine(state: PipelineState, ctx: StepContext, spec: StepSpec) -> None:
     """One LLM call per articulus, in parallel via run_task + semaphore."""
     articuli = state.articuli or []
     if not articuli:
@@ -496,7 +489,7 @@ def _dedup_charges(charges: list[CandidateCharge]) -> list[CandidateCharge]:
     Positioned after Step 6 (File Charges) and before Step 7 (Defensor)
     because the cost asymmetry favors late dedup:
 
-    - A missed dedup at the claim stage (dissect) permanently loses a
+    - A missed dedup at the claim stage permanently loses a
       claim the Advocatus can never examine. Unrecoverable.
     - A missed dedup here costs one extra Defensor sub-agent call
       (~tokens + seconds). Recoverable by deduping objections in the
@@ -522,7 +515,7 @@ def _dedup_charges(charges: list[CandidateCharge]) -> list[CandidateCharge]:
 # -- Step 7 - Defensor Cross-Examination -------------------------------------
 
 
-async def _pure_defensor(state: PipelineState, ctx: StepContext) -> None:
+async def _pure_defensor(state: PipelineState, ctx: StepContext, spec: StepSpec) -> None:
     """One sub-agent per candidate charge. Isolated context."""
     charges = state.candidate_charges or []
     if not charges:
@@ -729,7 +722,7 @@ def _extract_weigh(state: PipelineState, output: WeighCauseOutput) -> None:
 # -- Step 10 - Render Relatio ------------------------------------------------
 
 
-async def _pure_render(state: PipelineState, ctx: StepContext) -> None:
+async def _pure_render(state: PipelineState, ctx: StepContext, spec: StepSpec) -> None:
     state.relatio = render_relatio(state)
 
 
@@ -828,9 +821,9 @@ async def advocatus_paper(
     and the partial trace string is returned in place of the Relatio.
 
     Raises :class:`PromptFileError` if ``advocatus.md`` has structural
-    problems. Raises :class:`PaperNotFoundError`,
-    :class:`PaperNotConvertedError`, or :class:`PaperNotDissectedError`
-    if the prerequisite paperstore artifacts are missing.
+    problems. Raises :class:`PaperNotFoundError` or
+    :class:`PaperNotConvertedError` if the prerequisite paperstore
+    artifacts are missing.
     """
     registry = load_services()
     slots = resolve_slots(registry, service_overrides)
@@ -840,12 +833,14 @@ async def advocatus_paper(
 
     synthesis_agent = AgentBackend(
         default_backend,
+        max_tokens=MAX_OUTPUT_TOKENS,
         thinking_budget=4096,
         slot_name="default",
         service_name=default_svc,
     )
     research_agent = AgentBackend(
         tool_backend,
+        max_tokens=MAX_OUTPUT_TOKENS,
         slot_name="tool",
         service_name=tool_svc,
     )
@@ -880,12 +875,6 @@ async def advocatus_paper(
             f"Paper '{pid}' has no converted markdown. "
             f"Run 'paperflow convert {pid}' first."
         ) from exc
-    if not meta.dissect_path:
-        raise PaperNotDissectedError(
-            f"Paper '{pid}' has no dissect output. "
-            f"Run 'paperflow dissect {pid}' first."
-        )
-
     state = PipelineState()
 
     async with WebResearcher() as researcher:

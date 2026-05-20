@@ -140,21 +140,21 @@ SERVICES.toml -> load_services() -> dict[str, ModelBackend]
                                          |
                  resolve_slots() -> dict[str, ModelBackend]
                                          |
-                 AgentBackend(slot, thinking_budget=...) -> per-pipeline agents
+                 AgentBackend(slot, max_tokens=..., thinking_budget=...) -> per-pipeline agents
 ```
 
-**ModelBackend** (one class per model family) encapsulates all mechanical concerns: structured output strategy, BPE cleanup, thinking-block stripping, tool-calling workarounds. Four backends: `DeepSeekR1DistillVllm021Backend`, `Llama3Backend`, `Qwen3Backend`, `AnthropicBackend`.
+**ModelBackend** (one class per model family) encapsulates all mechanical concerns: structured output strategy, BPE cleanup, thinking-block stripping, tool-calling workarounds. Four backends: `VllmThinkingBackend`, `Llama3Backend`, `Qwen3Backend`, `AnthropicBackend`.
 
-**AgentBackend** wraps a `ModelBackend` with pipeline-level config (`thinking_budget`). Validates `tools_capable` at call time.
+**AgentBackend** wraps a `ModelBackend` with pipeline-level config (`max_tokens`, `thinking_budget`). Validates `tools_capable` at call time.
 
-**SERVICES.toml** is pure infrastructure inventory. Each `[services.NAME]` section declares an endpoint with its capabilities. API keys come from environment variables only. The `[defaults]` section maps slot names (`fast`, `default`, `tool`) to service names.
+**SERVICES.toml** is pure infrastructure inventory describing service capacity. Each `[services.NAME]` section declares an endpoint with its capabilities and `max_context_window`. API keys come from environment variables only. The `[defaults]` section maps slot names (`fast`, `default`, `tool`) to service names. Output token limits (`max_tokens`) are pipeline-level constants, not service config.
 
-Pipelines create agents by intent:
+Pipelines create agents by intent, each defining its own `MAX_OUTPUT_TOKENS`:
 
 ```python
-extraction_agent = AgentBackend(slots["fast"], thinking_budget=2048)
-synthesis_agent = AgentBackend(slots["default"], thinking_budget=4096)
-research_agent = AgentBackend(slots["tool"])
+extraction_agent = AgentBackend(slots["fast"], max_tokens=MAX_OUTPUT_TOKENS, thinking_budget=2048)
+synthesis_agent = AgentBackend(slots["default"], max_tokens=MAX_OUTPUT_TOKENS, thinking_budget=4096)
+research_agent = AgentBackend(slots["tool"], max_tokens=MAX_OUTPUT_TOKENS)
 ```
 
 CLI `--service` overrides beat `[defaults]`. Resolution order: `--service` > `[defaults]` > error.

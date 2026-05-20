@@ -100,7 +100,7 @@ def run_process_command(
         papers = [paper]
 
     if not force:
-        papers = [p for p in papers if p.status < through]
+        papers = [p for p in papers if 0 <= p.status < through]
 
     if not papers:
         print("No papers need processing.")
@@ -111,11 +111,10 @@ def run_process_command(
 
     # Pre-batch confirmation gate (plan section 3.1). For multi-paper
     # convert invocations, count how many papers would have their
-    # downstream artifacts invalidated. The trigger is the upper bound
-    # "has paper.md AND has dissect/advocatus/agora"; we can't predict
-    # whether the convert will produce different markdown bytes, so we
-    # treat all existing-markdown papers as "might change". --yes /
-    # non-TTY / single-paper / --keep-downstream all skip the prompt.
+    # downstream artifacts invalidated. We can't predict whether the
+    # convert will produce different markdown bytes, so we treat all
+    # existing-markdown papers as "might change". --yes / non-TTY /
+    # single-paper / --keep-downstream all skip the prompt.
     if (
         verb == "convert"
         and len(papers) > 1
@@ -123,7 +122,6 @@ def run_process_command(
         and not skip_prompt
         and sys.stdin.isatty()
     ):
-        dissect_n = sum(1 for p in papers if p.markdown_path and p.dissect_path)
         advocatus_n = sum(
             1 for p in papers if p.markdown_path and p.advocatus_path
         )
@@ -131,7 +129,7 @@ def run_process_command(
         affected = sum(
             1 for p in papers
             if p.markdown_path and (
-                p.dissect_path or p.advocatus_path or p.agora_path
+                p.advocatus_path or p.agora_path
             )
         )
         if affected > 0:
@@ -139,8 +137,6 @@ def run_process_command(
                 f"convert: this batch will invalidate downstream artifacts "
                 f"for {affected} paper(s)"
             )
-            if dissect_n:
-                print(f"  - dissect outputs:   {dissect_n} papers")
             if advocatus_n:
                 print(f"  - advocatus outputs: {advocatus_n} papers")
             if agora_n:
@@ -155,6 +151,7 @@ def run_process_command(
                 return 0
 
     progress_ctx, on_progress = make_progress_handler(verb.capitalize())
+    show_outer = len(papers) > 1
 
     from paperstore.progress import ProgressEvent
 
@@ -167,7 +164,7 @@ def run_process_command(
     convert_reports: list = []
     with progress_ctx:
         for i, paper in enumerate(papers):
-            if on_progress:
+            if on_progress and show_outer:
                 on_progress(ProgressEvent(
                     step=i, total=total,
                     name=f"{paper.paper_id} - {verb}",
@@ -187,7 +184,7 @@ def run_process_command(
                         provider_override=provider_override,
                         force=force,
                         keep_downstream=keep_downstream,
-                        on_progress=on_progress,
+                        on_progress=None if show_outer else on_progress,
                     )
                 )
                 if last_result is not None and last_result.convert_report is not None:
@@ -207,7 +204,7 @@ def run_process_command(
                 print(msg, file=sys.stderr)
                 failed += 1
 
-    if on_progress:
+    if on_progress and show_outer:
         on_progress(ProgressEvent(
             step=total, total=total, name="done", pct=1.0,
         ))
@@ -239,8 +236,7 @@ def run_process_command(
         for pid, r in invalidated:
             print(f"  {pid} ({', '.join(r.downstream_cleared)})")
         print(
-            "  re-run `paperflow dissect` / `paperflow advocatus` / "
-            "`paperflow agora` to refresh."
+            "  re-run `paperflow advocatus` / `paperflow agora` to refresh."
         )
 
     ok = total - failed

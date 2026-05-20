@@ -17,7 +17,6 @@ from paperstore import SqliteBackend, SourceLoc
 from advocatus import advocatus_paper
 from pipeline.errors import (
     PaperNotConvertedError,
-    PaperNotDissectedError,
     PaperNotFoundError,
 )
 from advocatus.models import PipelineState
@@ -64,16 +63,6 @@ def test_advocatus_paper_not_converted_raises(tmp_path: Path):
     backend = SqliteBackend(tmp_path)
     backend.upsert_year("2026", [{"paper_id": "P1234R0"}])
     with pytest.raises(PaperNotConvertedError):
-        asyncio.run(advocatus_paper("P1234R0", backend))
-
-
-def test_advocatus_paper_not_dissected_raises(tmp_path: Path):
-    """Paper has converted markdown but has not been dissected."""
-    backend = SqliteBackend(tmp_path)
-    backend.upsert_year("2026", [{"paper_id": "P1234R0"}])
-    backend.write_paper_md("P1234R0", "# A paper\n\nBody.")
-    # No dissect_path set; advocatus must fail-fast, not emit Sine causa.
-    with pytest.raises(PaperNotDissectedError):
         asyncio.run(advocatus_paper("P1234R0", backend))
 
 
@@ -138,7 +127,7 @@ def test_pure_load_reads_all_paperrow_fields_we_care_about(tmp_path: Path):
     field is actually ``target_group``).
     """
     from advocatus.models import PipelineState
-    from pipeline import StepContext
+    from pipeline import StepContext, StepHooks, StepMeta, StepSpec
     from advocatus.pipeline import _pure_load
 
     backend = SqliteBackend(tmp_path)
@@ -149,20 +138,21 @@ def test_pure_load_reads_all_paperrow_fields_we_care_about(tmp_path: Path):
         "target_group": "LEWG",
     }])
     backend.write_paper_md("P1234R0", "# Test\n\nBody.")
-    # Make dissect_path non-empty so the fail-fast check passes.
-    backend.write_dissect_md("P1234R0", "# Dissect\n\nContent.")
 
     state = PipelineState()
     ctx = StepContext(sections={}, backend=backend, pid="P1234R0")
+    spec = StepSpec(
+        meta=StepMeta(name="0. Load", number=0, model_slot="none", execution="main"),
+        hooks=StepHooks(custom=_pure_load),
+    )
 
-    asyncio.run(_pure_load(state, ctx))
+    asyncio.run(_pure_load(state, ctx, spec))
 
     assert state.paper_id == "P1234R0"
     assert state.paper_title == "Test Paper"
     assert state.paper_audience == "LEWG"
     assert state.paper_authors == ["Alice", "Bob"]
     assert state.paper_source == "# Test\n\nBody."
-    # No dissect rows yet → empty articuli seed → seal=sine_causa
     assert state.seal == "sine_causa"
 
 
@@ -191,7 +181,7 @@ def test_dispatch_stop_after_halts_after_step_n():
             execution="main",
         )
 
-        async def _pure(state, ctx):
+        async def _pure(state, ctx, spec):
             visited.append(n)
 
         return StepSpec(meta=meta, hooks=StepHooks(custom=_pure))

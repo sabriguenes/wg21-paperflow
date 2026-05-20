@@ -26,6 +26,9 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+
+import httpx
+
 from paperstore import parse_authors_raw
 from paperstore.backend import PaperRow, StorageBackend
 from paperstore.errors import (
@@ -237,7 +240,12 @@ async def run_download(
                         "suffix": suffix,
                         "status": "ok",
                     }
-                # Batch robustness: one bad paper must not crash the run
+                except httpx.HTTPStatusError as exc:
+                    logger.error(
+                        "%s: HTTP %d %s", pid,
+                        exc.response.status_code, exc.response.reason_phrase,
+                    )
+                    return {"paper_id": pid, "status": "error", "error": str(exc)}
                 except Exception as exc:
                     logger.exception("Download failed for %s", pid)
                     return {"paper_id": pid, "status": "error", "error": str(exc)}

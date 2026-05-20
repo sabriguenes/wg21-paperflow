@@ -12,7 +12,7 @@ Model-specific concerns are isolated in backend classes. Each backend encapsulat
 
 | Backend class | Registry key | Capabilities | Workarounds |
 |---|---|---|---|
-| `DeepSeekR1DistillVllm021Backend` | `deepseek_r1_distill_vllm021` | thinking, no tools | `<think>` strip, BPE cleanup, schema-in-prompt, JSON extract + retry |
+| `VllmThinkingBackend` | `vllm_thinking` | thinking, no tools | `<think>` strip, BPE cleanup, schema-in-prompt, JSON extract + retry |
 | `Llama3Backend` | `llama3` | tools, no thinking | pydantic-ai Agent with `ModelProfile(supports_json_schema_output=True)`, `llama3_json` parser |
 | `Qwen3Backend` | `qwen3` | thinking toggle, tools | `hermes` parser, `enable_thinking` toggle, `unused1`/`unused2` stability fields |
 | `AnthropicBackend` | `anthropic` | thinking, tools | pydantic-ai Agent via native API |
@@ -98,14 +98,26 @@ Eagle3 (`Draft Token Count > 0`, `Draft Model: ...-eagle3-...`) is acceptable fo
 
 Infrastructure is declared in `SERVICES.toml` at the repo root. Each `[services.NAME]` section maps to a `ModelBackend` instance via the `backend` field. API keys come from environment variables (the `api_key_env` field names the env var). The `[defaults]` section maps slot names to service names. CLI `--service` overrides beat defaults.
 
+## Token-to-character ratios
+
+Measured on four WG21 papers (P4003R3, P4172R1, P2300R10, P2900R14) via `study/token-ratio/`. Each service in `SERVICES.toml` carries a `chars_per_token` field used by `pipeline.tokens.est_tokens()` for context budget math.
+
+| Model | Measured avg | Conservative (in config) | Stdev (256-tok windows) |
+|---|---|---|---|
+| Claude Opus 4.6 | 3.51 | 3.25 | n/a (aggregate only) |
+| Qwen3-32B / 235B | 4.05 | 4.0 | 0.70 |
+| DeepSeek-R1-Distill-70B | 4.20 | 4.0 | 0.36 |
+
+Code-heavy windows drop to ~2.5 chars/token; prose-heavy sections reach ~5.5. The conservative values ensure context budgets never overflow. `token_multiplier` (words-to-tokens, used by dissect batching) is a separate field.
+
 ## Workaround inventory
 
 | Workaround | Backend | Retire when |
 |---|---|---|
-| BPE `Ġ`/`Ċ` cleanup | `DeepSeekR1DistillVllm021Backend` | HF Transformers [#45920](https://github.com/huggingface/transformers/issues/45920) fixed |
-| `<think>` block stripping | `DeepSeekR1DistillVllm021Backend` | vLLM unified parser [#32713](https://github.com/vllm-project/vllm/issues/32713) ships |
-| Schema-in-prompt JSON | `DeepSeekR1DistillVllm021Backend` | vLLM unified parser OR pydantic-ai VLLMProvider [#3515](https://github.com/pydantic/pydantic-ai/issues/3515) |
-| Raw JSON + retry | `DeepSeekR1DistillVllm021Backend` | Same as above |
+| BPE `Ġ`/`Ċ` cleanup | `VllmThinkingBackend` | HF Transformers [#45920](https://github.com/huggingface/transformers/issues/45920) fixed |
+| `<think>` block stripping | `VllmThinkingBackend` | vLLM unified parser [#32713](https://github.com/vllm-project/vllm/issues/32713) ships |
+| Schema-in-prompt JSON | `VllmThinkingBackend` | vLLM unified parser OR pydantic-ai VLLMProvider [#3515](https://github.com/pydantic/pydantic-ai/issues/3515) |
+| Raw JSON + retry | `VllmThinkingBackend` | Same as above |
 | `unused1`/`unused2` on RawClaim | `Qwen3Backend` | vLLM [#39677](https://github.com/vllm-project/vllm/issues/39677) fixed |
 | `extra_body={"top_k": 1}` | Per-backend | N/A (provider-specific) |
 | `parallel_tool_calls=False` | Per-backend | N/A |

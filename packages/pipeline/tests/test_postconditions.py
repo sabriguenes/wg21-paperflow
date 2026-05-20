@@ -80,13 +80,6 @@ def test_postcondition_convert_false_when_md_path_set_but_file_deleted(
     assert not postcondition_satisfied(backend, staged_paper, STAGES["convert"])
 
 
-def test_postcondition_dissect_true_when_dissect_md_exists(
-    backend: SqliteBackend, staged_paper: str
-):
-    backend.write_dissect_md(staged_paper, "# Dissect\n")
-    assert postcondition_satisfied(backend, staged_paper, STAGES["dissect"])
-
-
 def test_postcondition_herald_and_ready_are_no_op_true(
     backend: SqliteBackend, staged_paper: str
 ):
@@ -99,8 +92,7 @@ def test_truthful_status_no_rewind_when_all_present(
 ):
     backend.put_source(staged_paper, b"PDF", suffix=".pdf")
     backend.write_paper_md(staged_paper, "# md\n")
-    backend.write_dissect_md(staged_paper, "# dissect\n")
-    assert truthful_status(backend, staged_paper, claimed=3) == 3
+    assert truthful_status(backend, staged_paper, claimed=2) == 2
 
 
 def test_truthful_status_floors_to_missing_gap(
@@ -110,8 +102,8 @@ def test_truthful_status_floors_to_missing_gap(
     # convert artifact path set, file deleted.
     md = backend.write_paper_md(staged_paper, "# md\n")
     Path(md).unlink()
-    # claim dissect-done despite missing markdown
-    assert truthful_status(backend, staged_paper, claimed=3) == 1
+    # claim convert-done despite missing markdown
+    assert truthful_status(backend, staged_paper, claimed=2) == 1
 
 
 def test_truthful_status_floors_to_zero_when_nothing_staged(
@@ -134,6 +126,4 @@ def test_truthful_status_caps_at_ready(
     # walk past STAGES["ready"].
     backend.put_source(staged_paper, b"PDF", suffix=".pdf")
     backend.write_paper_md(staged_paper, "# md\n")
-    backend.write_dissect_md(staged_paper, "# d\n")
-    # Stages 3..6 have no artifacts; the FIRST missing is advocatus (3).
     assert truthful_status(backend, staged_paper, claimed=999) == STAGES["advocatus"]

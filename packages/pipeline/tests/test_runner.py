@@ -69,7 +69,7 @@ def test_compose_system_prompt_replace():
 
 
 def test_step_failure_propagates_as_step_error():
-    async def boom(state, ctx):
+    async def boom(state, ctx, spec):
         raise RuntimeError("boom")
 
     ctx = StepContext(sections={}, agents={})
@@ -80,7 +80,7 @@ def test_step_failure_propagates_as_step_error():
 
 
 def test_failed_step_does_not_call_on_step_complete():
-    async def boom(state, ctx):
+    async def boom(state, ctx, spec):
         raise RuntimeError("boom")
 
     completed = []
@@ -101,7 +101,7 @@ def test_failed_step_does_not_call_on_step_complete():
 
 
 def test_step_failure_flushes_trace(tmp_path):
-    async def boom(state, ctx):
+    async def boom(state, ctx, spec):
         state["seen"] = True
         raise RuntimeError("boom")
 

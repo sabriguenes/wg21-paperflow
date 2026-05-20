@@ -212,9 +212,8 @@ def render_relatio(state: PipelineState) -> str:
 def render_debug_md(result: Any, step_name: str) -> str:
     """Render an agent run result as a markdown debug section.
 
-    Mirrors dissect's render_debug_md: walks the request/response message
-    pairs and emits a self-contained markdown block. Safe to call on any
-    pydantic_ai ``AgentRunResult``.
+    Walks the request/response message pairs and emits a self-contained
+    markdown block. Safe to call on any pydantic_ai ``AgentRunResult``.
     """
     parts: list[str] = [f"# {step_name}\n"]
     for msg in result.all_messages():
@@ -273,13 +272,13 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
         rhetoric = state.dissect_rhetoric or []
         cit_audit = state.dissect_citation_audit or []
         ext_evidence = state.dissect_external_evidence or []
-        lines.append(f"- {len(articuli_seed)} dissect claims loaded as articuli seed")
-        lines.append(f"- {len(evidence)} dissect evidence items")
-        lines.append(f"- {len(rhetoric)} dissect rhetoric items")
+        lines.append(f"- {len(articuli_seed)} claims loaded as articuli seed")
+        lines.append(f"- {len(evidence)} evidence items")
+        lines.append(f"- {len(rhetoric)} rhetoric items")
         lines.append(f"- {len(cit_audit)} citation audit entries")
         lines.append(f"- {len(ext_evidence)} external evidence items")
         if state.dissect_caput_causae:
-            lines.append(f"- Caput causae (from dissect): {sanitize_md(state.dissect_caput_causae)}")
+            lines.append(f"- Caput causae: {sanitize_md(state.dissect_caput_causae)}")
         lines.append("")
 
     if stop_step >= 1:

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -154,13 +155,29 @@ def load_services(path: Path | None = None) -> ServiceRegistry:
             )
         backend_cls = BACKEND_REGISTRY[backend_key]
 
-        # (2) Shape check: backends that read their credential
-        # directly from the environment (rather than via the
-        # ``api_key`` kwarg) declare the only acceptable env var
-        # name. Reject mismatches before constructing the backend so
-        # the framework's error always wins over any backend
-        # ``__init__`` failure.
+        # (2) Resolve the API key. Three modes:
+        #
+        #   api_key = "sk-literal"       -> literal value
+        #   api_key = "$ENV_VAR_NAME"    -> expand env var
+        #   api_key_env = "ENV_VAR_NAME" -> legacy, same as "$ENV_VAR_NAME"
+        #
+        # ``api_key`` takes precedence over ``api_key_env``.
+        raw_api_key = svc.get("api_key", "")
         api_key_env = svc.get("api_key_env", "")
+
+        if raw_api_key and raw_api_key.startswith("$"):
+            api_key_env = raw_api_key[1:]
+            api_key = os.environ.get(api_key_env, "")
+        elif raw_api_key:
+            api_key = raw_api_key
+        elif api_key_env:
+            api_key = os.environ.get(api_key_env, "")
+        else:
+            api_key = ""
+
+        # Shape check: backends that read their credential directly
+        # from the environment declare the only acceptable env var
+        # name. Reject mismatches before constructing the backend.
         required = backend_cls.required_api_key_env
         if required is not None and api_key_env != required:
             raise ValueError(
@@ -170,17 +187,21 @@ def load_services(path: Path | None = None) -> ServiceRegistry:
                 f"directly; any other name will not be honored."
             )
 
-        # (3) Read the env var. Missing values are not an error here
-        # -- ``resolve_slots`` validates them per bound slot.
-        api_key = os.environ.get(api_key_env, "") if api_key_env else ""
-
-        # (4) Construct.
+        # (4) Construct. Known keys are extracted explicitly; the
+        # rest flow through **kwargs so backends can declare their
+        # own config (e.g. stream = true for vLLM behind Cloudflare).
+        _KNOWN_KEYS = {"backend", "api_key", "api_key_env"}
         init_kwargs: dict[str, Any] = {
             "base_url": svc.get("base_url", ""),
             "api_key": api_key,
             "model": svc.get("model", ""),
-            "max_tokens": svc.get("max_tokens", 16384),
+            "max_context_window": svc.get("max_context_window", 131072),
+            "chars_per_token": svc.get("chars_per_token", 0),
+            "token_multiplier": svc.get("token_multiplier", 0),
         }
+        for k, v in svc.items():
+            if k not in init_kwargs and k not in _KNOWN_KEYS:
+                init_kwargs[k] = v
         services[name] = backend_cls(**init_kwargs)
 
         # (5) Record.
@@ -344,6 +365,58 @@ def load_classifiers(
     return classifiers, defaults
 
 
+def load_embedders(
+    path: Path | None = None,
+    *,
+    provider: TransformerProvider | None = None,
+) -> tuple[dict[str, "EmbeddingBackend"], dict[str, str]]:
+    """Parse SERVICES.toml ``[embedders.*]``, build EmbeddingBackend instances.
+
+    Parallel to :func:`load_classifiers`. Returns ``(embedders, defaults)``
+    where ``embedders`` maps names to
+    :class:`pipeline.transformer_backend.EmbeddingBackend` instances and
+    ``defaults`` maps slot names to embedder names from
+    ``[embedder_defaults]``.
+
+    Missing ``[embedders.*]`` and ``[embedder_defaults]`` sections are not
+    an error - the returned dicts are empty in that case.
+    """
+    from pipeline.transformer_backend import EmbeddingBackend
+
+    if path is None:
+        path = _find_services_toml()
+    if path is None or not path.is_file():
+        raise FileNotFoundError(
+            f"{_SERVICES_FILENAME} not found. Create it at the repo root "
+            f"with at least one [services.NAME] section."
+        )
+
+    with open(path, "rb") as f:
+        config = tomllib.load(f)
+
+    embedders_config = config.get("embedders", {})
+    defaults = config.get("embedder_defaults", {})
+
+    if provider is None:
+        provider = default_auto_provider()
+
+    embedders: dict[str, EmbeddingBackend] = {}
+    for name, cfg in embedders_config.items():
+        model_id = cfg.get("model", "")
+        if not model_id:
+            raise ValueError(
+                f"Embedder '{name}' is missing required 'model' field."
+            )
+        embedders[name] = EmbeddingBackend(model_id, provider)
+        logger.info(
+            "Embedder '%s': model=%s  provider=%s (device=%s dtype=%s batch=%d)",
+            name, model_id,
+            provider.name, provider.device, provider.dtype, provider.batch_size,
+        )
+
+    return embedders, defaults
+
+
 def load_transformer_providers(
     path: Path | None = None,
 ) -> tuple[dict[str, TransformerProvider], dict[str, str]]:
@@ -457,3 +530,39 @@ def resolve_classifier_slots(
         slots[slot_name] = classifiers[classifier_name]
 
     return slots
+
+
+_MD_BOLD_ITEM_RE = re.compile(r"^\s*-\s+\*\*(\w+):\*\*\s*(.+)", re.MULTILINE)
+
+
+def parse_service_overrides(body: str) -> dict[str, str]:
+    """Parse a ``## Services`` markdown section into slot overrides.
+
+    Accepts lines like ``- **default:** b300-qwen3-235b`` and returns
+    ``{"default": "b300-qwen3-235b"}``. Used by pipeline entry
+    functions to read per-pipeline service preferences from the
+    prompt file. Precedence: CLI ``--service`` > prompt-file
+    ``## Services`` > SERVICES.toml ``[defaults]``.
+    """
+    overrides: dict[str, str] = {}
+    for m in _MD_BOLD_ITEM_RE.finditer(body):
+        slot = m.group(1).strip().lower()
+        service = m.group(2).strip()
+        if service:
+            overrides[slot] = service
+    return overrides
+
+
+def parse_pipeline_config(body: str) -> dict[str, str]:
+    """Parse a ``## Config`` markdown section into a flat config dict.
+
+    Same ``- **key:** value`` format as Services. Returns
+    ``{"concurrency": "2", ...}``. Keys are lowercased.
+    """
+    config: dict[str, str] = {}
+    for m in _MD_BOLD_ITEM_RE.finditer(body):
+        key = m.group(1).strip().lower()
+        value = m.group(2).strip()
+        if value:
+            config[key] = value
+    return config

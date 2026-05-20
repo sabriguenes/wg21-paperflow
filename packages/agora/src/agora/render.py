@@ -106,7 +106,7 @@ def render_trace(state: PipelineState, stop_step: int) -> str:
         cit_audit = state.dissect_citation_audit or []
         ext = state.dissect_external_citations or []
         lines.append(
-            f"- dissect: {len(claims)} claims, {len(evidence)} evidence, "
+            f"- extract: {len(claims)} claims, {len(evidence)} evidence, "
             f"{len(markers)} markers, {len(cit_audit)} citation-audits, "
             f"{len(ext)} external citations"
         )

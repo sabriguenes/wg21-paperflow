@@ -33,8 +33,6 @@ def test_advocatus_help_exits_zero():
         f"`paperflow advocatus --help` exited {result.returncode}\n"
         f"stderr: {result.stderr}"
     )
-    # The two flags exposed for advocatus are inherited from the dissect
-    # shape: --debug and --trace [N].
     assert "--debug" in result.stdout
     assert "--trace" in result.stdout
 

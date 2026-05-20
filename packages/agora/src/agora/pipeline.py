@@ -38,6 +38,7 @@ from pipeline import (
     AgentBackend,
     StepContext,
     StepHooks,
+    StepSpec,
     WebResearcher,
     build_pipeline,
     dispatch,
@@ -48,7 +49,6 @@ from pipeline import (
 )
 from pipeline.errors import (
     PaperNotConvertedError,
-    PaperNotDissectedError,
     PaperNotFoundError,
     PromptFileError,
     StepError,
@@ -69,6 +69,8 @@ from agora.models import (
 from agora.render import render_trace
 
 logger = logging.getLogger(__name__)
+
+MAX_OUTPUT_TOKENS = 16384
 
 # Step name constants - must match exactly the ## headers in agora.md.
 _STEP_0_LOAD = "Step 0 - Load"
@@ -130,8 +132,8 @@ def _guard_encounter_count_positive(state: PipelineState) -> bool:
 # -- Step 0 - Load -----------------------------------------------------------
 
 
-async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
-    """Load paper + dissect data from paperstore, route subreddit, detect case."""
+async def _pure_load(state: PipelineState, ctx: StepContext, spec: StepSpec) -> None:
+    """Load paper + extract data from paperstore, route subreddit, detect case."""
     assert ctx.backend is not None
     pid = ctx.pid
 
@@ -151,12 +153,6 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
             f"Run 'paperflow convert {pid}' first."
         ) from exc
 
-    if not meta.dissect_path:
-        raise PaperNotDissectedError(
-            f"Paper '{pid}' has no dissect output. "
-            f"Run 'paperflow dissect {pid}' first."
-        )
-
     state.paper_id = pid
     state.paper_source = paper_md
     state.paper_title = meta.title or ""
@@ -169,7 +165,7 @@ async def _pure_load(state: PipelineState, ctx: StepContext) -> None:
     state.paper_revision = revision
     state.subreddit = _route_subreddit(state.paper_audience)
 
-    # Load every dissect artifact as raw row dicts; downstream steps
+    # Load every extract artifact as raw row dicts; downstream steps
     # pick the fields they need without rebuilding typed models here.
     claim_rows = await asyncio.to_thread(ctx.backend.get_claims, pid)
     evidence_rows = await asyncio.to_thread(ctx.backend.get_evidence, pid)
@@ -261,13 +257,13 @@ def _prepare_smell_test(state: PipelineState, ctx: StepContext) -> str:
         f"- authors: {', '.join(state.paper_authors)}\n"
         f"- audience: {state.paper_audience}\n"
         f"- date: {state.paper_date}\n\n"
-        f"## Caput Causae (from dissect)\n\n"
+        f"## Caput Causae\n\n"
         f"{state.dissect_caput_causae or '(none recorded)'}\n\n"
-        f"## Dissect Claims\n\n"
+        f"## Claims\n\n"
         f"{_json(state.dissect_claims)}\n\n"
-        f"## Dissect Evidence\n\n"
+        f"## Evidence\n\n"
         f"{_json(state.dissect_evidence)}\n\n"
-        f"## Dissect Markers\n\n"
+        f"## Markers\n\n"
         f"{_json(state.dissect_markers)}\n\n"
         f"## Paper Source\n\n{state.paper_source or ''}\n\n"
         f"## Instructions\n\n{body}"
@@ -317,7 +313,7 @@ _RESEARCH_AGENT_PROMPTS = {
 }
 
 
-async def _pure_research(state: PipelineState, ctx: StepContext) -> None:
+async def _pure_research(state: PipelineState, ctx: StepContext, spec: StepSpec) -> None:
     """Dispatch three sub-agents in parallel and gather a ResearchSummary."""
     body = ctx.sections.get(_STEP_2_RESEARCH, "")
     deep_search = ctx.tool_registry.get("deep_search")
@@ -536,7 +532,7 @@ def _extract_encounters(state: PipelineState, output: EncountersOutput) -> None:
 # -- Step 7 - Serialize ------------------------------------------------------
 
 
-async def _pure_serialize(state: PipelineState, ctx: StepContext) -> None:
+async def _pure_serialize(state: PipelineState, ctx: StepContext, spec: StepSpec) -> None:
     """Assemble the final Thread, validate, write to paperstore."""
     assert ctx.backend is not None
     assert state.subreddit is not None
@@ -725,9 +721,9 @@ async def agora_paper(
     ``service_overrides`` to bind slots to specific services.
 
     Raises :class:`PromptFileError` if ``agora.md`` has structural
-    problems. Raises :class:`PaperNotFoundError`,
-    :class:`PaperNotConvertedError`, or :class:`PaperNotDissectedError`
-    if the prerequisite paperstore artifacts are missing.
+    problems. Raises :class:`PaperNotFoundError` or
+    :class:`PaperNotConvertedError` if the prerequisite paperstore
+    artifacts are missing.
     """
     registry = load_services()
     slots = resolve_slots(registry, service_overrides)
@@ -737,12 +733,14 @@ async def agora_paper(
 
     synthesis_agent = AgentBackend(
         default_backend,
+        max_tokens=MAX_OUTPUT_TOKENS,
         thinking_budget=4096,
         slot_name="default",
         service_name=default_svc,
     )
     research_agent = AgentBackend(
         tool_backend,
+        max_tokens=MAX_OUTPUT_TOKENS,
         slot_name="tool",
         service_name=tool_svc,
     )
@@ -777,12 +775,6 @@ async def agora_paper(
             f"Paper '{pid}' has no converted markdown. "
             f"Run 'paperflow convert {pid}' first."
         ) from exc
-    if not meta.dissect_path:
-        raise PaperNotDissectedError(
-            f"Paper '{pid}' has no dissect output. "
-            f"Run 'paperflow dissect {pid}' first."
-        )
-
     state = PipelineState()
 
     if stop_after is None:

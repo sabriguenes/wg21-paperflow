@@ -31,15 +31,15 @@ SKIP_HYPO = "A heading, list marker, or page metadata."
 
 def main() -> None:
     pid = "p4003r3"
-    sentences = json.loads(
-        Path(f"study/ensemble/data/{pid}_scores.json")
-        .read_text(encoding="utf-8")
-    )
+    data_dir = Path(__file__).parent / "data"
+    sentences_path = data_dir / f"{pid}_sentences.json"
+    if not sentences_path.is_file():
+        sentences_path = data_dir / f"{pid}_scores.json"
+    sentences = json.loads(sentences_path.read_text(encoding="utf-8"))
     gold = {
         r["sid"]: r["gold"]
         for r in json.loads(
-            Path(f"study/ensemble/data/{pid}_gold.json")
-            .read_text(encoding="utf-8")
+            (data_dir / f"{pid}_gold.json").read_text(encoding="utf-8")
         )["labels"]
     }
     texts = [s["text"] for s in sentences]

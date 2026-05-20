@@ -57,10 +57,10 @@ thread is referenced and the submission body calls out the delta."""
 class TechnicalAnchor(BaseModel, frozen=True):
     """A load-bearing claim, an internally-contested claim, or a critical gap.
 
-    Derived from dissect output in Step 1 (Smell Test). Every signal
-    slot must address at least one anchor; every anchor must be
-    addressed by at least one slot. The ``loc`` ties the anchor back
-    to the exact line of the paper that prompted it.
+    Derived from paperstore extract tables in Step 1 (Smell Test).
+    Every signal slot must address at least one anchor; every anchor
+    must be addressed by at least one slot. The ``loc`` ties the
+    anchor back to the exact line of the paper that prompted it.
     """
 
     id: str = Field(description="Stable id within the thread, e.g. ``a01``.")
@@ -116,7 +116,7 @@ class ResearchSummary(BaseModel, frozen=True):
 
 
 class DesignTension(BaseModel, frozen=True):
-    """A genuine disagreement seeded by dissect's rhetorical markers.
+    """A genuine disagreement seeded by stored rhetorical markers.
 
     Each design tension is a candidate for an Encounter in Step 6.
     Step 3 decides how many encounters this thread will run; Step 5
@@ -373,7 +373,7 @@ class PipelineState(BaseModel):
     validates per-step LLM outputs separately.
     """
 
-    # -- Step 0 (Load): paper identity + dissect data ------------------------
+    # -- Step 0 (Load): paper identity + paperstore extract data --------------
 
     paper_id: str = ""
     paper_source: Optional[str] = None
@@ -388,6 +388,8 @@ class PipelineState(BaseModel):
     prior_revision: Optional[str] = None
     revision_case: RevisionCase = "A"
 
+    # Field names retain "dissect_" prefix for backward compatibility with
+    # pipeline.py and serialized state; data comes from paperstore extract tables.
     dissect_claims: Optional[list[dict]] = None
     dissect_evidence: Optional[list[dict]] = None
     dissect_markers: Optional[list[dict]] = None

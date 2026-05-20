@@ -8,9 +8,9 @@ LLM-driven thread planning pipeline (the Mod). Project-wide rules live in the ro
 
 ## What this pipeline does
 
-Plans a thread for a dissected WG21 paper. Researches the paper's public reception, calibrates discussion heat and intellectual interest, and lays out every reply slot with a brief describing what that reply must accomplish.
+Plans a thread for a WG21 paper. Researches the paper's public reception, calibrates discussion heat and intellectual interest, and lays out every reply slot with a brief describing what that reply must accomplish.
 
-It does not generate reply text, characters, votes, or furniture. Those belong to a future generation phase in this same pipeline. The pipeline reads dissect output from paperstore and produces a `Thread` whose generation-phase fields (content, character_username, score, time_label, awards, etc.) are left as `None`. The brief on each `Reply` is a permanent audit trail: "this reply addresses anchor X from the Y domain lens."
+It does not generate reply text, characters, votes, or furniture. Those belong to a future generation phase in this same pipeline. The pipeline reads extract-table data from paperstore and produces a `Thread` whose generation-phase fields (content, character_username, score, time_label, awards, etc.) are left as `None`. The brief on each `Reply` is a permanent audit trail: "this reply addresses anchor X from the Y domain lens."
 
 `the-mod.md` is the creative reference: heat/interest tiers, Tables A-D, the noise palette, encounter rules, content rules, ad palette, mod roster. It ships as package data and is injected as context into the LLM calls that need it.
 

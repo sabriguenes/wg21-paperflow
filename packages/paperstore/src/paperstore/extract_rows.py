@@ -106,3 +106,169 @@ class RhetoricRow:
     marker_type: str
     target: str
     intensity: str
+
+
+@dataclass(frozen=True)
+class CandidateRow:
+    paper_id: str
+    rule: str
+    label: str
+    detail: str = ""
+    data: str = "{}"
+
+
+@dataclass(frozen=True)
+class FindingRow:
+    paper_id: str
+    id: str
+    lens: str
+    severity: str
+    title: str
+    quoted_text: str = ""
+    source_line: int = 0
+    explanation: str = ""
+
+
+@dataclass(frozen=True)
+class AssayClaimRow:
+    paper_id: str
+    uid: int
+    loc_line: int
+    quote: str
+    section: str
+    kind: str = "normative"
+    load_bearing: bool = False
+
+
+@dataclass(frozen=True)
+class AssayEvidenceRow:
+    paper_id: str
+    uid: int
+    loc_line: int
+    quote: str
+    section: str
+    subtype: str = ""
+    quality_tier: str = ""
+    supports: str = "[]"
+
+
+@dataclass(frozen=True)
+class AssayConcessionRow:
+    paper_id: str
+    uid: int
+    loc_line: int
+    quote: str
+    section: str = ""
+    subtype: str = ""
+
+
+@dataclass(frozen=True)
+class AssayBreadcrumbRow:
+    paper_id: str
+    uid: int
+    chunk_index: int
+    loc_line: int
+    gap: str
+    why_important: str = ""
+    primary_lens: str = ""
+    secondary_lens: str = ""
+    severity: str = "minor"
+
+
+@dataclass(frozen=True)
+class AssayThesisRow:
+    paper_id: str
+    central_claim: str
+    problem_statement: str = ""
+    scope_boundary: str = ""
+    ask_calibration: str = ""
+
+
+@dataclass(frozen=True)
+class AssayFindingRow:
+    paper_id: str
+    uid: int
+    title: str
+    lens: str
+    severity: str
+    quote: str = ""
+    loc_line: int = 0
+    explanation: str = ""
+    test: str = ""
+    survived: bool = True
+    major: bool = False
+    challenge: str = ""
+    reasoning: str = ""
+
+
+@dataclass(frozen=True)
+class AssayAskRow:
+    """A persisted assay ask entry."""
+    paper_id: str
+    uid: int
+    target: str
+    quote: str
+    type: str
+
+
+@dataclass(frozen=True)
+class AssayReferenceRow:
+    """A persisted assay reference registry entry."""
+    paper_id: str
+    uid: int
+    ref_label: str
+    relationship: str = "citation"
+    url: str = ""
+    mention_count: int = 0
+
+
+@dataclass(frozen=True)
+class AssayStrengthRow:
+    """A persisted assay strength entry."""
+    paper_id: str
+    uid: int
+    title: str
+    quote: str = ""
+    loc_line: int = 0
+    explanation: str = ""
+
+
+@dataclass(frozen=True)
+class AssayChecklistRow:
+    """A persisted assay SD-4 rationale checklist item."""
+    paper_id: str
+    item_id: str
+    name: str
+    passed: bool = False
+    location: str = ""
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class AssayCompoundRow:
+    """A persisted assay compound dynamic entry."""
+    paper_id: str
+    uid: int
+    name: str
+    constituents: list = None
+    mechanism: str = ""
+    cross_lens: bool = False
+    emergent_risk: str = ""
+
+    def __post_init__(self):
+        if self.constituents is None:
+            object.__setattr__(self, 'constituents', [])
+
+
+@dataclass(frozen=True)
+class AssaySynthesisRow:
+    """Persisted assay synthesis (verdict and counts)."""
+    paper_id: str
+    verdict: str
+    verdict_confidence: str = "Medium"
+    thesis_statement: str = ""
+    thesis_survives: bool = False
+    central_thesis: str = ""
+    dominant_dynamic: str = ""
+    critical_count: int = 0
+    significant_count: int = 0

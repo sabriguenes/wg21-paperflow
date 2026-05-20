@@ -9,9 +9,9 @@
 
 Provides the core loop (``dispatch``), the framework-managed agent
 caller (``run_agent``), shared context (``StepContext``), and prompt
-file loading (``load_sections``). Each downstream pipeline (dissect,
-advocatus, agora) imports these and supplies its own hooks, state,
-and entry function.
+file loading (``load_sections``). Each downstream pipeline (advocatus,
+agora) imports these and supplies its own hooks, state, and entry
+function.
 
 Model selection, structured output strategy, and provider-specific
 workarounds live in ``model_backends.py``. Service configuration
@@ -21,6 +21,7 @@ module contains only structural orchestration.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import importlib.resources
 import logging
@@ -77,8 +78,8 @@ class StepContext:
     agents: dict[str, AgentBackend] = field(default_factory=dict)
     # Local classifier slots. Parallel to ``agents``; populated by the
     # orchestrator from ``resolve_classifier_slots``. Read by custom
-    # steps that need a deterministic, non-LLM classifier (e.g. dissect
-    # Step 1 Tag Sentences via ``ctx.classifiers["selector"]``).
+    # steps that need a deterministic, non-LLM classifier
+    # (e.g. ``ctx.classifiers["selector"]``).
     classifiers: dict[str, Any] = field(default_factory=dict)
     researcher: Any = None
     backend: Any = None
@@ -88,18 +89,67 @@ class StepContext:
     tool_registry: dict[str, Callable[..., Any]] = field(default_factory=dict)
     step_metrics: list[StepMetrics] = field(default_factory=list)
     tool_counts: dict[str, int] = field(default_factory=dict)
+    on_progress: ProgressCallback | None = None
+    default_concurrency: int = 1
+    _progress_step: int = 0
+    _progress_total: int = 0
     # CLI ``--chunk N`` constraint. ``None`` means "all chunks";
     # otherwise restricts per-chunk fan-out to chunk N. Read by both
     # the parallel-LLM dispatch path (already handled in dispatch())
-    # and by custom hooks that operate per-chunk (e.g. dissect Step 1
-    # Tag Sentences, which would otherwise run the classifier over
-    # every chunk's sentences regardless of the flag).
+    # and by custom hooks that operate per-chunk (which would otherwise
+    # run the classifier over every chunk's sentences regardless of
+    # the flag).
     chunk_index: int | None = None
+    embedder: Any = None
     _current_spec: StepSpec | None = None
 
     def __post_init__(self) -> None:
         if self.debug and self.debug_log is None:
             self.debug_log = []
+
+    async def gather_concurrent(
+        self,
+        coros: list[Any],
+        concurrency: int = 2,
+        label: str = "",
+    ) -> list[Any]:
+        """Run coroutines with bounded concurrency, preserving order.
+
+        Each coroutine should return ``(index, result)``. Results are
+        sorted by index so output order is deterministic regardless of
+        completion order. Progress fires automatically after each
+        coroutine completes.
+        """
+        n = len(coros)
+        sem = asyncio.Semaphore(concurrency)
+        completed = 0
+
+        async def _bounded(coro):
+            nonlocal completed
+            async with sem:
+                result = await coro
+            completed += 1
+            self.sub_progress(
+                completed - 1, n,
+                f"{label} {completed}/{n}" if label else f"{completed}/{n}",
+            )
+            return result
+
+        results = await asyncio.gather(*[_bounded(c) for c in coros])
+        return [r for _, r in sorted(results, key=lambda x: x[0])]
+
+    def sub_progress(self, chunk: int, n_chunks: int, name: str) -> None:
+        """Fire a fractional progress event within a multi-chunk step."""
+        if self.on_progress is None or n_chunks <= 0:
+            return
+        frac = (chunk + 1) / n_chunks
+        pct = (self._progress_step + frac) / max(self._progress_total, 1)
+        self.on_progress(ProgressEvent(
+            step=self._progress_step,
+            total=self._progress_total,
+            name=name,
+            pct=pct,
+        ))
 
     def system_prompt_for(self, spec: StepSpec) -> str:
         """Return the composed system prompt for a step."""
@@ -188,6 +238,7 @@ async def dispatch(
     state: Any,
     ctx: StepContext,
     *,
+    tool_name: str = "",
     stop_after: int | None = None,
     chunk_index: int | None = None,
     on_progress: ProgressCallback | None = None,
@@ -200,7 +251,7 @@ async def dispatch(
 
     Three execution modes:
 
-    - **custom**: ``hooks.custom(state, ctx)`` owns execution entirely.
+    - **custom**: ``hooks.custom(state, ctx, spec)`` owns execution entirely.
     - **parallel**: ``hooks.prepare(state, ctx)`` returns ``list[str]``.
       Framework dispatches N ``run_agent`` calls sequentially.
       ``hooks.extract(state, list[output])`` merges results.
@@ -211,17 +262,20 @@ async def dispatch(
     """
     total = len(pipeline)
     last_completed_step = -1
-    # Expose chunk_index to custom hooks (the dispatch-side handling
-    # below only slices ``user_msgs`` for the parallel-LLM path).
+    # Expose chunk_index and progress to custom hooks.
     ctx.chunk_index = chunk_index
+    ctx.on_progress = on_progress
+    ctx._progress_total = total
 
     def _flush_trace_and_debug() -> None:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         if trace_path and render_trace_fn:
             step = last_completed_step if last_completed_step >= 0 else 0
             content = render_trace_fn(state, step)
+            label = tool_name.title() if tool_name else "Trace"
+            header = f"# {label} {ctx.pid} {ts}\n\n"
             trace_path.write_text(
-                f"{ts}\n\n{content}", encoding="utf-8",
+                header + content, encoding="utf-8",
             )
         if debug_path and ctx.debug_log:
             write_debug_file(debug_path, ctx.debug_log, timestamp=ts)
@@ -231,6 +285,7 @@ async def dispatch(
             if stop_after is not None and i > stop_after:
                 break
 
+            ctx._progress_step = i
             if on_progress is not None:
                 on_progress(ProgressEvent(
                     step=i, total=total, name=spec.meta.name, pct=i / total,
@@ -254,7 +309,7 @@ async def dispatch(
 
             try:
                 if spec.hooks.custom:
-                    await spec.hooks.custom(state, ctx)
+                    await spec.hooks.custom(state, ctx, spec)
                 elif spec.hooks.parallel:
                     assert spec.hooks.prepare is not None
                     user_msgs = spec.hooks.prepare(state, ctx)

@@ -232,7 +232,7 @@ fast = "s1"
 def test_resolve_slots_skips_validation_for_unbound_services(
     tmp_path, monkeypatch,
 ):
-    """Regression guard for ``paperflow dissect <pid> --service b200-r1``.
+    """Regression guard for ``--service`` overrides rebinding all slots.
 
     KEY_A is set, KEY_B is not. ``[defaults]`` pins every slot to
     s_b. Overrides rebind every slot to s_a. ``resolve_slots`` must

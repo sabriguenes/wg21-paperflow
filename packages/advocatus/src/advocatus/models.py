@@ -57,9 +57,9 @@ Seal = Literal["sine_causa", "cum_objectionibus", "nihil_obstat"]
 class Articulus(BaseModel, frozen=True):
     """A claim mapped for examination by the tribunal.
 
-    Articuli are derived from dissect's claims. The boundaries of the
-    cause are the boundaries of the paper's own words; nothing outside
-    the articuli may be examined.
+    Articuli are derived from paperstore extract tables. The boundaries
+    of the cause are the boundaries of the paper's own words; nothing
+    outside the articuli may be examined.
     """
 
     uid: int
@@ -355,7 +355,9 @@ class PipelineState(BaseModel):
     paper_audience: str = ""
     paper_authors: list[str] = []
 
-    # Step 0 (Load) - dissect data converted to domain models
+    # Step 0 (Load) - data from paperstore extract tables.
+    # Field names retain "dissect_" prefix for backward compatibility with
+    # pipeline.py and serialized state.
     dissect_articuli_seed: Optional[list[Articulus]] = None
     dissect_evidence: Optional[list[DossierEntry]] = None
     dissect_rhetoric: Optional[list[Articulus]] = None

@@ -45,10 +45,10 @@ def staged_paper(backend: SqliteBackend) -> str:
 def _patch_stage_bodies(monkeypatch, backend: SqliteBackend):
     """Replace each ``_stage_*`` body with a backend-write stub.
 
-    The real stages reach into mailing/tomd/dissect/etc. The
-    postcondition checks at the top of each stage stay live (they
-    short-circuit before our stub runs), so this is sufficient to
-    exercise rewind + ProcessResult.
+    The real stages reach into mailing/tomd/etc. The postcondition
+    checks at the top of each stage stay live (they short-circuit
+    before our stub runs), so this is sufficient to exercise rewind +
+    ProcessResult.
     """
     async def fake_download(pid, be, *, on_progress=None):
         from pipeline.postconditions import postcondition_satisfied
@@ -62,15 +62,8 @@ def _patch_stage_bodies(monkeypatch, backend: SqliteBackend):
             return
         be.write_paper_md(pid, "# md\n")
 
-    async def fake_dissect(pid, be, **kwargs):
-        from pipeline.postconditions import postcondition_satisfied
-        if postcondition_satisfied(be, pid, STAGES["dissect"]):
-            return
-        be.write_dissect_md(pid, "# dissect\n")
-
     monkeypatch.setattr(process_mod, "_stage_download", fake_download)
     monkeypatch.setattr(process_mod, "_stage_convert", fake_convert)
-    monkeypatch.setattr(process_mod, "_stage_dissect", fake_dissect)
 
 
 def test_process_paper_returns_process_result(
@@ -112,8 +105,8 @@ def test_process_paper_reruns_convert_when_md_deleted(
 def test_process_paper_rewinds_when_status_overstates_truth(
     backend: SqliteBackend, staged_paper: str
 ):
-    # Stage download + convert artifacts, claim status=3 (dissect-done)
-    # but no dissect artifact, and delete the markdown.
+    # Stage download + convert artifacts, claim status=3 but delete
+    # the markdown so the convert postcondition fails.
     backend.put_source(staged_paper, b"PDF", suffix=".pdf")
     md = backend.write_paper_md(staged_paper, "# md\n")
     backend.advance_status(staged_paper, 0, 3)

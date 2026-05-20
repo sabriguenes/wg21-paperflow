@@ -7,11 +7,16 @@
 
 """Markdown utilities for pipeline prompt files and rendered output.
 
-Two concerns:
+Three concerns:
 
 - ``sections(source)`` splits a markdown document on H2 boundaries into
-  a ``dict[str, str]``. Used to parse prompt files (``dissect.md``,
-  ``advocatus.md``, ``agora.md``) into step sections.
+  a ``dict[str, str]``. Used to parse prompt files (``advocatus.md``,
+  ``agora.md``, ``assay.md``) into step sections.
+  Fenced code blocks are preserved intact (``## `` and ``---`` inside
+  fences do not trigger splits).
+- ``extract_code_blocks(text)`` pulls the raw content out of fenced
+  code blocks within a section string.  Used to retrieve embedded
+  templates (e.g. Jinja report templates) from section bodies.
 - ``sanitize_md(text)`` escapes markdown-sensitive characters in prose
   while preserving inline code spans and fenced code blocks. Used by
   every render module to produce safe markdown output.
@@ -41,6 +46,11 @@ def sections(source: str | Path) -> dict[str, str]:
     rule, whichever comes first. Text between a ``---`` and the next
     ``## `` is discarded.
 
+    Fenced code blocks (delimited by lines starting with ````` ``` `````)
+    are preserved verbatim. Neither ``## `` nor ``---`` triggers a split
+    while inside a fenced block - this applies in both the prompt zone
+    (above ``---``) and the documentation zone (below ``---``).
+
     The special key ``"_preamble"`` holds any text before the first
     ``## `` (typically the H1 title, subtitle, mermaid diagram, etc.).
     """
@@ -53,8 +63,18 @@ def sections(source: str | Path) -> dict[str, str]:
     current_key: str = _PREAMBLE_KEY
     lines: list[str] = []
     skipping = False
+    in_fence = False
 
     for line in text.splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+            lines.append(line)
+            continue
+
+        if in_fence:
+            lines.append(line)
+            continue
+
         if line.startswith("## "):
             if not skipping:
                 _flush(result, current_key, lines)
@@ -85,6 +105,36 @@ def _flush(result: dict[str, str], key: str, lines: list[str]) -> None:
     if body or key != _PREAMBLE_KEY:
         result[key] = body
     lines.clear()
+
+
+# -- Code block extraction ----------------------------------------------------
+
+
+def extract_code_blocks(text: str) -> list[str]:
+    """Extract the raw content of each fenced code block in *text*.
+
+    Returns a list of strings, one per fenced block found.  The opening
+    and closing fence lines (including any info string like ``jinja``)
+    are stripped - only the interior lines are returned, joined with
+    newlines.
+
+    Useful for pulling embedded templates or structured data out of a
+    section body that was parsed by :func:`sections`.
+    """
+    blocks: list[str] = []
+    current: list[str] | None = None
+
+    for line in text.splitlines():
+        if line.startswith("```"):
+            if current is None:
+                current = []
+            else:
+                blocks.append("\n".join(current))
+                current = None
+        elif current is not None:
+            current.append(line)
+
+    return blocks
 
 
 # -- Markdown sanitizer -------------------------------------------------------

@@ -6,24 +6,13 @@
 
 """Re-score sentences against alternative hypothesis labels.
 
-The dissect tagger feeds two hypothesis strings to the classifier:
-
-- TARGET hypothesis: ``"A statement of fact or opinion."``
-- SKIP hypothesis:   ``"A heading, list marker, or page metadata."``
-
 Zero-shot classifiers are extremely sensitive to hypothesis phrasing.
-This script lets us A/B alternatives without changing harness.py: we
-load the same nli-small backend, run all 137 sentences once per
-candidate hypothesis, and write the resulting per-label scores into
-``data/scores_<variant>.json`` so ablate.py-style scoring can read them.
+This script A/B tests TARGET and SKIP hypothesis variants: loads the
+nli-small backend, scores all sentences once per candidate, and writes
+per-label scores into ``data/alt_hypothesis_scores/<selector>/<variant>.json``.
 
-The output schema matches the runtime debug dump:
-[
-  {"sid": 0, "line": 16, "text": "...", "target": 0.99, "skip": 0.13},
-  ...
-]
-
-Run with no args. Caches model weights on first call. CPU only.
+Usage:
+    python run_alt_hypotheses.py [selector_name [variant_id ...]]
 """
 
 from __future__ import annotations
@@ -92,8 +81,11 @@ VARIANTS: list[tuple[str, list[str], list[str]]] = [
 ]
 
 
-def load_sentences() -> list[dict]:
-    rows = json.loads((DATA / "p4003r3_scores.json").read_text(encoding="utf-8"))
+def load_sentences(pid: str = "p4003r3") -> list[dict]:
+    path = DATA / f"{pid}_sentences.json"
+    if not path.is_file():
+        path = DATA / f"{pid}_scores.json"
+    rows = json.loads(path.read_text(encoding="utf-8"))
     return [{"sid": r["sid"], "line": r["line"], "text": r["text"]} for r in rows]
 
 

@@ -20,13 +20,12 @@ WG21_DATA_DIR/
     <pid>.html-images.json         # typed manifest written by mailing,
                                    # consumed by tomd's HTML path. Schema:
                                    # paperstore.html_manifest.HtmlImagesManifest
-    <pid>.dissect.md               # dissect (paperflow dissect)
     <pid>.advocatus.md             # advocatus Relatio (paperflow advocatus)
     <pid>.<tool>.debug.md          # per-tool debug transcript (--debug)
     <pid>.<tool>.trace.md          # per-tool pipeline trace (--trace)
 ```
 
-Per-tool debug/trace artifacts are namespaced by `<tool>` (e.g. `dissect`, `advocatus`, future `agora`, `herald`) so multiple pipelines coexist without filename collisions. Every consumer routes through `backend.get_debug_md_path(pid, tool)` and `backend.get_trace_md_path(pid, tool)`; no tool reinvents path construction.
+Per-tool debug/trace artifacts are namespaced by `<tool>` (e.g. `advocatus`, `agora`, future `herald`) so multiple pipelines coexist without filename collisions. Every consumer routes through `backend.get_debug_md_path(pid, tool)` and `backend.get_trace_md_path(pid, tool)`; no tool reinvents path construction.
 
 ## Module layout
 
@@ -46,7 +45,7 @@ The `papers` table includes `line_count INTEGER DEFAULT 0`, written by `write_pa
 
 ## Extract tables
 
-Six tables in `paperstore.db` store structured results from the dissect pipeline:
+Six tables in `paperstore.db` store structured extraction results:
 
 - `claims` -- extracted normative assertions (PK: paper_id + loc triple)
 - `evidence` -- supporting facts (PK: paper_id + loc triple)
@@ -64,7 +63,7 @@ The image-extraction work added six accessors that callers route through; no con
 - `get_paper_image_path(pid, page, index, ext) -> Path` and `write_paper_image(pid, page, index, ext, data)` for `<pid>-fig{page}-{index}.{ext}`. `page=0` is the HTML "no page concept" sentinel.
 - `iter_paper_image_paths(pid)` and `delete_paper_images(pid)` filter via a compiled stem regex (`_IMAGE_FILENAME_RE`), not glob: so `delete_paper_images("P30")` can never reach `p301-fig...` or unrelated `p30-meta.json` artifacts. The regex is the authoritative gate.
 - `get_html_images_manifest_path(pid)` for the mailing-to-tomd handoff sidecar.
-- `clear_downstream_outputs(pid) -> ClearedSet` wipes the `.dissect.md` / `.advocatus.md` / `.agora.json` files AND the dissect-pipeline extract rows (claims, evidence, paper_citations, external_citations, questions, rhetoric, caput_causae, citation_audit). Called by `paperflow convert` after a re-convert that changed the markdown, because stored `loc.line` offsets become stale on any content change. `--keep-downstream` opts out and logs a warning.
+- `clear_downstream_outputs(pid) -> ClearedSet` wipes the `.advocatus.md` / `.agora.json` files AND the extract rows (claims, evidence, paper_citations, external_citations, questions, rhetoric, caput_causae, citation_audit). Called by `paperflow convert` after a re-convert that changed the markdown, because stored `loc.line` offsets become stale on any content change. `--keep-downstream` opts out and logs a warning.
 
 `try_read_paper_md(pid) -> str | None` is the non-raising read of the current markdown, used for the byte-equality check that gates downstream invalidation.
 

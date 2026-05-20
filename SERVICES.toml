@@ -5,8 +5,11 @@
 #
 # 1. [services.NAME] declares a remote LLM endpoint with its
 #    capabilities. The `backend` field maps to a Python class in
-#    pipeline.model_backends. The `api_key_env` field names the env var
-#    holding the API key.
+#    pipeline.model_backends.
+#    API key resolution (in precedence order):
+#      api_key = "sk-literal"       literal value, no env var
+#      api_key = "$ENV_VAR_NAME"    expand from environment
+#      api_key_env = "ENV_VAR_NAME" legacy, same as "$ENV_VAR_NAME"
 #    [defaults] maps slot names to service names for interactive use.
 #    The orchestrator overrides slots via --service CLI flags.
 #
@@ -40,10 +43,66 @@
 # The three namespaces do not mix: slot resolution is independent.
 
 [services.b200-r1]
-backend = "deepseek_r1_distill_vllm021"
+backend = "vllm_thinking"
 base_url = "https://hdsfzi29n4xyup-8000.proxy.runpod.net/v1"
-api_key_env = "RUNPOD_API_KEY"
+api_key = "sk-hdsfzi29n4xyup"
 model = "deepseek-r1-distill-70b"
+max_context_window = 131072
+chars_per_token = 4.0
+token_multiplier = 1.5
+thinking_capable = true
+tools_capable = false
+
+[services.b200x2-gemma4]
+backend = "vllm_thinking"
+base_url = "https://auzznfc1ourtrk-8000.proxy.runpod.net/v1"
+api_key = "sk-auzznfc1ourtrk"
+model = "google/gemma-4-31B-it"
+max_context_window = 131072
+chars_per_token = 4.0
+token_multiplier = 1.5
+thinking_capable = true
+tools_capable = true
+stream = true
+
+[services.b300-qwen36-27b]
+backend = "vllm_thinking"
+base_url = "https://5c9q67uhzngqc5-8000.proxy.runpod.net/v1"
+api_key = "sk-5c9q67uhzngqc5"
+model = "Qwen/Qwen3.6-27B"
+max_context_window = 131072
+chars_per_token = 4.0
+token_multiplier = 1.5
+thinking_capable = true
+tools_capable = false
+
+[services.b300-qwen3-235b]
+backend = "vllm_thinking"
+base_url = "https://8dqqdl9gaqme00-8000.proxy.runpod.net/v1"
+api_key = "sk-8dqqdl9gaqme00"
+model = "Qwen/Qwen3-235B-A22B-FP8"
+max_context_window = 40960
+chars_per_token = 4.0
+token_multiplier = 1.8
+thinking_capable = true
+tools_capable = false
+
+# [services.b200-qwen35]
+# backend = "vllm_thinking"
+# base_url = "https://weqe1d8q10a13g-8000.proxy.runpod.net/v1"
+# api_key_env = "VLLM_API_KEY"
+# model = "Qwen/Qwen3.5-122B-A10B-FP8"
+# thinking_capable = true
+# tools_capable = false
+
+[services.h200-qwen3-32b]
+backend = "vllm_thinking"
+base_url = "https://d5htj97igzetl6-8000.proxy.runpod.net/v1"
+api_key = "sk-d5htj97igzetl6"
+model = "Qwen/Qwen3-32B"
+max_context_window = 131072
+chars_per_token = 4.0
+token_multiplier = 1.5
 thinking_capable = true
 tools_capable = false
 
@@ -65,8 +124,11 @@ tools_capable = false
 
 [services.anthropic-opus]
 backend = "anthropic"
-api_key_env = "ANTHROPIC_API_KEY"
+api_key = "$ANTHROPIC_API_KEY"
 model = "claude-opus-4-6"
+max_context_window = 200000
+chars_per_token = 3.25
+token_multiplier = 1.3
 thinking_capable = true
 tools_capable = true
 
@@ -167,3 +229,14 @@ executor_workers = 1
 
 [transformer_provider_defaults]
 default = "auto"
+
+# ---------------------------------------------------------------------------
+# Embedders (sentence-transformers models for RAG / semantic search)
+# ---------------------------------------------------------------------------
+
+[embedders.minilm]
+backend = "embedding"
+model = "sentence-transformers/all-MiniLM-L12-v2"
+
+[embedder_defaults]
+default = "minilm"

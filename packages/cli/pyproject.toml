@@ -9,7 +9,6 @@ dependencies = [
     "paperstore",
     "mailing",
     "tomd",
-    "dissect",
     "advocatus",
     "agora",
     "rich",

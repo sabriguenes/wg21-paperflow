@@ -22,25 +22,25 @@ from pathlib import Path
 import cli.mailing as _mailing_mod
 import cli.download as _download_mod
 import cli.convert as _convert_mod
-import cli.dissect as _dissect_mod
 import cli.advocatus as _advocatus_mod
 import cli.agora as _agora_mod
+import cli.assay as _assay_mod
 import cli.status as _status_mod
 from cli.logutil import configure_console_logging
 from cli.targets import MONTH_RE
 from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
 
 _VERB_NAMES = {
-    "mailing", "download", "convert", "dissect", "advocatus", "agora", "status",
+    "mailing", "download", "convert", "advocatus", "agora", "assay", "status",
 }
 
 _VERB_HELP = {
     "mailing":   "Scrape all WG21 mailing indexes (2011-current). Idempotent.",
     "download":  "Download source files for TARGET papers.",
     "convert":   "Convert source files to markdown for TARGET papers. Downloads first if needed.",
-    "dissect":   "Extract claims and evidence for TARGET papers. Downloads and converts if needed.",
     "advocatus": "Run adversarial examination for TARGET papers. Runs all prior stages if needed.",
     "agora":     "Plan discussion threads for TARGET papers. Runs all prior stages if needed.",
+    "assay":     "Structural analysis of TARGET papers (two-pass, six lenses).",
     "status":    "Show processing status for papers.",
 }
 
@@ -57,21 +57,21 @@ _VERB_DESCRIPTION = {
         "Convert staged PDF/HTML sources to markdown using tomd. "
         "Hard-fails if the source is not yet staged."
     ),
-    "dissect": (
-        "Dissect a paper using the multi-step LLM pipeline. "
-        "Requires the paper to be indexed and converted first."
-    ),
     "advocatus": (
-        "Examine a dissected paper through the two-office tribunal: "
-        "Advocatus Diaboli drafts charges, Defensor Causae cross-examines them. "
-        "Requires the paper to be dissected first."
+        "Examine a paper through the two-office tribunal: "
+        "Advocatus Diaboli drafts charges, Defensor Causae cross-examines them."
     ),
     "agora": (
-        "Plan a fake r/wg21 Reddit thread for a dissected paper. "
+        "Plan a fake r/wg21 Reddit thread for a paper. "
         "Produces a structural blueprint (anchors, calibration, submission, "
         "every reply slot with a brief) as JSON; reply text and characters "
-        "are filled by a later generation phase. Requires the paper to be "
-        "dissected first."
+        "are filled by a later generation phase."
+    ),
+    "assay": (
+        "Run the 12-step assay pipeline on a paper. Produces a two-pass "
+        "structural analysis report (six lenses, 25 test patterns) and "
+        "persists intermediate artifacts for downstream use. Requires the "
+        "paper to be indexed and converted first."
     ),
     "status": (
         "Show the current pipeline status for papers. Accepts a paper ID, "
@@ -83,9 +83,9 @@ _VERB_TARGETS_HELP = {
     "mailing":   "Not used (mailing discovers years automatically).",
     "download":  "Year (2026), paper id(s) (P3642R4 ...), or year-month (2026-01).",
     "convert":   "Year (2026), paper id(s) (P3642R4 ...), or year-month (2026-01).",
-    "dissect":   "Paper ID (P4003R2) or year-month (2026-01) for batch dissection.",
     "advocatus": "Paper ID (P4003R2) or year-month (2026-01) for batch examination.",
     "agora":     "Paper ID (P4003R2) or year-month (2026-01) for batch planning.",
+    "assay":     "Paper ID (P4003R2) or year-month (2026-01) for batch analysis.",
     "status":    "Paper ID, year, year-month, or omit for all incomplete papers.",
 }
 
@@ -93,9 +93,9 @@ _COMMANDS = {
     "mailing":   _mailing_mod,
     "download":  _download_mod,
     "convert":   _convert_mod,
-    "dissect":   _dissect_mod,
     "advocatus": _advocatus_mod,
     "agora":     _agora_mod,
+    "assay":     _assay_mod,
     "status":    _status_mod,
 }
 
@@ -103,9 +103,9 @@ _VERB_FLAGS: dict[str, set[str]] = {
     "mailing":   set(),
     "download":  {"force", "concurrency"},
     "convert":   {"force", "concurrency", "check_content", "check_content_json", "keep_downstream", "yes"},
-    "dissect":   {"debug", "trace", "step", "chunk", "service", "classifier", "provider", "force"},
     "advocatus": {"debug", "trace", "step", "service", "provider", "force"},
     "agora":     {"debug", "trace", "step", "service", "provider", "force"},
+    "assay":     {"debug", "trace", "step", "service", "force", "rerender"},
     "status":    set(),
 }
 
@@ -132,18 +132,18 @@ _FLAG_DEFS: list[dict] = [
          help="Stop after step N (implies --trace)."),
     dict(name="chunk", flags=["--chunk"], type=int,
          default=None, metavar="C",
-         help="Run only chunk C in parallel steps (dissect only)."),
+         help="Run only chunk C in parallel steps."),
     dict(name="service", flags=["--service"], action="append",
          default=None, metavar="NAME",
          help="Override service binding. Use NAME to override all slots, or SLOT=NAME for one slot. Repeatable."),
     dict(name="classifier", flags=["--classifier"], action="append",
          default=None, metavar="NAME",
-         help="Override classifier slot binding (e.g. dissect Step 1 Tag Sentences). Use NAME to override all slots, or SLOT=NAME (e.g. selector=zeroshot-base) for one slot. Repeatable."),
+         help="Override classifier slot binding. Use NAME to override all slots, or SLOT=NAME (e.g. selector=zeroshot-base) for one slot. Repeatable."),
     dict(name="provider", flags=["--provider"], default=None, metavar="NAME",
          help="Override the active transformer provider (device/dtype/batch). Defaults to PAPERFLOW_TRANSFORMER_PROVIDER, then [transformer_provider_defaults].default in SERVICES.toml, then 'auto' (host-detected)."),
     dict(name="keep_downstream", flags=["--keep-downstream"], action="store_true",
          default=False,
-         help="On convert: don't clear dissect/advocatus/agora artifacts even "
+         help="On convert: don't clear advocatus/agora artifacts even "
               "when the markdown content changed. Stored loc.line offsets may "
               "be stale until you re-run those pipelines."),
     dict(name="yes", flags=["-y", "--yes"], action="store_true",
@@ -151,6 +151,10 @@ _FLAG_DEFS: list[dict] = [
          help="On convert: skip the batch confirmation prompt that fires "
               "when a multi-paper invocation would invalidate downstream "
               "artifacts."),
+    dict(name="rerender", flags=["--rerender"], action="store_true",
+         default=False,
+         help="Regenerate report from stored data without re-running "
+              "the pipeline. Applies the current template to DB artifacts."),
 ]
 
 _PAPER_ID_RE = re.compile(r"^[PND]\d{3,5}(R\d+)?$", re.IGNORECASE)
@@ -160,14 +164,7 @@ Examples:
   paperflow mailing                scrape mailing index
   paperflow download P3642R4       download one paper
   paperflow convert 2026-01        convert papers from Jan 2026 onward
-  paperflow dissect P4003R2        LLM-driven paper dissection
-  paperflow dissect P4003R2 --trace --step 3   stop after step 3 with trace
-  paperflow dissect P4003R2 --chunk 0          run only chunk 0
-  paperflow dissect P4003R2 --service b200-r1  override all service slots
-  paperflow dissect P4003R2 --service fast=b200-r1 --service tool=b200-llama
-  paperflow dissect P4003R2 --classifier selector=zeroshot-base  swap Step 1 classifier
-  paperflow dissect P4003R2 --provider cuda-b200                 lock provider in cloud
-  paperflow advocatus P4003R2      examine a dissected paper
+  paperflow advocatus P4003R2      examine a paper
   paperflow agora P4003R2          plan a discussion thread
   paperflow status                 show all incomplete papers
   paperflow status P4003R2         show status of one paper
@@ -188,8 +185,10 @@ def _classify_target(t: str) -> str:
     """Return 'paper', 'year', 'month', or raise ValueError."""
     if _PAPER_ID_RE.match(t):
         return "paper"
-    if t.isdigit() and len(t) == 4 and int(t) >= 2011:
-        return "year"
+    if t.isdigit() and len(t) == 4:
+        if int(t) >= 2011:
+            return "year"
+        raise ValueError(f"No WG21 mailings before 2011 (got {t}).")
     if MONTH_RE.match(t):
         return "month"
     raise ValueError(
@@ -211,7 +210,7 @@ def _validate_targets(verb: str, targets: list[str]) -> None:
             print(f"paperflow {verb}: {exc}", file=sys.stderr)
             sys.exit(1)
 
-    for process_verb in ("dissect", "advocatus", "agora"):
+    for process_verb in ("advocatus", "agora"):
         if verb != process_verb:
             continue
         if "year" in kinds:

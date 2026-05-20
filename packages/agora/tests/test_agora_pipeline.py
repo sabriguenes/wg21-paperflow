@@ -17,7 +17,6 @@ from paperstore import SqliteBackend
 from agora import agora_paper
 from pipeline.errors import (
     PaperNotConvertedError,
-    PaperNotDissectedError,
     PaperNotFoundError,
 )
 from agora.models import PipelineState
@@ -99,15 +98,6 @@ def test_agora_paper_not_converted_raises(tmp_path: Path):
     backend = SqliteBackend(tmp_path)
     backend.upsert_year("2026", [{"paper_id": "P1234R0"}])
     with pytest.raises(PaperNotConvertedError):
-        asyncio.run(agora_paper("P1234R0", backend))
-
-
-def test_agora_paper_not_dissected_raises(tmp_path: Path):
-    """Paper has converted markdown but no dissect output."""
-    backend = SqliteBackend(tmp_path)
-    backend.upsert_year("2026", [{"paper_id": "P1234R0"}])
-    backend.write_paper_md("P1234R0", "# A paper\n\nBody.")
-    with pytest.raises(PaperNotDissectedError):
         asyncio.run(agora_paper("P1234R0", backend))
 
 

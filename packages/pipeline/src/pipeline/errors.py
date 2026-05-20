@@ -40,13 +40,6 @@ class PaperNotConvertedError(PipelineError):
     """
 
 
-class PaperNotDissectedError(PipelineError):
-    """Paper has no dissect output.
-
-    Message includes the paperflow dissect command.
-    """
-
-
 class PromptFileError(PipelineError):
     """The prompt file has a structural problem the user must fix.
 

@@ -63,8 +63,7 @@ def validate_capabilities(
     both filter by `enumerate` index against the step list, not by
     `spec.meta.number`. The two functions cannot drift on which
     specs are in scope. See the scoping-parity invariant in
-    `packages/pipeline/src/pipeline/CLAUDE.md` and the parity test
-    in the dissect integration suite.
+    `packages/pipeline/src/pipeline/CLAUDE.md`.
 
     On mismatch, raises one `CapabilityMismatchError` whose message
     is a compact table: one row per mismatch with columns for step
