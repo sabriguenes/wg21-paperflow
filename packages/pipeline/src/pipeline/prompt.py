@@ -54,7 +54,7 @@ class StepMeta:
     """Numeric index parsed from the name. Controls execution order."""
 
     model_slot: str
-    """Key into ``StepContext.model_slots``. ``'none'`` for custom steps."""
+    """Key into ``StepContext.agents``. ``'none'`` for custom steps."""
 
     execution: str
     """``'main'`` (sequential) or ``'subagent'`` (parallel)."""

@@ -13,7 +13,6 @@ import dataclasses
 
 import pytest
 from pydantic import ValidationError
-from pydantic_ai import ModelRetry
 
 from dissect.models import (
     BatchVerifyOutput,
@@ -193,22 +192,16 @@ def test_extract_rhetoric_output_markers():
     assert len(out.markers) == 1
 
 
-@pytest.mark.skip(reason="empty-rejection validators disabled for wording-section chunks")
-def test_extract_claims_output_rejects_empty():
-    with pytest.raises(ModelRetry):
-        ExtractClaimsOutput(claims=[])
+def test_extract_evidence_output_back_compat():
+    out = ExtractEvidenceOutput()
+    assert out.evidence == []
+    assert ExtractEvidenceOutput(evidence=[]).evidence == []
 
 
-@pytest.mark.skip(reason="empty-rejection validators disabled for wording-section chunks")
-def test_extract_evidence_output_rejects_empty():
-    with pytest.raises(ModelRetry):
-        ExtractEvidenceOutput(evidence=[])
-
-
-@pytest.mark.skip(reason="empty-rejection validators disabled for wording-section chunks")
-def test_extract_rhetoric_output_rejects_empty():
-    with pytest.raises(ModelRetry):
-        ExtractRhetoricOutput(markers=[])
+def test_extract_rhetoric_output_back_compat():
+    out = ExtractRhetoricOutput()
+    assert out.markers == []
+    assert ExtractRhetoricOutput(markers=[]).markers == []
 
 
 def test_claim_kind_factual():
