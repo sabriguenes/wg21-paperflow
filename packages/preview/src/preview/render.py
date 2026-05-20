@@ -18,9 +18,8 @@ Two image-inlining passes run together:
 - **Pre-scrivener**, paper-content image references in the markdown
   (``![alt](<pid>-fig{page}-{n}.{ext})``) are rewritten to raw HTML
   ``<img src="data:..." alt="...">`` tags. Scrivener strips ``src``
-  and ``alt`` from markdown-generated ``<img>`` tags (see the
-  pre-merge gate in ``notes/preview-tool-abstract-images-plan.txt``
-  section 6), so we must hand it inline HTML for paper images.
+  and ``alt`` from markdown-generated ``<img>`` tags, so we must
+  hand it inline HTML for paper images.
 - **Post-scrivener**, scrivener's own bundled images (the WG21 logo,
   emitted as ``<img src="/abs/path/to/scrivener/images/...">``) get
   rewritten to ``data:`` URLs too, since the absolute filesystem path

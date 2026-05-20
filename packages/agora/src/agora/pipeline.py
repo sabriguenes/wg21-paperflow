@@ -732,8 +732,20 @@ async def agora_paper(
     services, defaults = load_services()
     slots = resolve_slots(services, defaults, service_overrides)
 
-    synthesis_agent = AgentBackend(slots["default"], thinking_budget=4096)
-    research_agent = AgentBackend(slots.get("tool", slots["default"]))
+    default_svc, default_backend = slots["default"]
+    tool_svc, tool_backend = slots.get("tool", slots["default"])
+
+    synthesis_agent = AgentBackend(
+        default_backend,
+        thinking_budget=4096,
+        slot_name="default",
+        service_name=default_svc,
+    )
+    research_agent = AgentBackend(
+        tool_backend,
+        slot_name="tool",
+        service_name=tool_svc,
+    )
 
     agents = {
         "default": synthesis_agent,

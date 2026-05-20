@@ -14,6 +14,8 @@ structural correctness without hitting the LLM.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
+
 import pytest
 
 from paperstore.errors import MissingMetaError, MissingPaperMdError
@@ -21,6 +23,53 @@ from paperstore.testing import store  # noqa: F401
 
 from pipeline import StepContext, load_sections
 from pipeline.errors import PaperNotFoundError, PaperNotConvertedError, StepError
+from pipeline.model_backends import DEFAULT_REQUEST_LIMIT, ModelBackend
+
+
+class _FullyCapableStub(ModelBackend):
+    """Tools + thinking capable. For tests that exercise dissect_paper's
+    early-exit error paths without needing real services."""
+
+    thinking_capable = True
+    tools_capable = True
+
+    async def run(
+        self,
+        system_prompt: str,
+        user_message: str,
+        output_type: type[Any],
+        *,
+        tools: dict[str, Any] | None = None,
+        thinking_budget: int | None = None,
+        label: str = "",
+        debug_log: list[str] | None = None,
+        request_limit: int = DEFAULT_REQUEST_LIMIT,
+    ) -> Any:
+        return output_type()
+
+
+@pytest.fixture
+def capable_services(monkeypatch):
+    """Replace load_services with a tools+thinking-capable stub.
+
+    `dissect_paper` constructs the pipeline and calls
+    `validate_capabilities` before reaching the get_meta call that the
+    paper-not-found tests rely on. The production SERVICES.toml binds
+    all default slots to AnthropicBackend (thinking_capable=False),
+    which the validator correctly rejects. These tests do not care
+    about real backends; they just need pipeline construction to
+    succeed so the get_meta error path is reachable.
+    """
+    from dissect import pipeline as dissect_pipeline_mod
+
+    stub = _FullyCapableStub()
+    services = {"stub": stub}
+    defaults = {"fast": "stub", "default": "stub", "tool": "stub"}
+    monkeypatch.setattr(
+        dissect_pipeline_mod,
+        "load_services",
+        lambda: (services, defaults),
+    )
 from dissect.pipeline import (
     _citation_info,
     _custom_read,
@@ -49,7 +98,7 @@ from dissect.models import (
 from pipeline import StepHooks, StepMeta, StepSpec
 
 
-def test_paper_not_found_raises_specific_error(store):  # noqa: F811
+def test_paper_not_found_raises_specific_error(store, capable_services):  # noqa: F811
     import asyncio
 
     with pytest.raises(PaperNotFoundError, match="not found in paperstore") as exc_info:
@@ -58,7 +107,7 @@ def test_paper_not_found_raises_specific_error(store):  # noqa: F811
     assert isinstance(exc_info.value.__cause__, MissingMetaError)
 
 
-def test_paper_no_markdown_raises_specific_error(store):  # noqa: F811
+def test_paper_no_markdown_raises_specific_error(store, capable_services):  # noqa: F811
     import asyncio
 
     store.upsert_year("2026", [{"paper_id": "P9999R0", "title": "Test"}])
@@ -84,7 +133,7 @@ def test_load_sections_returns_system_prompt():
     assert "System Prompt" in secs
 
 
-def test_dissect_error_message_includes_pid(store):  # noqa: F811
+def test_dissect_error_message_includes_pid(store, capable_services):  # noqa: F811
     import asyncio
 
     with pytest.raises(PaperNotFoundError, match="P0001R0"):

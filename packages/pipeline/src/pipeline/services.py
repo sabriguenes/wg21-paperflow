@@ -112,14 +112,19 @@ def resolve_slots(
     services: dict[str, ModelBackend],
     defaults: dict[str, str],
     overrides: dict[str, str] | None = None,
-) -> dict[str, ModelBackend]:
-    """Map slot names to ModelBackend instances.
+) -> dict[str, tuple[str, ModelBackend]]:
+    """Map slot names to (service_name, ModelBackend) bindings.
 
     ``overrides`` (from ``--service`` CLI flags) beat ``defaults``
     (from ``[defaults]`` in SERVICES.toml).
 
     When a single override has no ``=`` (e.g., ``--service b200-r1``),
     it applies to all slots in ``defaults``.
+
+    The service name is returned alongside the backend so callers can
+    thread it into ``AgentBackend(slot_name=..., service_name=...)``
+    for capability-validation error messages that echo what the user
+    typed instead of an internal backend class name.
 
     Raises ``KeyError`` if a slot references a service name that
     doesn't exist in ``services``.
@@ -128,7 +133,7 @@ def resolve_slots(
     if overrides:
         merged.update(overrides)
 
-    slots: dict[str, ModelBackend] = {}
+    slots: dict[str, tuple[str, ModelBackend]] = {}
     for slot_name, service_name in merged.items():
         if service_name not in services:
             raise KeyError(
@@ -136,7 +141,7 @@ def resolve_slots(
                 f"which is not defined in SERVICES.toml. "
                 f"Available services: {sorted(services)}"
             )
-        slots[slot_name] = services[service_name]
+        slots[slot_name] = (service_name, services[service_name])
 
     return slots
 

@@ -17,6 +17,7 @@ from pipeline.classifier_backends import (
     ZeroShotV2Backend,
 )
 from pipeline.errors import (
+    CapabilityMismatchError,
     HookMismatchError,
     MissingMetadataError,
     MissingSystemPromptError,
@@ -73,9 +74,11 @@ from pipeline.postconditions import (
 from pipeline.process import ensure_paper_md, process_paper
 from pipeline.tasks import run_task
 from pipeline.tools import make_read_paper_tool, wrap_source
+from pipeline.validate import validate_capabilities
 
 __all__ = [
     "AgentBackend",
+    "CapabilityMismatchError",
     "CLASSIFIER_BACKEND_REGISTRY",
     "ClassifierBackend",
     "CrossEncoderBackend",
@@ -128,6 +131,7 @@ __all__ = [
     "StepSpec",
     "TransientStepError",
     "truthful_status",
+    "validate_capabilities",
     "ValidationStepError",
     "WebResearcher",
     "wrap_source",

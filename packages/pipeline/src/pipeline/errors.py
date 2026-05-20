@@ -73,6 +73,18 @@ class HookMismatchError(PromptFileError):
     """
 
 
+class CapabilityMismatchError(PipelineError):
+    """A step's declared requirements exceed the assigned agent's capabilities.
+
+    Raised at pipeline-construction time (before any LLM call) when a
+    step declares ``**Tools:**`` but its assigned agent wraps a
+    ``tools_capable=False`` backend, or when an agent carries a
+    ``thinking_budget`` but its backend is ``thinking_capable=False``.
+    The message names the slot, the resolved service, and the
+    backend class so the user can fix the SERVICES.toml binding.
+    """
+
+
 class StepError(PipelineError):
     """A step failed during execution.
 

@@ -6,10 +6,11 @@ Shared framework for the LLM analytical pipelines (`dissect`, `advocatus`, `agor
 
 - `model_backends.py` - `ModelBackend` ABC and concrete backends (`DeepSeekR1DistillVllm021Backend`, `Llama3Backend`, `Qwen3Backend`, `AnthropicBackend`), `BACKEND_REGISTRY`. One class per model family; encapsulates structured output strategy, BPE cleanup, thinking-block stripping, tool-calling workarounds.
 - `classifier_backends.py` - `ClassifierBackend` ABC and concrete backends (`ZeroShotV2Backend`, `NliCrossEncoderBackend`), `CLASSIFIER_BACKEND_REGISTRY`. Local zero-shot text classifiers wrapping HF Transformers / sentence_transformers. Used by dissect Step 1 Tag Sentences. Parallel namespace to `model_backends.py`; no interaction.
-- `agents.py` - `AgentBackend`: wraps a `ModelBackend` with pipeline-level config (`thinking_budget`). Validates `tools_capable` at call time.
-- `services.py` - `load_services()` / `resolve_slots()` for LLM `[services.NAME]` slots, and `load_classifiers()` / `resolve_classifier_slots()` for local `[classifiers.NAME]` slots. Both parse SERVICES.toml; the two namespaces are independent.
-- `errors.py` - exception hierarchy rooted at `PipelineError`.
-- `prompt.py` - `StepHooks`, `StepMeta`, `StepSpec`, `build_pipeline`, `parse_step_meta`.
+- `agents.py` - `AgentBackend`: wraps a `ModelBackend` with pipeline-level config (`thinking_budget`) and the slot/service identity (`slot_name`, `service_name`, `backend_class_name`) used by capability-mismatch error messages. The call-time `tools_capable` check remains as defense-in-depth for tools passed via `run_task` outside `meta.tools`.
+- `services.py` - `load_services()` / `resolve_slots()` for LLM `[services.NAME]` slots, and `load_classifiers()` / `resolve_classifier_slots()` for local `[classifiers.NAME]` slots. Both parse SERVICES.toml; the two namespaces are independent. `resolve_slots` returns `dict[str, tuple[str, ModelBackend]]` so callers can thread the resolved service name into each `AgentBackend`.
+- `errors.py` - exception hierarchy rooted at `PipelineError`. Includes `CapabilityMismatchError` for pipeline-construction-time slot/capability mismatches.
+- `prompt.py` - `StepHooks`, `StepMeta`, `StepSpec`, `build_pipeline`, `parse_step_meta`. Owns prompt-to-hook conformance only; capability validation lives in `validate.py`.
+- `validate.py` - `validate_capabilities(specs, *, stop_after=None)`. Primary gate for capability mismatches; called by each pipeline's entry function right after `build_pipeline`.
 - `runner.py` - `dispatch`, `load_sections`, `run_agent`, `StepContext`, `write_debug_file`.
 - `tasks.py` - `run_task`, `render_debug_md`, `_task_semaphore`.
 - `markdown.py` - `sections` (H2 splitter), `sanitize_md`.
@@ -28,8 +29,10 @@ from pipeline import (
     load_services, resolve_slots,
     load_classifiers, resolve_classifier_slots,
     PipelineError, StepError, HookMismatchError, MissingMetadataError,
+    CapabilityMismatchError,
     PaperNotFoundError, PaperNotConvertedError, PaperNotDissectedError,
     StepHooks, StepMeta, StepSpec, build_pipeline,
+    validate_capabilities,
     dispatch, load_sections, run_agent, run_task, StepContext,
     sections, sanitize_md,
     WebResearcher, SearchBackend, SearchResult, SearchResponse, FetchResponse,
@@ -87,7 +90,9 @@ Determinism contract (mirror of `dissect/shadow.py`): offline-first weight loadi
 
 ## Invariants
 
-- `ClassifierBackend` and `ModelBackend` are parallel namespaces. `[services.NAME]` / `[classifiers.NAME]` and `[defaults]` / `[classifier_defaults]` do not mix; slot resolution is independent. Override flags map to different `StepContext` dicts: `--service` populates `ctx.agents` (via `AgentBackend(slots[...])`), `--classifier` populates `ctx.classifiers`.
+- `ClassifierBackend` and `ModelBackend` are parallel namespaces. `[services.NAME]` / `[classifiers.NAME]` and `[defaults]` / `[classifier_defaults]` do not mix; slot resolution is independent. Override flags map to different `StepContext` dicts: `--service` populates `ctx.agents` (via `AgentBackend(slots[slot_name][1], slot_name=slot_name, service_name=slots[slot_name][0])`), `--classifier` populates `ctx.classifiers`.
+- Capability validation runs once at pipeline-construction time. `validate_capabilities()` rejects any step whose declared `meta.tools` or assigned `thinking_budget` would land on a backend whose class attributes do not support it. The runtime `NotImplementedError` in `AgentBackend.run` is secondary defense, retained for custom hooks that pass ad-hoc tools via `run_task` outside `meta.tools`.
+- `dispatch()` and `validate_capabilities()` must use identical `stop_after` scoping logic. Today both filter by `enumerate` index against the step list; if you switch one site to `spec.meta.number`, switch both in the same commit. `tests/test_dissect_capability_validation.py::test_validate_capabilities_filtering_matches_dispatch_filtering` is the regression net -- do not skip, mark `xfail`, or weaken it to paper over a one-site change.
 - Three-layer system prompts. Every LLM step receives the framework floor, plus the pipeline `## System Prompt`, plus an optional per-step `### System Prompt`. Per-step mode is `append` by default, or `replace` for floor + step only. The floor always applies.
 - Source delimiter contract. Source material is wrapped with the configured `WG21_SOURCE_TAG` delimiters. `pipeline.tools.wrap_source` is the only legal way to introduce those markers; it escapes forged delimiter text before wrapping.
 - Step failures fail the pipeline. `dispatch()` preserves failures as `StepError`, flushes trace/debug diagnostics, and does not call `on_step_complete` for a failed step.

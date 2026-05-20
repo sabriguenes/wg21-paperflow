@@ -28,6 +28,8 @@ from paperstore.errors import MissingMetaError, MissingPaperMdError
 
 from pipeline import (
     AgentBackend,
+    ClassifierBackend,
+    ModelBackend,
     StepContext,
     StepHooks,
     StepSpec,
@@ -40,6 +42,7 @@ from pipeline import (
     make_read_paper_tool,
     resolve_slots,
     run_task,
+    validate_capabilities,
 )
 from pipeline.errors import (
     PaperNotConvertedError,
@@ -1463,6 +1466,72 @@ def _persist_step(
 # -- Public API ---------------------------------------------------------------
 
 
+def build_dissect_pipeline(
+    secs: dict[str, str],
+    slot_bindings: dict[str, tuple[str, ModelBackend]],
+    classifier_slots: dict[str, ClassifierBackend],
+    *,
+    stop_after: int | None = None,
+) -> tuple[list[StepSpec], dict[str, AgentBackend]]:
+    """Build the dissect pipeline and validate slot capabilities.
+
+    Constructs the three named agents from ``slot_bindings``,
+    threading slot and service names so capability-mismatch errors
+    can echo them back. Runs ``_build_hooks``, ``build_pipeline``,
+    and ``validate_capabilities`` in that order.
+
+    ``slot_bindings`` maps slot names (``fast``, ``default``,
+    ``tool``) to ``(service_name, ModelBackend)`` tuples as
+    returned by :func:`pipeline.resolve_slots`.
+
+    ``stop_after`` honors the run's ``--step`` scope and is
+    forwarded to :func:`validate_capabilities` so slots that won't
+    be reached are not validated. Mirrors ``dispatch``'s scoping
+    rule exactly.
+
+    Returns ``(pipeline, agents)`` where ``agents`` is the
+    ``slot -> AgentBackend`` map for ``StepContext``.
+
+    Raises :class:`pipeline.CapabilityMismatchError` if any in-scope
+    step's declared tools or assigned thinking_budget exceed the
+    bound backend's capabilities. Raises
+    :class:`pipeline.PromptFileError` subtypes on prompt-file
+    structural problems.
+    """
+    fast_svc, fast_backend = slot_bindings.get("fast", slot_bindings["default"])
+    default_svc, default_backend = slot_bindings["default"]
+    tool_svc, tool_backend = slot_bindings.get("tool", slot_bindings["default"])
+
+    extraction_agent = AgentBackend(
+        fast_backend,
+        thinking_budget=2048,
+        slot_name="fast",
+        service_name=fast_svc,
+    )
+    synthesis_agent = AgentBackend(
+        default_backend,
+        thinking_budget=4096,
+        slot_name="default",
+        service_name=default_svc,
+    )
+    research_agent = AgentBackend(
+        tool_backend,
+        slot_name="tool",
+        service_name=tool_svc,
+    )
+
+    hooks = _build_hooks(extraction_agent, synthesis_agent, research_agent)
+    pipeline_specs = build_pipeline(secs, hooks)
+    validate_capabilities(pipeline_specs, stop_after=stop_after)
+
+    agents = {
+        "fast": extraction_agent,
+        "default": synthesis_agent,
+        "tool": research_agent,
+    }
+    return pipeline_specs, agents
+
+
 async def dissect_paper(
     pid: str,
     backend: StorageBackend,
@@ -1496,7 +1565,7 @@ async def dissect_paper(
     )
 
     services, defaults = load_services()
-    slots = resolve_slots(services, defaults, service_overrides)
+    slot_bindings = resolve_slots(services, defaults, service_overrides)
 
     providers, provider_defaults = load_transformer_providers()
     provider = resolve_transformer_provider(
@@ -1508,19 +1577,10 @@ async def dissect_paper(
         classifiers, classifier_defaults, classifier_overrides,
     )
 
-    extraction_agent = AgentBackend(slots.get("fast", slots["default"]), thinking_budget=2048)
-    synthesis_agent = AgentBackend(slots["default"], thinking_budget=4096)
-    research_agent = AgentBackend(slots.get("tool", slots["default"]))
-
-    agents = {
-        "fast": extraction_agent,
-        "default": synthesis_agent,
-        "tool": research_agent,
-    }
-
     secs = dict(load_sections("dissect", "dissect.md"))
-    hooks = _build_hooks(extraction_agent, synthesis_agent, research_agent)
-    pipeline = build_pipeline(secs, hooks)
+    pipeline, agents = build_dissect_pipeline(
+        secs, slot_bindings, classifier_slots, stop_after=stop_after,
+    )
 
     try:
         meta = backend.get_meta(pid)
