@@ -61,14 +61,21 @@ def capable_services(monkeypatch):
     succeed so the get_meta error path is reachable.
     """
     from dissect import pipeline as dissect_pipeline_mod
+    from pipeline.services import ServiceRegistry
 
     stub = _FullyCapableStub()
     services = {"stub": stub}
     defaults = {"fast": "stub", "default": "stub", "tool": "stub"}
+    # ``api_key_envs={}`` opts out of ``resolve_slots``'s env-var
+    # validation: the stub never represents a real authenticated
+    # service.
+    registry = ServiceRegistry(
+        services=services, defaults=defaults, api_key_envs={},
+    )
     monkeypatch.setattr(
         dissect_pipeline_mod,
         "load_services",
-        lambda: (services, defaults),
+        lambda: registry,
     )
 from dissect.pipeline import (
     _citation_info,

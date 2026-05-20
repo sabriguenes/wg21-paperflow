@@ -24,6 +24,18 @@ from advocatus.models import PipelineState
 from advocatus.pipeline import _guard_not_sine_causa
 
 
+@pytest.fixture(autouse=True)
+def _placeholder_api_keys(monkeypatch):
+    # Tests in this module invoke ``advocatus_paper`` to exercise
+    # error paths unrelated to authentication. ``pipeline.resolve_slots``
+    # now validates env vars at slot-binding; placeholder values let
+    # the validation pass so the test reaches the path it actually
+    # cares about. The fail-fast contract itself is covered in
+    # ``packages/pipeline/tests/test_services.py``.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder-for-tests")
+    monkeypatch.setenv("RUNPOD_API_KEY", "placeholder-for-tests")
+
+
 def test_guard_not_sine_causa_passes_when_no_seal():
     state = PipelineState()
     assert _guard_not_sine_causa(state) is True

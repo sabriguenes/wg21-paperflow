@@ -28,7 +28,7 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, ClassVar, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -127,8 +127,19 @@ class ModelBackend(ABC):
     API extensions.
     """
 
-    thinking_capable: bool
-    tools_capable: bool
+    thinking_capable: ClassVar[bool] = False
+    tools_capable: ClassVar[bool] = False
+
+    required_api_key_env: ClassVar[str | None] = None
+    """Env var the loader must see declared on the service entry.
+
+    Set on subclasses whose SDK reads its credential directly from the
+    environment (and therefore ignores the ``api_key`` kwarg). When
+    non-None, ``load_services`` rejects ``[services.NAME]`` entries
+    whose ``api_key_env`` does not match this value, so the loader and
+    the SDK cannot drift apart on which variable the user must export.
+    Leave as ``None`` for backends that accept the ``api_key`` kwarg.
+    """
 
     @abstractmethod
     async def run(
@@ -177,8 +188,8 @@ class DeepSeekR1DistillVllm021Backend(ModelBackend):
 
     def __init__(self, *, base_url: str, api_key: str, model: str,
                  max_tokens: int = 16384, **kwargs: Any) -> None:
-        from openai import AsyncOpenAI
-        self._client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+        self._base_url = base_url
+        self._api_key = api_key
         self._model = model
         self._max_tokens = max_tokens
 
@@ -194,6 +205,8 @@ class DeepSeekR1DistillVllm021Backend(ModelBackend):
         debug_log: list[str] | None = None,
         request_limit: int = DEFAULT_REQUEST_LIMIT,
     ) -> _T:
+        from openai import AsyncOpenAI
+
         if tools:
             raise NotImplementedError(
                 f"{type(self).__name__} does not support tools. "
@@ -203,6 +216,8 @@ class DeepSeekR1DistillVllm021Backend(ModelBackend):
             raise ValueError(
                 f"request_limit must be >= 1, got {request_limit}"
             )
+
+        client = AsyncOpenAI(base_url=self._base_url, api_key=self._api_key)
 
         schema_block = _schema_instruction(output_type)
         full_system = f"{system_prompt}\n\n{schema_block}"
@@ -214,7 +229,7 @@ class DeepSeekR1DistillVllm021Backend(ModelBackend):
 
         max_attempts = min(2, request_limit)
         for attempt in range(max_attempts):
-            response = await self._client.chat.completions.create(
+            response = await client.chat.completions.create(
                 model=self._model,
                 messages=messages,
                 temperature=0.0,
@@ -462,6 +477,7 @@ class AnthropicBackend(ModelBackend):
 
     thinking_capable = False
     tools_capable = True
+    required_api_key_env = "ANTHROPIC_API_KEY"
 
     def __init__(self, *, model: str, max_tokens: int = 80000,
                  **kwargs: Any) -> None:

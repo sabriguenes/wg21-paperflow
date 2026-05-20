@@ -92,8 +92,8 @@ async def _run_full_pipeline(
     ``PipelineState`` reachable for assertions; ``dissect_paper``
     returns only the rendered report string.
     """
-    services, defaults = load_services()
-    slots = resolve_slots(services, defaults)
+    registry = load_services()
+    slots = resolve_slots(registry)
     fast_svc, fast_backend = slots.get("fast", slots["default"])
     default_svc, default_backend = slots["default"]
     tool_svc, tool_backend = slots.get("tool", slots["default"])

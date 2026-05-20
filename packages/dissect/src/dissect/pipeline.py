@@ -1564,8 +1564,8 @@ async def dissect_paper(
         resolve_transformer_provider,
     )
 
-    services, defaults = load_services()
-    slot_bindings = resolve_slots(services, defaults, service_overrides)
+    registry = load_services()
+    slot_bindings = resolve_slots(registry, service_overrides)
 
     providers, provider_defaults = load_transformer_providers()
     provider = resolve_transformer_provider(

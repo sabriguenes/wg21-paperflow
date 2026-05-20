@@ -42,6 +42,7 @@ from pipeline.runner import (
     write_debug_file,
 )
 from pipeline.services import (
+    ServiceRegistry,
     load_classifiers,
     load_services,
     load_transformer_providers,
@@ -116,6 +117,7 @@ __all__ = [
     "ConvertReport",
     "PromptFileError",
     "resolve_slots",
+    "ServiceRegistry",
     "run_agent",
     "run_task",
     "sanitize_md",

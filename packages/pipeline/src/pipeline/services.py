@@ -5,7 +5,7 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Service loader: SERVICES.toml -> ModelBackend instances.
+"""Service loader: SERVICES.toml -> :class:`ServiceRegistry`.
 
 ``SERVICES.toml`` at the repo root is a pure infrastructure inventory.
 Each ``[services.NAME]`` section declares an endpoint with its
@@ -16,6 +16,16 @@ the file).
 The ``[defaults]`` section maps slot names (``fast``, ``default``,
 ``tool``) to service names for interactive use. The orchestrator
 overrides via ``--service`` CLI flags.
+
+Validation happens in two layers:
+
+- :func:`load_services` does eager config-shape checks: unknown
+  ``backend`` keys and ``required_api_key_env`` mismatches both raise
+  at load. Env var presence is *not* checked here.
+- :func:`resolve_slots` does lazy env var validation: only services
+  bound to a slot (after defaults + overrides merge) are required to
+  have their env var set. This keeps SERVICES.toml an inventory --
+  unbound entries stay inert.
 """
 
 from __future__ import annotations
@@ -23,7 +33,10 @@ from __future__ import annotations
 import logging
 import os
 import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from pipeline.classifier_backends import (
@@ -38,6 +51,41 @@ logger = logging.getLogger(__name__)
 _SERVICES_FILENAME = "SERVICES.toml"
 
 
+@dataclass(frozen=True)
+class ServiceRegistry:
+    """Loader output: services + defaults + env-var metadata.
+
+    Read-only by construction: the three mappings are wrapped in
+    :class:`types.MappingProxyType` at init time, so attempts to assign
+    into them raise ``TypeError``. The type annotations use
+    :class:`collections.abc.Mapping` (not ``dict``) to reflect that
+    callers must treat the contents as immutable.
+
+    ``api_key_envs[name]`` is the env var name declared on
+    ``[services.NAME]``, or ``""`` for entries with no auth.
+    """
+
+    services: Mapping[str, ModelBackend]
+    defaults: Mapping[str, str]
+    api_key_envs: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        # Copy then proxy: freezes the snapshot we were handed and
+        # prevents external mutation of the original dict from
+        # bleeding through the proxy. ``frozen=True`` blocks direct
+        # attribute assignment in __post_init__, so go through
+        # ``object.__setattr__``.
+        object.__setattr__(
+            self, "services", MappingProxyType(dict(self.services))
+        )
+        object.__setattr__(
+            self, "defaults", MappingProxyType(dict(self.defaults))
+        )
+        object.__setattr__(
+            self, "api_key_envs", MappingProxyType(dict(self.api_key_envs))
+        )
+
+
 def _find_services_toml() -> Path | None:
     """Walk up from cwd to find SERVICES.toml."""
     here = Path.cwd()
@@ -48,15 +96,36 @@ def _find_services_toml() -> Path | None:
     return None
 
 
-def load_services(path: Path | None = None) -> tuple[dict[str, ModelBackend], dict[str, str]]:
-    """Parse SERVICES.toml, resolve API keys, build ModelBackend instances.
+def load_services(path: Path | None = None) -> ServiceRegistry:
+    """Parse SERVICES.toml, build ModelBackend instances, return registry.
 
-    Returns ``(services, defaults)`` where ``services`` maps service
-    names to ``ModelBackend`` instances and ``defaults`` maps slot
-    names to service names from the ``[defaults]`` section.
+    Returns a :class:`ServiceRegistry` carrying:
+
+    - ``services``: service name -> :class:`ModelBackend` instance.
+    - ``defaults``: slot name -> service name (from ``[defaults]``).
+    - ``api_key_envs``: service name -> env var name declared on the
+      entry, or ``""`` for entries with no auth. :func:`resolve_slots`
+      consumes this to validate the env vars of the slot-bound subset
+      at resolution time (lazy, so unused inventory entries stay
+      inert).
+
+    For each ``[services.NAME]`` entry the order of operations is
+    fixed:
+
+    1. Look up ``backend`` in :data:`BACKEND_REGISTRY` (raises on
+       unknown).
+    2. Read ``backend_cls.required_api_key_env``. If non-None, the
+       entry's ``api_key_env`` must match (raises otherwise). This
+       shape check fires *before* the backend constructor runs, so
+       the framework's :class:`ValueError` wins over any backend
+       ``__init__`` strictness.
+    3. Read the env var (may be unset; no error here).
+    4. Construct the backend.
+    5. Record the env var name in ``api_key_envs``.
 
     Raises ``FileNotFoundError`` if the config file is not found.
-    Raises ``ValueError`` for unknown backend types or missing env vars.
+    Raises ``ValueError`` for unknown backend types and for
+    ``required_api_key_env`` mismatches.
     """
     if path is None:
         path = _find_services_toml()
@@ -73,7 +142,9 @@ def load_services(path: Path | None = None) -> tuple[dict[str, ModelBackend], di
     defaults = config.get("defaults", {})
 
     services: dict[str, ModelBackend] = {}
+    api_key_envs: dict[str, str] = {}
     for name, svc in services_config.items():
+        # (1) Resolve the backend class.
         backend_key = svc.get("backend")
         if backend_key not in BACKEND_REGISTRY:
             raise ValueError(
@@ -81,45 +152,78 @@ def load_services(path: Path | None = None) -> tuple[dict[str, ModelBackend], di
                 f"which is not in the registry. "
                 f"Available: {sorted(BACKEND_REGISTRY)}"
             )
+        backend_cls = BACKEND_REGISTRY[backend_key]
 
+        # (2) Shape check: backends that read their credential
+        # directly from the environment (rather than via the
+        # ``api_key`` kwarg) declare the only acceptable env var
+        # name. Reject mismatches before constructing the backend so
+        # the framework's error always wins over any backend
+        # ``__init__`` failure.
         api_key_env = svc.get("api_key_env", "")
-        api_key = os.environ.get(api_key_env, "") if api_key_env else ""
-        if api_key_env and not api_key:
-            logger.warning(
-                "Service '%s': env var '%s' is not set. "
-                "Requests will fail if the endpoint requires authentication.",
-                name, api_key_env,
+        required = backend_cls.required_api_key_env
+        if required is not None and api_key_env != required:
+            raise ValueError(
+                f"Service '{name}': backend='{backend_key}' requires "
+                f"api_key_env='{required}' (got {api_key_env!r}). "
+                f"This backend reads {required} from the environment "
+                f"directly; any other name will not be honored."
             )
 
-        backend_cls = BACKEND_REGISTRY[backend_key]
+        # (3) Read the env var. Missing values are not an error here
+        # -- ``resolve_slots`` validates them per bound slot.
+        api_key = os.environ.get(api_key_env, "") if api_key_env else ""
+
+        # (4) Construct.
         init_kwargs: dict[str, Any] = {
             "base_url": svc.get("base_url", ""),
-            "api_key": api_key or "dummy",
+            "api_key": api_key,
             "model": svc.get("model", ""),
             "max_tokens": svc.get("max_tokens", 16384),
         }
-
         services[name] = backend_cls(**init_kwargs)
+
+        # (5) Record.
+        api_key_envs[name] = api_key_env
+
         logger.info(
             "Service '%s': %s  model=%s  endpoint=%s",
             name, backend_key, init_kwargs["model"], init_kwargs["base_url"],
         )
 
-    return services, defaults
+    return ServiceRegistry(
+        services=services,
+        defaults=defaults,
+        api_key_envs=api_key_envs,
+    )
 
 
 def resolve_slots(
-    services: dict[str, ModelBackend],
-    defaults: dict[str, str],
+    registry: ServiceRegistry,
     overrides: dict[str, str] | None = None,
 ) -> dict[str, tuple[str, ModelBackend]]:
-    """Map slot names to (service_name, ModelBackend) bindings.
+    """Map slot names to (service_name, ModelBackend) bindings, validating env vars.
 
-    ``overrides`` (from ``--service`` CLI flags) beat ``defaults``
-    (from ``[defaults]`` in SERVICES.toml).
+    ``overrides`` (from ``--service`` CLI flags) beat
+    ``registry.defaults`` (from ``[defaults]`` in SERVICES.toml).
 
     When a single override has no ``=`` (e.g., ``--service b200-r1``),
-    it applies to all slots in ``defaults``.
+    it applies to all slots in ``registry.defaults``.
+
+    Validation: for every slot in the merged map, if the bound
+    service declared an ``api_key_env`` (non-empty in
+    ``registry.api_key_envs``), the env var must be set to a
+    non-whitespace value. Env var values are stripped before the
+    emptiness check, so trailing newlines from shell composition
+    (e.g. ``KEY=$(cat ./secrets/key)``) and stray-whitespace typos
+    (``export KEY=" "``) are both rejected. Services that declared no
+    ``api_key_env`` (local vLLM and similar no-auth endpoints) skip
+    the check.
+
+    Validation only fires for slot-bound services, so unused entries
+    in SERVICES.toml stay inert and a developer running
+    ``--service b200-r1`` does not need to export the env var of a
+    different declared-but-unbound service.
 
     The service name is returned alongside the backend so callers can
     thread it into ``AgentBackend(slot_name=..., service_name=...)``
@@ -127,21 +231,38 @@ def resolve_slots(
     typed instead of an internal backend class name.
 
     Raises ``KeyError`` if a slot references a service name that
-    doesn't exist in ``services``.
+    doesn't exist in ``registry.services``.
+    Raises ``ValueError`` if a bound service's declared
+    ``api_key_env`` env var is missing, empty, or whitespace-only.
     """
-    merged = dict(defaults)
+    merged = dict(registry.defaults)
     if overrides:
         merged.update(overrides)
 
     slots: dict[str, tuple[str, ModelBackend]] = {}
     for slot_name, service_name in merged.items():
-        if service_name not in services:
+        if service_name not in registry.services:
             raise KeyError(
                 f"Slot '{slot_name}' references service '{service_name}' "
                 f"which is not defined in SERVICES.toml. "
-                f"Available services: {sorted(services)}"
+                f"Available services: {sorted(registry.services)}"
             )
-        slots[slot_name] = (service_name, services[service_name])
+
+        env_var = registry.api_key_envs.get(service_name, "")
+        if env_var:
+            value = os.environ.get(env_var, "").strip()
+            if not value:
+                raise ValueError(
+                    f"Slot '{slot_name}' is bound to service "
+                    f"'{service_name}', which requires env var "
+                    f"'{env_var}'.\n"
+                    f"Export it before running paperflow:\n"
+                    f"  export {env_var}=<your-key>\n"
+                    f"Or override the slot:\n"
+                    f"  paperflow ... --service {slot_name}=<other-service>"
+                )
+
+        slots[slot_name] = (service_name, registry.services[service_name])
 
     return slots
 

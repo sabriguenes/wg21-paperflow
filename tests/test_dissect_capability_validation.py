@@ -201,17 +201,23 @@ def test_dissect_paper_fails_fast_with_bad_service_binding(monkeypatch, tmp_path
     # alias in the module under test) so a future import-form refactor
     # would surface here instead of silently neutering the patch.
     from dissect import pipeline as dissect_pipeline_mod
+    from pipeline.services import ServiceRegistry
 
     capable = _ToolsCapableStub()
     toolless = _ToollessStub()
 
     services = {"good": capable, "bad": toolless}
     defaults = {"fast": "good", "default": "good", "tool": "bad"}
+    # Empty api_key_envs opts out of resolve_slots's env-var validation;
+    # the stubs do not represent real authenticated services.
+    registry = ServiceRegistry(
+        services=services, defaults=defaults, api_key_envs={},
+    )
 
     monkeypatch.setattr(
         dissect_pipeline_mod,
         "load_services",
-        lambda: (services, defaults),
+        lambda: registry,
     )
 
     # The transformer/classifier path runs before build_dissect_pipeline;

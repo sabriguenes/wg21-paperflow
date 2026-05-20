@@ -26,7 +26,7 @@ from pipeline import (
     AgentBackend, ModelBackend,
     ClassifierBackend, ZeroShotV2Backend, NliCrossEncoderBackend,
     CLASSIFIER_BACKEND_REGISTRY,
-    load_services, resolve_slots,
+    load_services, resolve_slots, ServiceRegistry,
     load_classifiers, resolve_classifier_slots,
     PipelineError, StepError, HookMismatchError, MissingMetadataError,
     CapabilityMismatchError,
@@ -103,6 +103,8 @@ Determinism contract (mirror of `dissect/shadow.py`): offline-first weight loadi
 - Backends are long-lived. `BraveBackend` holds a persistent connection pool and rate limiter. Create once, share across `WebResearcher` instances for parallel runs.
 - Researcher borrows or owns. Pass a backend to share it. Omit to auto-create one. `_owns_backend` tracks who closes it.
 - Fail loud. Missing `BRAVE_API_KEY` raises `ValueError` at construction time, not at first search call.
+- Fail loud. `resolve_slots` raises `ValueError` when a bound service's declared `api_key_env` env var is missing, empty, or whitespace-only. The check fires at slot-binding time, not at config load, so unbound entries in `SERVICES.toml` stay inert.
+- Backend env-var contracts are declared on the class. A `ModelBackend` subclass that reads its env var directly from the environment (rather than receiving it as a kwarg) sets `required_api_key_env: ClassVar[str]`. `load_services` rejects `[services.NAME]` entries whose `api_key_env` does not match this value, so the loader and the SDK cannot drift apart on which variable the user must export.
 - No global state. The researcher is an explicit object. Create it, pass it around, close it.
 - Errors are typed. All pipeline errors inherit `PipelineError`. Downstream packages re-raise domain errors (e.g. `DissectError`) that also inherit `PipelineError`.
 - `fetch` streams bodies with a hard cap. Bodies are consumed through `client.stream(...)` + `aiter_bytes()`. Any response whose accumulated size exceeds `_MAX_FETCH_BYTES` (25 MB) is aborted mid-read. The cap fires before any extractor runs, so neither trafilatura nor any binary extractor ever sees an oversized body.

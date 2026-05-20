@@ -729,8 +729,8 @@ async def agora_paper(
     :class:`PaperNotConvertedError`, or :class:`PaperNotDissectedError`
     if the prerequisite paperstore artifacts are missing.
     """
-    services, defaults = load_services()
-    slots = resolve_slots(services, defaults, service_overrides)
+    registry = load_services()
+    slots = resolve_slots(registry, service_overrides)
 
     default_svc, default_backend = slots["default"]
     tool_svc, tool_backend = slots.get("tool", slots["default"])

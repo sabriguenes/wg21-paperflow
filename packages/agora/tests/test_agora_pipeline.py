@@ -28,6 +28,18 @@ from agora.pipeline import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _placeholder_api_keys(monkeypatch):
+    # Tests in this module invoke ``agora_paper`` to exercise error
+    # paths unrelated to authentication. ``pipeline.resolve_slots``
+    # now validates env vars at slot-binding; placeholder values let
+    # the validation pass so the test reaches the path it actually
+    # cares about. The fail-fast contract itself is covered in
+    # ``packages/pipeline/tests/test_services.py``.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder-for-tests")
+    monkeypatch.setenv("RUNPOD_API_KEY", "placeholder-for-tests")
+
+
 def test_guard_encounter_count_skips_when_zero():
     s = PipelineState(encounter_count=0)
     assert _guard_encounter_count_positive(s) is False
