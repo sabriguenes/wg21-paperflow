@@ -22,7 +22,6 @@ from pathlib import Path
 import cli.mailing as _mailing_mod
 import cli.download as _download_mod
 import cli.convert as _convert_mod
-import cli.advocatus as _advocatus_mod
 import cli.agora as _agora_mod
 import cli.assay as _assay_mod
 import cli.status as _status_mod
@@ -32,14 +31,13 @@ from cli.targets import MONTH_RE
 from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
 
 _VERB_NAMES = {
-    "mailing", "download", "convert", "advocatus", "agora", "assay", "status",
+    "mailing", "download", "convert", "agora", "assay", "status",
 }
 
 _VERB_HELP = {
     "mailing":   "Scrape all WG21 mailing indexes (2011-current). Idempotent.",
     "download":  "Download source files for TARGET papers.",
     "convert":   "Convert source files to markdown for TARGET papers. Downloads first if needed.",
-    "advocatus": "Run adversarial examination for TARGET papers. Runs all prior stages if needed.",
     "agora":     "Plan discussion threads for TARGET papers. Runs all prior stages if needed.",
     "assay":     "Structural analysis of TARGET papers (two-pass, six lenses).",
     "status":    "Show processing status for papers.",
@@ -57,10 +55,6 @@ _VERB_DESCRIPTION = {
     "convert": (
         "Convert staged PDF/HTML sources to markdown using tomd. "
         "Hard-fails if the source is not yet staged."
-    ),
-    "advocatus": (
-        "Examine a paper through the two-office tribunal: "
-        "Advocatus Diaboli drafts charges, Defensor Causae cross-examines them."
     ),
     "agora": (
         "Plan a fake r/wg21 Reddit thread for a paper. "
@@ -84,7 +78,6 @@ _VERB_TARGETS_HELP = {
     "mailing":   "Not used (mailing discovers years automatically).",
     "download":  "Year (2026), paper id(s) (P3642R4 ...), or year-month (2026-01).",
     "convert":   "Year (2026), paper id(s) (P3642R4 ...), or year-month (2026-01).",
-    "advocatus": "Paper ID (P4003R2) or year-month (2026-01) for batch examination.",
     "agora":     "Paper ID (P4003R2) or year-month (2026-01) for batch planning.",
     "assay":     "Paper ID (P4003R2) or year-month (2026-01) for batch analysis.",
     "status":    "Paper ID, year, year-month, or omit for all incomplete papers.",
@@ -94,7 +87,6 @@ _COMMANDS = {
     "mailing":   _mailing_mod,
     "download":  _download_mod,
     "convert":   _convert_mod,
-    "advocatus": _advocatus_mod,
     "agora":     _agora_mod,
     "assay":     _assay_mod,
     "status":    _status_mod,
@@ -104,9 +96,8 @@ _VERB_FLAGS: dict[str, set[str]] = {
     "mailing":   set(),
     "download":  {"force", "concurrency"},
     "convert":   {"force", "concurrency", "check_content", "check_content_json", "keep_downstream", "yes"},
-    "advocatus": {"debug", "trace", "step", "service", "provider", "force"},
-    "agora":     {"debug", "trace", "step", "service", "provider", "force"},
-    "assay":     {"debug", "trace", "step", "service", "force", "rerender"},
+    "agora":     {"debug", "trace", "step", "provider", "force"},
+    "assay":     {"debug", "trace", "step", "force", "rerender"},
     "status":    set(),
 }
 
@@ -134,9 +125,6 @@ _FLAG_DEFS: list[dict] = [
     dict(name="chunk", flags=["--chunk"], type=int,
          default=None, metavar="C",
          help="Run only chunk C in parallel steps."),
-    dict(name="service", flags=["--service"], action="append",
-         default=None, metavar="NAME",
-         help="Override service binding. Use NAME to override all slots, or SLOT=NAME for one slot. Repeatable."),
     dict(name="classifier", flags=["--classifier"], action="append",
          default=None, metavar="NAME",
          help="Override classifier slot binding. Use NAME to override all slots, or SLOT=NAME (e.g. selector=zeroshot-base) for one slot. Repeatable."),
@@ -144,7 +132,7 @@ _FLAG_DEFS: list[dict] = [
          help="Override the active transformer provider (device/dtype/batch). Defaults to PAPERFLOW_TRANSFORMER_PROVIDER, then [transformer_provider_defaults].default in SERVICES.toml, then 'auto' (host-detected)."),
     dict(name="keep_downstream", flags=["--keep-downstream"], action="store_true",
          default=False,
-         help="On convert: don't clear advocatus/agora artifacts even "
+         help="On convert: don't clear agora artifacts even "
               "when the markdown content changed. Stored loc.line offsets may "
               "be stale until you re-run those pipelines."),
     dict(name="yes", flags=["-y", "--yes"], action="store_true",
@@ -165,7 +153,6 @@ Examples:
   paperflow mailing                scrape mailing index
   paperflow download P3642R4       download one paper
   paperflow convert 2026-01        convert papers from Jan 2026 onward
-  paperflow advocatus P4003R2      examine a paper
   paperflow agora P4003R2          plan a discussion thread
   paperflow status                 show all incomplete papers
   paperflow status P4003R2         show status of one paper
@@ -211,7 +198,7 @@ def _validate_targets(verb: str, targets: list[str]) -> None:
             print(f"paperflow {verb}: {exc}", file=sys.stderr)
             sys.exit(1)
 
-    for process_verb in ("advocatus", "agora"):
+    for process_verb in ("agora",):
         if verb != process_verb:
             continue
         if "year" in kinds:

@@ -17,7 +17,6 @@ packages/
   tomd/         PDF/HTML to Markdown
   pipeline/     LLM pipeline framework (pydantic-ai, web tools)
   dissect/      LLM-driven paper dissect pipeline
-  advocatus/    LLM-driven paper examination pipeline
   agora/        LLM-driven thread planning pipeline
   cli/          ingestion + conversion + dissect CLI
 tests/          cross-package integration tests
@@ -42,7 +41,7 @@ WG21_DATA_DIR/
                                    # for HTML papers.
 ```
 
-Pipeline artifacts (dissect/advocatus/agora outputs, debug, trace) are namespaced per tool. Use `backend.get_debug_md_path(pid, tool)` and `backend.get_trace_md_path(pid, tool)` rather than constructing paths.
+Pipeline artifacts (dissect/agora outputs, debug, trace) are namespaced per tool. Use `backend.get_debug_md_path(pid, tool)` and `backend.get_trace_md_path(pid, tool)` rather than constructing paths.
 
 ## Front matter (tomd output)
 
@@ -74,7 +73,7 @@ This is not optional. It is the foundation for determinism, security, and eventu
 
 Semantic stability across runs is non-negotiable for the analytical pipelines. Their findings must be reproducible: re-running on the same paper must produce the same verdicts, the same structure. Any source of run-to-run variance (concurrent in-flight requests, temperature drift, unordered set iteration into a prompt) is a defect, not a tunable. Quality-stability, not bit-identical: same findings, same verdicts, same structure. Bit-exact reproducibility on hosted endpoints is impossible without server-side batch-invariant kernels.
 
-The `pipeline` framework permits non-serial execution as a capability for future packages that may not need byte-identical reproducibility, but the **default is serial** and dissect and advocatus rely on that default. Any change that raises `_PARALLEL_CONCURRENCY`, `_TASK_CONCURRENCY`, or otherwise allows multiple in-flight LLM requests must keep dissect and advocatus on the serial path (per-context or per-call concurrency parameter; never a global flip).
+The `pipeline` framework permits non-serial execution as a capability for future packages that may not need byte-identical reproducibility, but the **default is serial** and dissect relies on that default. Any change that raises `_PARALLEL_CONCURRENCY`, `_TASK_CONCURRENCY`, or otherwise allows multiple in-flight LLM requests must keep dissect on the serial path (per-context or per-call concurrency parameter; never a global flip).
 
 See `MODELS.md` for sampling pins, MoE caveats, and the workaround inventory.
 
@@ -86,7 +85,7 @@ See `MODELS.md` for sampling pins, MoE caveats, and the workaround inventory.
 - D8. See `MODELS.md`.
 - D9. Pass `UsageLimits(...)` to `agent.run(...)`, never to `Agent(...)`. The constructor silently drops it.
 - D10. Pair every `output_type` with a finite retry budget (`output_retries=N`). Use `ModelRetry(...)` in `output_validator`s to self-correct; do not rely on raw `ValidationError` feedback.
-- D11. `dissect` and `advocatus` run with at most one in-flight LLM request at a time. The framework defaults to serial via `_parallel_semaphore` and `_task_semaphore` at `asyncio.Semaphore(1)`. New packages that opt into concurrent execution must do so through a per-package mechanism that leaves these two pipelines on the serial path.
+- D11. `dissect` runs with at most one in-flight LLM request at a time. The framework defaults to serial via `_parallel_semaphore` and `_task_semaphore` at `asyncio.Semaphore(1)`. New packages that opt into concurrent execution must do so through a per-package mechanism that leaves dissect on the serial path.
 
 D2 and D3 name pipeline-internal symbols and live in `packages/pipeline/src/pipeline/CLAUDE.md`.
 
@@ -123,7 +122,7 @@ Override slots at the CLI with `--service NAME` (all slots) or `--service SLOT=N
 
 ## Fidelity
 
-The analytical pipelines (dissect, advocatus, agora) cannot tolerate partial results. A wrong objection or missing evidence destroys credibility in a way that cannot be regained.
+The analytical pipelines (dissect, agora) cannot tolerate partial results. A wrong objection or missing evidence destroys credibility in a way that cannot be regained.
 
 If full fidelity cannot be achieved, stop. Fail the paper with a clear error message. Preserve the debug transcript. Never produce a partial result mistakable for a complete one.
 

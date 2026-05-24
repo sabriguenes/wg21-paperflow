@@ -20,26 +20,6 @@ from paperstore.stages import STAGE_NAMES
 from cli.targets import MONTH_RE, resolve_pid
 
 
-def _parse_service_overrides(raw: list[str] | None) -> dict[str, str] | None:
-    """Parse ``--service`` flag values into a slot -> service-name dict.
-
-    A bare ``NAME`` (no ``=``) applies to all default slots.
-    ``SLOT=NAME`` overrides one slot.
-    """
-    if not raw:
-        return None
-    overrides: dict[str, str] = {}
-    for item in raw:
-        if "=" in item:
-            slot, name = item.split("=", 1)
-            overrides[slot.strip()] = name.strip()
-        else:
-            overrides["fast"] = item
-            overrides["default"] = item
-            overrides["tool"] = item
-    return overrides
-
-
 def _parse_classifier_overrides(raw: list[str] | None) -> dict[str, str] | None:
     """Parse ``--classifier`` flag values into a slot -> classifier-name dict.
 
@@ -80,7 +60,6 @@ def run_process_command(
     force = getattr(args, "force", False)
     keep_downstream = getattr(args, "keep_downstream", False)
     skip_prompt = getattr(args, "yes", False)
-    service_overrides = _parse_service_overrides(getattr(args, "service", None))
     classifier_overrides = _parse_classifier_overrides(getattr(args, "classifier", None))
     provider_override = getattr(args, "provider", None)
 
@@ -122,25 +101,13 @@ def run_process_command(
         and not skip_prompt
         and sys.stdin.isatty()
     ):
-        advocatus_n = sum(
-            1 for p in papers if p.markdown_path and p.advocatus_path
-        )
         agora_n = sum(1 for p in papers if p.markdown_path and p.agora_path)
-        affected = sum(
-            1 for p in papers
-            if p.markdown_path and (
-                p.advocatus_path or p.agora_path
-            )
-        )
-        if affected > 0:
+        if agora_n > 0:
             print(
                 f"convert: this batch will invalidate downstream artifacts "
-                f"for {affected} paper(s)"
+                f"for {agora_n} paper(s)"
             )
-            if advocatus_n:
-                print(f"  - advocatus outputs: {advocatus_n} papers")
-            if agora_n:
-                print(f"  - agora outputs:     {agora_n} papers")
+            print(f"  - agora outputs: {agora_n} papers")
             print("re-run those pipelines after convert finishes to refresh.")
             try:
                 answer = input("Continue? [y/N] ").strip().lower()
@@ -179,7 +146,6 @@ def run_process_command(
                         trace=trace,
                         stop_after=stop_after,
                         chunk_index=chunk_index,
-                        service_overrides=service_overrides,
                         classifier_overrides=classifier_overrides,
                         provider_override=provider_override,
                         force=force,
@@ -236,8 +202,7 @@ def run_process_command(
         for pid, r in invalidated:
             print(f"  {pid} ({', '.join(r.downstream_cleared)})")
         print(
-            "  re-run `paperflow advocatus` / `paperflow agora` / "
-            "`paperflow assay` to refresh."
+            "  re-run `paperflow agora` / `paperflow assay` to refresh."
         )
 
     ok = total - failed

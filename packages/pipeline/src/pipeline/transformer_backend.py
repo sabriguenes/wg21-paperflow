@@ -7,7 +7,7 @@
 
 """Pipeline-owned transformer inference layer.
 
-Callers (advocatus, future Step 9 NLI gates) pass collections
+Callers (future Step 9 NLI gates) pass collections
 of work to a :class:`TransformerBackend` subclass; the backend slices
 the collection into batches sized by the active
 :class:`TransformerProvider` and runs inference on the device, dtype,

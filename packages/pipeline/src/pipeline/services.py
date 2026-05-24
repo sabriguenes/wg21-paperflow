@@ -11,28 +11,25 @@
 Each ``[services.NAME]`` section declares an endpoint with its
 capabilities. API keys come from environment variables only (the
 ``api_key_env`` field names the env var; the key itself is never in
-the file).
-
-The ``[defaults]`` section maps slot names (``fast``, ``default``,
-``tool``) to service names for interactive use. The orchestrator
-overrides via ``--service`` CLI flags.
+the file). There are no slot defaults; each pipeline's markdown file
+declares its own logical-name -> service-name map under
+``## Services``.
 
 Validation happens in two layers:
 
 - :func:`load_services` does eager config-shape checks: unknown
   ``backend`` keys and ``required_api_key_env`` mismatches both raise
   at load. Env var presence is *not* checked here.
-- :func:`resolve_slots` does lazy env var validation: only services
-  bound to a slot (after defaults + overrides merge) are required to
-  have their env var set. This keeps SERVICES.toml an inventory --
-  unbound entries stay inert.
+- :func:`resolve_pipeline_models` does lazy env var validation: only
+  services referenced by the pipeline's ``## Services`` block are
+  required to have their env var set. SERVICES.toml entries that no
+  loaded pipeline references stay inert.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -58,11 +55,11 @@ _SERVICES_FILENAME = "SERVICES.toml"
 
 @dataclass(frozen=True)
 class ServiceRegistry:
-    """Loader output: services + defaults + env-var metadata.
+    """Loader output: services + env-var metadata.
 
-    Read-only by construction: the three mappings are wrapped in
-    :class:`types.MappingProxyType` at init time, so attempts to assign
-    into them raise ``TypeError``. The type annotations use
+    Read-only by construction: both mappings are wrapped in
+    :class:`types.MappingProxyType` at init time, so attempts to
+    assign into them raise ``TypeError``. The type annotations use
     :class:`collections.abc.Mapping` (not ``dict``) to reflect that
     callers must treat the contents as immutable.
 
@@ -71,7 +68,6 @@ class ServiceRegistry:
     """
 
     services: Mapping[str, ModelBackend]
-    defaults: Mapping[str, str]
     api_key_envs: Mapping[str, str]
 
     def __post_init__(self) -> None:
@@ -82,9 +78,6 @@ class ServiceRegistry:
         # ``object.__setattr__``.
         object.__setattr__(
             self, "services", MappingProxyType(dict(self.services))
-        )
-        object.__setattr__(
-            self, "defaults", MappingProxyType(dict(self.defaults))
         )
         object.__setattr__(
             self, "api_key_envs", MappingProxyType(dict(self.api_key_envs))
@@ -107,12 +100,11 @@ def load_services(path: Path | None = None) -> ServiceRegistry:
     Returns a :class:`ServiceRegistry` carrying:
 
     - ``services``: service name -> :class:`ModelBackend` instance.
-    - ``defaults``: slot name -> service name (from ``[defaults]``).
     - ``api_key_envs``: service name -> env var name declared on the
-      entry, or ``""`` for entries with no auth. :func:`resolve_slots`
-      consumes this to validate the env vars of the slot-bound subset
-      at resolution time (lazy, so unused inventory entries stay
-      inert).
+      entry, or ``""`` for entries with no auth.
+      :func:`resolve_pipeline_models` consumes this to validate the
+      env vars of the pipeline-referenced subset at resolution time
+      (lazy, so unused inventory entries stay inert).
 
     For each ``[services.NAME]`` entry the order of operations is
     fixed:
@@ -144,7 +136,6 @@ def load_services(path: Path | None = None) -> ServiceRegistry:
         config = tomllib.load(f)
 
     services_config = config.get("services", {})
-    defaults = config.get("defaults", {})
 
     services: dict[str, ModelBackend] = {}
     api_key_envs: dict[str, str] = {}
@@ -218,78 +209,8 @@ def load_services(path: Path | None = None) -> ServiceRegistry:
 
     return ServiceRegistry(
         services=services,
-        defaults=defaults,
         api_key_envs=api_key_envs,
     )
-
-
-def resolve_slots(
-    registry: ServiceRegistry,
-    overrides: dict[str, str] | None = None,
-) -> dict[str, tuple[str, ModelBackend]]:
-    """Map slot names to (service_name, ModelBackend) bindings, validating env vars.
-
-    ``overrides`` (from ``--service`` CLI flags) beat
-    ``registry.defaults`` (from ``[defaults]`` in SERVICES.toml).
-
-    When a single override has no ``=`` (e.g., ``--service b200-r1``),
-    it applies to all slots in ``registry.defaults``.
-
-    Validation: for every slot in the merged map, if the bound
-    service declared an ``api_key_env`` (non-empty in
-    ``registry.api_key_envs``), the env var must be set to a
-    non-whitespace value. Env var values are stripped before the
-    emptiness check, so trailing newlines from shell composition
-    (e.g. ``KEY=$(cat ./secrets/key)``) and stray-whitespace typos
-    (``export KEY=" "``) are both rejected. Services that declared no
-    ``api_key_env`` (local vLLM and similar no-auth endpoints) skip
-    the check.
-
-    Validation only fires for slot-bound services, so unused entries
-    in SERVICES.toml stay inert and a developer running
-    ``--service b200-r1`` does not need to export the env var of a
-    different declared-but-unbound service.
-
-    The service name is returned alongside the backend so callers can
-    thread it into ``AgentBackend(slot_name=..., service_name=...)``
-    for capability-validation error messages that echo what the user
-    typed instead of an internal backend class name.
-
-    Raises ``KeyError`` if a slot references a service name that
-    doesn't exist in ``registry.services``.
-    Raises :class:`ServiceConfigError` if a bound service's declared
-    ``api_key_env`` env var is missing, empty, or whitespace-only.
-    """
-    merged = dict(registry.defaults)
-    if overrides:
-        merged.update(overrides)
-
-    slots: dict[str, tuple[str, ModelBackend]] = {}
-    for slot_name, service_name in merged.items():
-        if service_name not in registry.services:
-            raise KeyError(
-                f"Slot '{slot_name}' references service '{service_name}' "
-                f"which is not defined in SERVICES.toml. "
-                f"Available services: {sorted(registry.services)}"
-            )
-
-        env_var = registry.api_key_envs.get(service_name, "")
-        if env_var:
-            value = os.environ.get(env_var, "").strip()
-            if not value:
-                raise ServiceConfigError(
-                    f"Slot '{slot_name}' is bound to service "
-                    f"'{service_name}', which requires env var "
-                    f"'{env_var}'.\n"
-                    f"Export it before running paperflow:\n"
-                    f"  export {env_var}=<your-key>\n"
-                    f"Or override the slot:\n"
-                    f"  paperflow ... --service {slot_name}=<other-service>"
-                )
-
-        slots[slot_name] = (service_name, registry.services[service_name])
-
-    return slots
 
 
 def load_classifiers(
@@ -536,37 +457,63 @@ def resolve_classifier_slots(
     return slots
 
 
-_MD_BOLD_ITEM_RE = re.compile(r"^\s*-\s+\*\*(\w+):\*\*\s*(.+)", re.MULTILINE)
+def resolve_pipeline_models(
+    services_map: Mapping[str, str],
+    registry: ServiceRegistry,
+) -> dict[str, ModelBackend]:
+    """Resolve a pipeline's logical-name -> ModelBackend map.
 
+    ``services_map`` is the pipeline's parsed ``## Services`` block
+    (from :func:`pipeline.prompt.parse_pipeline_services`). Logical
+    names are pipeline-defined; the only required entry is
+    ``"default"``.
 
-def parse_service_overrides(body: str) -> dict[str, str]:
-    """Parse a ``## Services`` markdown section into slot overrides.
+    Validates:
 
-    Accepts lines like ``- **default:** b300-qwen3-235b`` and returns
-    ``{"default": "b300-qwen3-235b"}``. Used by pipeline entry
-    functions to read per-pipeline service preferences from the
-    prompt file. Precedence: CLI ``--service`` > prompt-file
-    ``## Services`` > SERVICES.toml ``[defaults]``.
+    - ``"default"`` is present.
+    - Every service name in the map exists in
+      ``registry.services``.
+    - Every referenced service's ``api_key_env`` env var is set to a
+      non-whitespace value (services that declared no env var are
+      skipped, mirroring :func:`resolve_slots`).
+
+    Raises :class:`ServiceConfigError` on any failure. The error
+    message identifies the failing logical name and either the missing
+    service or the missing env var so the user can edit the pipeline's
+    markdown file or export the env var.
     """
-    overrides: dict[str, str] = {}
-    for m in _MD_BOLD_ITEM_RE.finditer(body):
-        slot = m.group(1).strip().lower()
-        service = m.group(2).strip()
-        if service:
-            overrides[slot] = service
-    return overrides
+    if "default" not in services_map:
+        raise ServiceConfigError(
+            "Pipeline markdown is missing the required `**default:**` "
+            "entry under `## Services`. Every pipeline must declare which "
+            "service backs the `default` logical model."
+        )
+
+    out: dict[str, ModelBackend] = {}
+    for logical_name, service_name in services_map.items():
+        if service_name not in registry.services:
+            raise ServiceConfigError(
+                f"Pipeline logical model '{logical_name}' maps to service "
+                f"'{service_name}', which is not defined in SERVICES.toml. "
+                f"Available services: {sorted(registry.services)}"
+            )
+
+        env_var = registry.api_key_envs.get(service_name, "")
+        if env_var:
+            value = os.environ.get(env_var, "").strip()
+            if not value:
+                raise ServiceConfigError(
+                    f"Pipeline logical model '{logical_name}' maps to service "
+                    f"'{service_name}', which requires env var "
+                    f"'{env_var}'.\n"
+                    f"Export it before running paperflow:\n"
+                    f"  export {env_var}=<your-key>\n"
+                    f"Or change the binding in the pipeline's markdown "
+                    f"`## Services` section."
+                )
+
+        out[logical_name] = registry.services[service_name]
+
+    return out
 
 
-def parse_pipeline_config(body: str) -> dict[str, str]:
-    """Parse a ``## Config`` markdown section into a flat config dict.
-
-    Same ``- **key:** value`` format as Services. Returns
-    ``{"concurrency": "2", ...}``. Keys are lowercased.
-    """
-    config: dict[str, str] = {}
-    for m in _MD_BOLD_ITEM_RE.finditer(body):
-        key = m.group(1).strip().lower()
-        value = m.group(2).strip()
-        if value:
-            config[key] = value
-    return config

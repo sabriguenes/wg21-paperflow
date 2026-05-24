@@ -3,9 +3,8 @@
 The `review` package pipeline produces a structured trace for each
 WG21 paper: claims, evidence, support map, internal contradictions,
 load-bearing classification. This document describes how that trace
-feeds downstream tools (the advocatus red-team and the Mod thread
-generator) and what additional extraction step makes the trace
-sufficient for both.
+feeds the Mod thread generator and what additional extraction step
+makes the trace sufficient.
 
 ---
 
@@ -19,11 +18,10 @@ It has two blind spots:
 
 1. **Cross-claim reasoning.** Claims are extracted per-chunk and
    verified against evidence one-to-one. The pipeline does not compare
-   claims to each other. The advocatus's strongest finding on P2300R10
-   (asymmetric evidentiary standards between Sections 1.9.2 and 5.6)
-   required noticing that two analogous assertions applied different
-   levels of scrutiny. Both claims were in the trace. Neither was
-   linked to the other.
+   claims to each other. Asymmetric evidentiary standards between
+   sections require noticing that two analogous assertions applied
+   different levels of scrutiny. Both claims may be in the trace but
+   neither is linked to the other.
 
 2. **Rhetorical posture.** The trace extracts what the paper *asserts*
    and what *evidence* it offers. It does not extract how the paper
@@ -98,53 +96,6 @@ per-chunk, Opus verifies and maps in step 5).
 
 ---
 
-## How the trace feeds the advocatus
-
-The advocatus red-team has five phases. The trace covers most of the
-analytical work:
-
-| Advocatus phase | What it needs | Trace coverage |
-|----------------|---------------|----------------|
-| **I. Citatio** (read the paper) | Paper metadata, full read | Step 0 (chunks, citations, metadata from paperstore) |
-| **III. Interrogatio** (assess articuli) | Load-bearing claims, support status | Steps 5-6 (support map, load-bearing classification) |
-| **IV. Examen** (test charges, Dei filter) | Candidate charges + evidence for/against | Internally contested + critical gap claims from step 6; concession markers answer the Confessio challenge; rhetorical markers provide Motivatio |
-| **II. Inquisitio** (external research) | Public record, prior causes, citation verification | Steps 7-8 (web search, resolve) + external web search |
-| **V. Animadversiones** (render verdict) | All of the above | Synthesis step |
-
-The **Dei filter** maps to trace data as follows:
-
-| Dei challenge | Trace source |
-|---------------|-------------|
-| Confessio (author already conceded?) | Concession markers targeting the same topic as the charge |
-| Articulus (paper actually says this?) | Original quotes in claim data |
-| Testimonium (resolvable by one question?) | Whether the claim's evidence is tagged `verifiable` |
-| Humanitas (real opponent would raise this?) | External — needs web search |
-| Prudentia (adversary self-harms by pressing?) | Judgment call — synthesis model |
-| Dignitas (beneath notice?) | Marker intensity + load-bearing classification |
-
-### The synthesis call
-
-A single frontier-model call receives:
-
-- Deduplicated claims (section 2 of trace), tombstones stripped
-- Deduplicated evidence (section 4), compressed to
-  `{loc, supports, tags}` without full quotes
-- Support map (section 5)
-- Load-bearing classifications (section 6)
-- Rhetorical markers (new step)
-- Pattern detection output (Opus post-collection pass)
-- Paper metadata (title, authors, revision, audience)
-
-The prompt instructs it to: (1) identify charges from internally
-contested, critical gap, and asymmetry-pattern markers; (2) apply the
-six Dei challenges to each; (3) render a verdict with surviving
-objections, approbatio sections, and notae minores.
-
-Expected input size: 15-25K tokens for a typical paper. P2300-scale
-papers: 40-60K tokens. Fits in a single context window.
-
----
-
 ## How the trace feeds the Mod
 
 The Mod's Phase I (Intelligence) has two parts: the smell test
@@ -204,8 +155,8 @@ cost of the rhetorical extraction is ~10% of the total pipeline cost.
 
 ## Summary
 
-The review pipeline's trace is the right foundation for both the
-advocatus and the Mod. One additional per-chunk extraction step
+The review pipeline's trace is the right foundation for the Mod.
+One additional per-chunk extraction step
 (rhetorical markers) plus one post-collection pattern detection call
 closes the gap between forensic analysis and the cultural/rhetorical
 intelligence both tools need. The per-chunk extraction uses a fast

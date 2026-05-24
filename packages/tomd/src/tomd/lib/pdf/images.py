@@ -73,8 +73,7 @@ _MAX_IMAGES_PER_PAPER = 20
 # raster (N5007's editor's report) lose the emoji from the output
 # entirely. The current behavior would render 20 of 107 misplaced
 # oversized emoji; the filtered behavior produces clean markdown
-# without that visual noise. advocatus benefits unambiguously - it
-# sees no phantom figures.
+# without that visual noise.
 _MIN_IMAGE_DIM_PT = 20.0
 
 # End-of-body HTML comment appended when the cap fires. Shared between

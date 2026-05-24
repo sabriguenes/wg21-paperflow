@@ -10,8 +10,8 @@
 Three concerns:
 
 - ``sections(source)`` splits a markdown document on H2 boundaries into
-  a ``dict[str, str]``. Used to parse prompt files (``advocatus.md``,
-  ``agora.md``, ``assay.md``) into step sections.
+  a ``dict[str, str]``. Used to parse prompt files (``agora.md``,
+  ``assay.md``) into step sections.
   Fenced code blocks are preserved intact (``## `` and ``---`` inside
   fences do not trigger splits).
 - ``extract_code_blocks(text)`` pulls the raw content out of fenced

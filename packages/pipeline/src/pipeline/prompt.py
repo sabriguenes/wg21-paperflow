@@ -5,22 +5,30 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Parse step metadata from a prompt file and build the pipeline.
+"""Parse a pipeline's prompt file into a :class:`PipelinePrompt`.
 
-The prompt file is the upstream authority for pipeline structure. Each
-step section declares metadata (model slot, execution mode, tools,
-conditions). This module parses that metadata, validates it, and
-combines it with registered Python hooks to produce an ordered list
-of ``StepSpec`` instances.
+The prompt file is the upstream authority for pipeline structure. It
+declares the pipeline's logical-model map (``## Services``), the
+pipeline-wide system prompt (``## System Prompt``), top-level config
+(``## Config``), and every step section (``## N. StepName``). Each
+step section carries its own per-step metadata: which logical model
+runs it, execution mode, tools, conditions, and per-step budgets.
 
-Raises ``PromptFileError`` subtypes on any structural mismatch so the
-user knows to go fix the prompt file.
+This module parses that file once via :meth:`PipelinePrompt.load` and
+combines the parsed steps with the pipeline's registered Python hooks
+to produce an ordered list of :class:`StepSpec` instances.
+
+Raises :class:`PromptFileError` subtypes on any structural mismatch so
+the user knows to go edit the prompt file.
 """
 
 from __future__ import annotations
 
+import functools
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 from pydantic import BaseModel
@@ -30,17 +38,40 @@ from pipeline.errors import (
     MissingMetadataError,
     MissingSystemPromptError,
 )
+from pipeline.markdown import sections as _split_sections
 
 _STEP_RE = re.compile(r"^(?:Step\s+)?(\d+)")
-_META_RE = re.compile(r"^-\s+\*\*([\w \-]+):\*\*\s*(.+)$", re.MULTILINE)
+_META_RE = re.compile(r"^-\s+\*\*([\w \-]+):\*\*\s*(.+)$")
 _STEP_SYSTEM_RE = re.compile(
     r"^### System Prompt\s*\n(?P<body>.*?)(?=^### |\Z)",
     re.MULTILINE | re.DOTALL,
 )
+_MD_BOLD_ITEM_RE = re.compile(r"^\s*-\s+\*\*(\w+):\*\*\s*(.+)", re.MULTILINE)
+
+_PREAMBLE_KEY = "_preamble"
+_SECTION_SERVICES = "Services"
+_SECTION_CONFIG = "Config"
+_SECTION_SYSTEM_PROMPT = "System Prompt"
+
+# Reserved step-meta bullet keys consumed by typed fields on StepPrompt.
+# Anything else found in a step body's `- **Key:** value` lines lands
+# in StepPrompt.extra so pipelines can introduce per-step variables
+# without changing this module.
+_RESERVED_META_KEYS = frozenset({
+    "model",
+    "execution",
+    "tools",
+    "condition",
+    "system prompt",
+    "max-output",
+    "thinking-budget",
+    "chunk-tokens",
+    "concurrency",
+})
 
 
 @dataclass(frozen=True)
-class StepMeta:
+class StepPrompt:
     """Parsed from a step section in the prompt file.
 
     This is the authority for the step's configuration. Python hooks
@@ -48,18 +79,21 @@ class StepMeta:
     """
 
     name: str
-    """Full section header, e.g. ``'Step 5 - Verify'``."""
+    """Full section header, e.g. ``'4. Extract'``."""
 
     number: int
     """Numeric index parsed from the name. Controls execution order."""
 
-    model_slot: str
-    """Key into ``StepContext.agents``. ``'none'`` for custom steps."""
+    model: str
+    """Logical model name. Resolves through ``## Services`` to a
+    concrete :class:`ModelBackend`. Defaults to ``'default'`` when
+    ``**Model:**`` is absent. ``'none'`` marks a pure-Python step
+    with no framework-managed LLM call."""
 
     execution: str
     """``'main'`` (sequential) or ``'subagent'`` (parallel)."""
 
-    tools: list[str] = field(default_factory=list)
+    tools: tuple[str, ...] = ()
     """Tool names to register on the Agent. Empty for most steps."""
 
     condition: str | None = None
@@ -71,28 +105,37 @@ class StepMeta:
     system_prompt_mode: str = "append"
     """How the step prompt combines with the pipeline prompt: append or replace."""
 
-    max_output_tokens: int = 0
-    """Per-step override for the agent's ``max_tokens``. ``0`` means
-    "use the agent's default" (the framework path falls back via
-    ``AgentBackend.run(max_tokens=None)``; custom hooks must fall back
-    explicitly)."""
+    max_output_tokens: int | None = None
+    """Per-step override for the agent's ``max_tokens``. ``None`` means
+    "use the agent's default". Parsed from ``**max-output:**``."""
 
-    thinking_budget: int = 0
-    """Per-step thinking token budget for reasoning models. ``0`` means
-    "use the agent's default". Parsed from ``**thinking-budget:**``."""
+    thinking_budget: int | None = None
+    """Per-step thinking token budget for reasoning models. ``None`` means
+    "use the agent's default"; ``0`` explicitly disables thinking.
+    Parsed from ``**thinking-budget:**``."""
 
-    chunk_tokens: int = 0
-    """Max tokens per chunk for steps that chunk the paper. ``0`` means
+    chunk_tokens: int | None = None
+    """Max tokens per chunk for steps that chunk the paper. ``None`` means
     "use the pipeline default". Parsed from ``**chunk-tokens:**``."""
 
-    concurrency: int = 0
-    """Max concurrent LLM calls for fan-out steps. ``0`` means
-    "use the pipeline default from ## Services". Parsed from ``**concurrency:**``."""
+    concurrency: int | None = None
+    """Max concurrent LLM calls for fan-out steps. ``None`` means
+    "use the pipeline default". Parsed from ``**concurrency:**``."""
+
+    extra: Mapping[str, str] = field(default_factory=dict)
+    """Any ``- **Key:** value`` bullet whose key is not consumed by a
+    typed field. Lets pipelines declare per-step variables (e.g.
+    ``**chunk-overlap:** 100``) without changing this module. Keys are
+    lowercased; values are stripped strings."""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tools", tuple(self.tools))
+        object.__setattr__(self, "extra", MappingProxyType(dict(self.extra)))
 
     @property
     def is_custom(self) -> bool:
         """True when the step owns its own execution (no framework-managed LLM call)."""
-        return self.model_slot.startswith("none")
+        return self.model == "none"
 
 
 @dataclass(frozen=True)
@@ -122,29 +165,181 @@ class StepSpec:
     """Declarative step descriptor.
 
     The prompt file is the upstream authority for pipeline structure.
-    Each step section declares its metadata: model slot, execution
+    Each step section declares its metadata: logical model, execution
     mode, tools, and guard conditions. Python provides the bespoke
-    hooks: how to format state into a user message (prepare), and
-    how to store the LLM output into state (extract).
+    hooks: how to format state into a user message (prepare), and how
+    to store the LLM output into state (extract).
 
-    The prompt file controls WHAT each step does. The hooks
-    control HOW. The runner handles everything common.
+    The prompt file controls WHAT each step does. The hooks control
+    HOW. The runner handles everything common.
     """
 
-    meta: StepMeta
+    step: StepPrompt
     hooks: StepHooks
 
 
-def parse_step_meta(name: str, body: str) -> StepMeta:
+@dataclass(frozen=True)
+class PipelinePrompt:
+    """Whole-file parse of a pipeline's markdown prompt.
+
+    Produced once per ``(package, filename)`` pair by
+    :meth:`PipelinePrompt.load` and reused for every run. Carries the
+    raw section map plus typed views of the three structural sections
+    (``## Services``, ``## Config``, ``## System Prompt``) and the
+    parsed steps in file order.
+    """
+
+    package: str
+    """Python package the file was loaded from (for :func:`importlib.resources`)."""
+
+    filename: str
+    """Filename inside the package, e.g. ``'assay.md'``."""
+
+    sections: Mapping[str, str]
+    """Whole-file section map (key = H2 header text, value = body).
+    Same shape as :func:`pipeline.markdown.sections` returns. Kept
+    around so step hooks can read step bodies directly (the pipeline
+    prompt is the upstream authority for instructions)."""
+
+    services: Mapping[str, str]
+    """Logical-name -> SERVICES.toml-service-name map parsed from
+    ``## Services``. ``default`` must be present; other names are
+    pipeline-defined (``fast``, ``tool``, etc.)."""
+
+    config: Mapping[str, str]
+    """Flat key-value map parsed from ``## Config``. All values are
+    strings; callers cast as needed (e.g. ``int(config["concurrency"])``)."""
+
+    system_prompt: str
+    """Pipeline-wide system prompt body from ``## System Prompt``.
+    Empty string when the pipeline is pure-Python and declares no
+    LLM-facing steps."""
+
+    preamble: str
+    """Text before the first ``## `` header (H1 title, intro mermaid)."""
+
+    steps: tuple[StepPrompt, ...]
+    """Parsed step prompts in file order. ``build_pipeline`` re-sorts
+    by ``StepPrompt.number`` before pairing with hooks."""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sections", MappingProxyType(dict(self.sections)))
+        object.__setattr__(self, "services", MappingProxyType(dict(self.services)))
+        object.__setattr__(self, "config", MappingProxyType(dict(self.config)))
+        object.__setattr__(self, "steps", tuple(self.steps))
+
+    def step_section(self, name: str) -> str:
+        """Return the raw body of ``## name`` with metadata bullets and
+        ``### System Prompt`` stripped, ready to use as instructions
+        for an LLM call."""
+        body = self.sections.get(name, "")
+        return _strip_step_system_prompt(body)
+
+    @classmethod
+    def load(cls, package: str, filename: str) -> PipelinePrompt:
+        """Read and parse the file once per process.
+
+        Cached on ``(package, filename)`` via
+        :func:`_load_cached`; calling :meth:`load` repeatedly is free.
+        """
+        return _load_cached(package, filename)
+
+
+@functools.cache
+def _load_cached(package: str, filename: str) -> PipelinePrompt:
+    """Cache layer for :meth:`PipelinePrompt.load`. Keyed only on
+    ``(package, filename)`` because the file is shipped read-only inside
+    the package; mutating it in development requires a Python restart
+    just like any other ``importlib.resources`` load."""
+    import importlib.resources
+
+    from pipeline.errors import PromptFileError as _PromptFileError
+
+    try:
+        resource = importlib.resources.files(package).joinpath(filename)
+        text = resource.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError) as exc:
+        raise _PromptFileError(
+            f"Failed to read {filename}: {exc}"
+        ) from exc
+
+    return _parse_prompt(package, filename, text)
+
+
+def _parse_prompt(package: str, filename: str, text: str) -> PipelinePrompt:
+    """Pure parse path; exposed without the cache so tests can drive
+    it from in-memory strings."""
+    section_map = _split_sections(text)
+
+    services = parse_pipeline_services(section_map.get(_SECTION_SERVICES, ""))
+    config = parse_pipeline_config(section_map.get(_SECTION_CONFIG, ""))
+    system_prompt = section_map.get(_SECTION_SYSTEM_PROMPT, "").strip()
+    preamble = section_map.get(_PREAMBLE_KEY, "")
+
+    steps: list[StepPrompt] = []
+    for key, body in section_map.items():
+        if _STEP_RE.match(key):
+            steps.append(parse_step_prompt(key, body))
+
+    return PipelinePrompt(
+        package=package,
+        filename=filename,
+        sections=section_map,
+        services=services,
+        config=config,
+        system_prompt=system_prompt,
+        preamble=preamble,
+        steps=tuple(sorted(steps, key=lambda s: s.number)),
+    )
+
+
+def parse_pipeline_services(body: str) -> dict[str, str]:
+    """Parse a ``## Services`` markdown section into a logical-name map.
+
+    Accepts lines like ``- **default:** anthropic-opus`` and returns
+    ``{"default": "anthropic-opus"}``. Keys are lowercased; empty
+    values are skipped.
+    """
+    out: dict[str, str] = {}
+    for m in _MD_BOLD_ITEM_RE.finditer(body):
+        name = m.group(1).strip().lower()
+        service = m.group(2).strip()
+        if service:
+            out[name] = service
+    return out
+
+
+def parse_pipeline_config(body: str) -> dict[str, str]:
+    """Parse a ``## Config`` markdown section into a flat config dict.
+
+    Same ``- **key:** value`` format as Services. Returns
+    ``{"concurrency": "2", ...}``. Keys are lowercased.
+    """
+    out: dict[str, str] = {}
+    for m in _MD_BOLD_ITEM_RE.finditer(body):
+        key = m.group(1).strip().lower()
+        value = m.group(2).strip()
+        if value:
+            out[key] = value
+    return out
+
+
+def parse_step_prompt(name: str, body: str) -> StepPrompt:
     """Parse step metadata from a section body.
 
-    ``**Model:**`` and ``**Execution:**`` are optional. When absent,
-    they default to ``"none"`` and ``"main"`` respectively. Agent
-    assignment is handled by ``StepHooks.agent`` in Python, not by
-    the prompt file.
+    Body parsing is fence-aware: triple-backtick lines toggle an
+    ``in_fence`` flag, and ``- **Key:** value`` bullets and
+    ``### System Prompt`` markers inside a fenced code block are
+    ignored. This keeps documentation examples and embedded templates
+    from being interpreted as live metadata.
 
-    ``**Tools:**``, ``**Condition:**``, and ``**System prompt:**``
-    remain active and are parsed when present.
+    ``**Model:**`` defaults to ``"default"`` when absent; the special
+    value ``"none"`` marks a pure-Python step. ``**Execution:**``
+    defaults to ``"main"``.
+
+    Unknown ``- **Key:** value`` bullets land in :attr:`StepPrompt.extra`
+    so pipelines can declare per-step variables without editing this
+    module.
     """
     m = _STEP_RE.match(name)
     if not m:
@@ -153,11 +348,8 @@ def parse_step_meta(name: str, body: str) -> StepMeta:
         )
     number = int(m.group(1))
 
-    fields: dict[str, str] = {}
-    for match in _META_RE.finditer(body):
-        fields[match.group(1).lower()] = match.group(2).strip()
+    fields, system_prompt = _scan_step_body(body)
 
-    system_prompt = _parse_step_system_prompt(body)
     system_prompt_mode = fields.get("system prompt", "append").split()[0].strip().lower()
     if system_prompt_mode not in {"append", "replace"}:
         raise MissingMetadataError(
@@ -170,73 +362,141 @@ def parse_step_meta(name: str, body: str) -> StepMeta:
             f"'### System Prompt' body."
         )
 
-    model_slot = fields.get("model", "none").split("(")[0].strip().lower()
+    model = fields.get("model", "default").split("(")[0].strip().lower()
     execution = fields.get("execution", "main").strip().lower()
 
-    def _split_list(raw: str) -> list[str]:
-        return [s.strip() for s in raw.split(",") if s.strip()]
+    def _split_list(raw: str) -> tuple[str, ...]:
+        return tuple(s.strip() for s in raw.split(",") if s.strip())
 
-    return StepMeta(
+    def _opt_int(raw: str | None) -> int | None:
+        return int(raw) if raw is not None else None
+
+    extra = {
+        key: value
+        for key, value in fields.items()
+        if key not in _RESERVED_META_KEYS
+    }
+
+    return StepPrompt(
         name=name,
         number=number,
-        model_slot=model_slot,
+        model=model,
         execution=execution,
         tools=_split_list(fields.get("tools", "")),
         condition=fields.get("condition"),
         system_prompt=system_prompt,
         system_prompt_mode=system_prompt_mode,
-        max_output_tokens=int(fields.get("max-output", 0) or 0),
-        thinking_budget=int(fields.get("thinking-budget", 0) or 0),
-        chunk_tokens=int(fields.get("chunk-tokens", 0) or 0),
-        concurrency=int(fields.get("concurrency", 0) or 0),
+        max_output_tokens=_opt_int(fields.get("max-output")),
+        thinking_budget=_opt_int(fields.get("thinking-budget")),
+        chunk_tokens=_opt_int(fields.get("chunk-tokens")),
+        concurrency=_opt_int(fields.get("concurrency")),
+        extra=extra,
     )
 
 
-def _parse_step_system_prompt(body: str) -> str:
-    """Extract the optional per-step ``### System Prompt`` body."""
-    match = _STEP_SYSTEM_RE.search(body)
-    return match.group("body").strip() if match else ""
+def _scan_step_body(body: str) -> tuple[dict[str, str], str]:
+    """Walk a step body once, fence-aware, collecting bullet metadata
+    and the ``### System Prompt`` block.
+
+    Returns ``(fields, system_prompt)``. ``fields`` is keyed by the
+    lowercased bullet name. ``system_prompt`` is the body text under
+    the first non-fenced ``### System Prompt`` header, stripped.
+    """
+    fields: dict[str, str] = {}
+    in_fence = False
+    in_system_prompt = False
+    system_prompt_lines: list[str] = []
+
+    for line in body.splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+            if in_system_prompt:
+                system_prompt_lines.append(line)
+            continue
+        if in_fence:
+            if in_system_prompt:
+                system_prompt_lines.append(line)
+            continue
+        if line.startswith("### "):
+            header = line[4:].strip()
+            in_system_prompt = header.lower() == "system prompt"
+            continue
+        if in_system_prompt:
+            system_prompt_lines.append(line)
+            continue
+        m = _META_RE.match(line)
+        if m:
+            fields[m.group(1).strip().lower()] = m.group(2).strip()
+
+    return fields, "\n".join(system_prompt_lines).strip()
 
 
 def _strip_step_system_prompt(body: str) -> str:
-    """Remove per-step system prompt and metadata from user-facing step instructions."""
-    body = _STEP_SYSTEM_RE.sub("", body)
-    body = _META_RE.sub("", body)
-    return body.strip()
+    """Remove per-step system prompt and metadata from user-facing
+    step instructions. Fence-aware via line walk so triple-backtick
+    blocks survive intact."""
+    out: list[str] = []
+    in_fence = False
+    skipping_system_prompt = False
+
+    for line in body.splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+            skipping_system_prompt = False
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        if line.startswith("### "):
+            header = line[4:].strip()
+            if header.lower() == "system prompt":
+                skipping_system_prompt = True
+                continue
+            skipping_system_prompt = False
+            out.append(line)
+            continue
+        if skipping_system_prompt:
+            continue
+        if _META_RE.match(line):
+            continue
+        out.append(line)
+
+    return "\n".join(out).strip()
 
 
 def build_pipeline(
-    sections: dict[str, str],
+    prompt: PipelinePrompt,
     hooks: dict[str, StepHooks],
 ) -> list[StepSpec]:
-    """Parse prompt file metadata, attach hooks, return ordered specs.
+    """Pair parsed step prompts with hooks, return ordered specs.
 
-    Steps are sorted by their numeric index (parsed from ``Step N``),
-    not by section position in the file.
+    Steps are sorted by ``StepPrompt.number`` (parsed from ``N.
+    StepName`` or ``Step N``), not by section position in the file.
 
-    Raises ``MissingMetadataError`` if any step section lacks required
-    fields. Raises ``HookMismatchError`` if the hook dict and the
-    parsed steps disagree (orphan hook or unregistered step).
+    Raises :class:`MissingSystemPromptError` if any step is LLM-backed
+    (either by carrying a ``StepHooks.agent`` directly or by having
+    ``StepPrompt.model != "none"``) but the prompt file's
+    ``## System Prompt`` section is empty.
+
+    Raises :class:`HookMismatchError` if the hook dict and the parsed
+    steps disagree (orphan hook or unregistered step).
     """
-    metas: list[StepMeta] = []
-    for key, body in sections.items():
-        if _STEP_RE.match(key):
-            metas.append(parse_step_meta(key, body))
-            sections[key] = _strip_step_system_prompt(body)
+    steps = list(prompt.steps)
 
-    metas.sort(key=lambda m: m.number)
-
-    has_llm_steps = any(not m.is_custom for m in metas) or any(
-        hooks.get(m.name) and hooks[m.name].agent is not None
-        for m in metas if m.name in hooks
+    has_llm_steps = any(
+        not s.is_custom or (
+            s.name in hooks and hooks[s.name].agent is not None
+        )
+        for s in steps
     )
-    if has_llm_steps:
-        if not sections.get("System Prompt", "").strip():
-            raise MissingSystemPromptError(
-                "Prompt file is missing required non-empty '## System Prompt' section."
-            )
+    if has_llm_steps and not prompt.system_prompt:
+        raise MissingSystemPromptError(
+            f"Prompt file '{prompt.filename}' is missing required "
+            f"non-empty '## System Prompt' section."
+        )
 
-    step_names = {m.name for m in metas}
+    step_names = {s.name for s in steps}
     hook_names = set(hooks)
 
     orphan_hooks = hook_names - step_names
@@ -254,6 +514,6 @@ def build_pipeline(
         )
 
     return [
-        StepSpec(meta=m, hooks=hooks[m.name])
-        for m in metas
+        StepSpec(step=s, hooks=hooks[s.name])
+        for s in steps
     ]

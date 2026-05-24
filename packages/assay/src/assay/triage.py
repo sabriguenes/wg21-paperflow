@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from assay.models import ChunkEntry, FrontMatter
+from assay.models import ChunkEntry
 
 _CLAUSE_REF_RE = re.compile(r"\[[\w.]+\]")
 
@@ -38,15 +38,17 @@ class TriageResult:
 
 def should_analyze(
     chunk_map: list[ChunkEntry],
-    front_matter: FrontMatter | None,
-    paper_source: str,
+    title: str,
+    intent: str,
+    audience: list[str],
+    paper_md: str,
 ) -> TriageResult:
     """Determine if a paper is worth full structural analysis.
 
     Returns TriageResult with analyze=True for proposals,
     analyze=False for reference documents and wording-dominant papers.
     """
-    total_chars = len(paper_source)
+    total_chars = len(paper_md)
     chunk_count = len(chunk_map)
     headings = [c.heading for c in chunk_map]
     largest_chunk = max((c.char_count for c in chunk_map), default=0)
@@ -61,15 +63,15 @@ def should_analyze(
         for h in headings_lower
     )
 
-    title = (front_matter.title or "").lower() if front_matter else ""
-    has_title_signal = any(signal in title for signal in _PROPOSAL_TITLE_SIGNALS)
+    title_lower = title.lower()
+    has_title_signal = any(signal in title_lower for signal in _PROPOSAL_TITLE_SIGNALS)
 
     has_proposal_signal = has_heading_signal or has_title_signal
 
-    intent = (front_matter.intent or "").strip().lower() if front_matter else ""
-    has_intent_ask = intent in ("ask", "adopt", "direction", "review")
+    intent_lower = intent.strip().lower()
+    has_intent_ask = intent_lower in ("ask", "adopt", "direction", "review")
 
-    audience = ", ".join(front_matter.audience) if front_matter else ""
+    audience_str = ", ".join(audience)
 
     stats = {
         "total_chars": total_chars,
@@ -80,7 +82,7 @@ def should_analyze(
         "total_headings": total_headings,
         "has_proposal_signal": has_proposal_signal,
         "has_intent_ask": has_intent_ask,
-        "audience": audience,
+        "audience": audience_str,
     }
 
     if has_intent_ask or has_proposal_signal:

@@ -7,8 +7,7 @@
 - **tomd** - Converts paper source files (HTML, PDF) to markdown.
 - **pipeline** - Framework for LLM-driven pipelines. Step execution engine (dispatch, run_agent, run_task), error hierarchy, prompt parsing, markdown utilities, web search/fetch, process_paper orchestration, read_paper tool.
 - **dissect** - Extracts claims, evidence, and rhetoric from a paper's markdown. First analytical stage.
-- **advocatus** - Adversarial examination of a dissected paper. Files charges, runs defenses, produces a relatio.
-- **agora** - Plans a discussion thread for a dissected and examined paper.
+- **agora** - Plans a discussion thread for a dissected paper.
 - **cli** - Command-line interface. Maps verbs to pipeline stages.
 
 ## Dependency graph
@@ -19,7 +18,6 @@ paperstore (no deps)
   <- tomd (conversion)
   <- pipeline (framework, web tools)
       <- dissect
-      <- advocatus
       <- agora
   <- cli (user interface)
 ```
@@ -32,13 +30,12 @@ Each paper has an integer `status` on the `papers` table:
  0 = download     -1 = failed at download
  1 = convert      -2 = failed at convert
  2 = dissect      -3 = failed at dissect
- 3 = advocatus    -4 = failed at advocatus
  4 = agora        -5 = failed at agora
  5 = herald       -6 = failed at herald
  6 = ready
 ```
 
-Status means "the next action needed." Pipeline is linear: download -> convert -> dissect -> advocatus -> agora -> herald -> ready.
+Status means "the next action needed." Pipeline is linear: download -> convert -> dissect -> agora -> herald -> ready.
 
 Failed status encodes which stage failed: `failed_status = -(stage + 1)`, recovery: `retry_stage = abs(status) - 1`. The `error` column stores the diagnostic message.
 
@@ -66,7 +63,6 @@ Each verb maps to a through-stage value:
 | paperflow download TARGET | 1 |
 | paperflow convert TARGET | 2 |
 | paperflow dissect TARGET | 3 |
-| paperflow advocatus TARGET | 4 |
 | paperflow agora TARGET | 5 |
 | paperflow status [TARGET] | n/a |
 
@@ -103,7 +99,7 @@ No wg21.link dependency. No URL guessing or cascade.
 
 ## Fidelity invariant
 
-The analytical pipeline (dissect, advocatus, agora) cannot tolerate partial results. These tools inform real decisions about real proposals. A false objection or missing evidence is worse than a failed run.
+The analytical pipeline (dissect, agora) cannot tolerate partial results. These tools inform real decisions about real proposals. A false objection or missing evidence is worse than a failed run.
 
 Rule: if full fidelity cannot be achieved, stop. Set paper status to failed. Preserve the debug transcript. Never produce a partial result that could be mistaken for a complete one.
 

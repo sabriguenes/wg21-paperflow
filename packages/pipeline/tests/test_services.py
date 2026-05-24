@@ -12,8 +12,9 @@ Covers both layers:
 - ``load_services``: config-shape checks (unknown backend, generic
   ``required_api_key_env`` mismatch). Env-agnostic at this layer; a
   missing env var does NOT raise here.
-- ``resolve_slots``: env-var presence per bound slot. Lazy validation
-  so unbound entries in SERVICES.toml stay inert.
+- ``resolve_pipeline_models``: env-var presence per pipeline-referenced
+  service. Lazy validation so SERVICES.toml entries not referenced by
+  any loaded pipeline stay inert.
 
 No network, no real LLM, no pydantic-ai. Env-var manipulation uses
 ``monkeypatch``; registry manipulation uses ``monkeypatch.setitem``.
@@ -27,7 +28,11 @@ import pytest
 
 from pipeline.errors import ServiceConfigError
 from pipeline.model_backends import BACKEND_REGISTRY, ModelBackend
-from pipeline.services import ServiceRegistry, load_services, resolve_slots
+from pipeline.services import (
+    ServiceRegistry,
+    load_services,
+    resolve_pipeline_models,
+)
 
 
 def _write_services_toml(tmp_path, body: str):
@@ -133,7 +138,7 @@ model = "test"
 def test_load_services_required_api_key_env_match_loads(tmp_path, monkeypatch):
     """Matching env-var name passes the shape check even if unset.
 
-    Env-var presence is ``resolve_slots``'s job, not
+    Env-var presence is ``resolve_pipeline_models``'s job, not
     ``load_services``'s.
     """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -152,150 +157,92 @@ model = "claude-test"
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("attr", ["services", "defaults", "api_key_envs"])
+@pytest.mark.parametrize("attr", ["services", "api_key_envs"])
 def test_service_registry_mappings_are_read_only(attr):
-    """All three mappings are wrapped, not just whichever the implementer remembered."""
-    registry = ServiceRegistry(
-        services={}, defaults={}, api_key_envs={},
-    )
+    """Both mappings are wrapped, not just whichever the implementer remembered."""
+    registry = ServiceRegistry(services={}, api_key_envs={})
     with pytest.raises(TypeError):
         getattr(registry, attr)["x"] = "evil"
 
 
 # ---------------------------------------------------------------------------
-# resolve_slots: env-var validation per bound slot
+# resolve_pipeline_models: env-var validation per pipeline-referenced service
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_slots_raises_when_bound_service_env_var_missing(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.delenv("PAPERFLOW_TEST_KEY", raising=False)
-    p = _write_services_toml(tmp_path, """
-[services.s1]
-backend = "llama3"
-base_url = "https://example.invalid/v1"
-api_key_env = "PAPERFLOW_TEST_KEY"
-model = "test-model"
+def _registry_with(services, api_key_envs=None):
+    """Build a tiny ServiceRegistry for tests."""
+    if api_key_envs is None:
+        api_key_envs = {name: "" for name in services}
+    return ServiceRegistry(services=services, api_key_envs=api_key_envs)
 
-[defaults]
-fast = "s1"
-""")
-    registry = load_services(p)
+
+def test_resolve_pipeline_models_success_no_auth():
+    """No-auth service references resolve without env-var checks."""
+    backend = MagicMock(spec=["run"])
+    registry = _registry_with({"s1": backend})
+    models = resolve_pipeline_models({"default": "s1"}, registry)
+    assert models == {"default": backend}
+
+
+def test_resolve_pipeline_models_requires_default_logical_name():
+    """A pipeline that omits `default` is rejected at load time."""
+    backend = MagicMock(spec=["run"])
+    registry = _registry_with({"s1": backend})
+    with pytest.raises(ServiceConfigError, match="default"):
+        resolve_pipeline_models({"tool": "s1"}, registry)
+
+
+def test_resolve_pipeline_models_rejects_unknown_service():
+    """A logical name pointing at a service not in SERVICES.toml is rejected."""
+    backend = MagicMock(spec=["run"])
+    registry = _registry_with({"s1": backend})
     with pytest.raises(ServiceConfigError) as exc_info:
-        resolve_slots(registry)
+        resolve_pipeline_models({"default": "missing"}, registry)
     msg = str(exc_info.value)
-    assert "fast" in msg                  # slot name
-    assert "s1" in msg                     # service name
-    assert "PAPERFLOW_TEST_KEY" in msg     # env var
-    assert "--service" in msg              # override remediation hint
+    assert "default" in msg
+    assert "missing" in msg
+
+
+def test_resolve_pipeline_models_requires_env_var_set(monkeypatch):
+    """Bound service with declared api_key_env must have it exported."""
+    monkeypatch.delenv("PAPERFLOW_TEST_KEY", raising=False)
+    backend = MagicMock(spec=["run"])
+    registry = _registry_with(
+        {"s1": backend},
+        api_key_envs={"s1": "PAPERFLOW_TEST_KEY"},
+    )
+    with pytest.raises(ServiceConfigError) as exc_info:
+        resolve_pipeline_models({"default": "s1"}, registry)
+    msg = str(exc_info.value)
+    assert "PAPERFLOW_TEST_KEY" in msg
+    assert "default" in msg
 
 
 @pytest.mark.parametrize("env_value", ["", "   ", "\n", "\t \n"])
-def test_resolve_slots_raises_for_empty_or_whitespace_env_var(
-    tmp_path, monkeypatch, env_value,
-):
+def test_resolve_pipeline_models_rejects_whitespace_env_var(monkeypatch, env_value):
     monkeypatch.setenv("PAPERFLOW_TEST_KEY", env_value)
-    p = _write_services_toml(tmp_path, """
-[services.s1]
-backend = "llama3"
-base_url = "https://example.invalid/v1"
-api_key_env = "PAPERFLOW_TEST_KEY"
-model = "test-model"
-
-[defaults]
-fast = "s1"
-""")
-    registry = load_services(p)
+    backend = MagicMock(spec=["run"])
+    registry = _registry_with(
+        {"s1": backend},
+        api_key_envs={"s1": "PAPERFLOW_TEST_KEY"},
+    )
     with pytest.raises(ServiceConfigError, match="PAPERFLOW_TEST_KEY"):
-        resolve_slots(registry)
+        resolve_pipeline_models({"default": "s1"}, registry)
 
 
-def test_resolve_slots_succeeds_when_bound_service_env_var_set(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PAPERFLOW_TEST_KEY", "sk-real-value")
-    p = _write_services_toml(tmp_path, """
-[services.s1]
-backend = "llama3"
-base_url = "https://example.invalid/v1"
-api_key_env = "PAPERFLOW_TEST_KEY"
-model = "test-model"
+def test_resolve_pipeline_models_skips_unreferenced_services(monkeypatch):
+    """Services declared in SERVICES.toml but unreferenced by the pipeline stay inert.
 
-[defaults]
-fast = "s1"
-""")
-    registry = load_services(p)
-    slots = resolve_slots(registry)
-    assert slots["fast"] == ("s1", registry.services["s1"])
-
-
-def test_resolve_slots_skips_validation_for_unbound_services(
-    tmp_path, monkeypatch,
-):
-    """Regression guard for ``--service`` overrides rebinding all slots.
-
-    KEY_A is set, KEY_B is not. ``[defaults]`` pins every slot to
-    s_b. Overrides rebind every slot to s_a. ``resolve_slots`` must
-    succeed and never touch KEY_B.
+    KEY_A is set, KEY_B is not. Only s_a is referenced by the
+    pipeline. Resolution must succeed without ever touching KEY_B.
     """
     monkeypatch.setenv("KEY_A", "value-a")
     monkeypatch.delenv("KEY_B", raising=False)
-    p = _write_services_toml(tmp_path, """
-[services.s_a]
-backend = "llama3"
-base_url = "https://a.invalid/v1"
-api_key_env = "KEY_A"
-model = "model-a"
-
-[services.s_b]
-backend = "llama3"
-base_url = "https://b.invalid/v1"
-api_key_env = "KEY_B"
-model = "model-b"
-
-[defaults]
-fast = "s_b"
-default = "s_b"
-tool = "s_b"
-""")
-    registry = load_services(p)
-    slots = resolve_slots(
-        registry,
-        overrides={"fast": "s_a", "default": "s_a", "tool": "s_a"},
+    a, b = MagicMock(spec=["run"]), MagicMock(spec=["run"])
+    registry = _registry_with(
+        {"s_a": a, "s_b": b},
+        api_key_envs={"s_a": "KEY_A", "s_b": "KEY_B"},
     )
-    s_a = registry.services["s_a"]
-    assert all(binding == ("s_a", s_a) for binding in slots.values())
-
-
-def test_resolve_slots_with_empty_api_key_envs_skips_validation():
-    """Hand-built registry path used by tests that construct slot maps directly.
-
-    Empty ``api_key_envs`` explicitly opts out of validation. Do not
-    delete this test without auditing all production call sites of
-    ``resolve_slots`` to make sure they still go through
-    ``load_services`` (which populates ``api_key_envs``).
-    """
-    backend = MagicMock(spec=["run"])
-    registry = ServiceRegistry(
-        services={"s1": backend},
-        defaults={"fast": "s1"},
-        api_key_envs={},
-    )
-    slots = resolve_slots(registry)
-    assert slots["fast"] == ("s1", backend)
-
-
-def test_resolve_slots_no_auth_service(tmp_path):
-    p = _write_services_toml(tmp_path, """
-[services.s1]
-backend = "llama3"
-base_url = "http://localhost:8000/v1"
-model = "local-model"
-
-[defaults]
-fast = "s1"
-""")
-    registry = load_services(p)
-    slots = resolve_slots(registry)
-    assert slots["fast"] == ("s1", registry.services["s1"])
+    models = resolve_pipeline_models({"default": "s_a"}, registry)
+    assert models == {"default": a}

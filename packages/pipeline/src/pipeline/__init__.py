@@ -37,7 +37,16 @@ from pipeline.errors import (
 )
 from pipeline.markdown import extract_code_blocks, sanitize_md, sections
 from pipeline.model_backends import ModelBackend
-from pipeline.prompt import StepHooks, StepMeta, StepSpec, build_pipeline, parse_step_meta
+from pipeline.prompt import (
+    PipelinePrompt,
+    StepHooks,
+    StepPrompt,
+    StepSpec,
+    build_pipeline,
+    parse_pipeline_config,
+    parse_pipeline_services,
+    parse_step_prompt,
+)
 from pipeline.runner import (
     StepContext,
     StepMetrics,
@@ -51,10 +60,8 @@ from pipeline.services import (
     load_classifiers,
     load_services,
     load_transformer_providers,
-    parse_pipeline_config,
-    parse_service_overrides,
     resolve_classifier_slots,
-    resolve_slots,
+    resolve_pipeline_models,
     resolve_transformer_provider,
 )
 from pipeline.transformer_backend import (
@@ -82,7 +89,7 @@ from pipeline.postconditions import (
 from pipeline.process import ensure_paper_md, process_paper
 from pipeline.tasks import run_task
 from pipeline.tokens import CHARS_PER_TOKEN, est_tokens, tokens_to_chars
-from pipeline.tools import make_read_paper_tool, wrap_source
+from pipeline.tools import make_read_paper_tool
 from pipeline.validate import validate_capabilities
 
 __all__ = [
@@ -123,16 +130,17 @@ __all__ = [
     "MissingMetadataError",
     "MissingSystemPromptError",
     "PaperNotConvertedError",
-    "parse_step_meta",
+    "parse_step_prompt",
     "PaperNotFoundError",
     "parse_pipeline_config",
-    "parse_service_overrides",
+    "parse_pipeline_services",
     "PipelineError",
+    "PipelinePrompt",
     "postcondition_satisfied",
     "ProcessResult",
     "ConvertReport",
     "PromptFileError",
-    "resolve_slots",
+    "resolve_pipeline_models",
     "ServiceRegistry",
     "run_agent",
     "run_task",
@@ -145,14 +153,13 @@ __all__ = [
     "StepError",
     "StepMetrics",
     "StepHooks",
-    "StepMeta",
+    "StepPrompt",
     "StepSpec",
     "TransientStepError",
     "truthful_status",
     "validate_capabilities",
     "ValidationStepError",
     "WebResearcher",
-    "wrap_source",
     "write_debug_file",
     "CHARS_PER_TOKEN",
     "est_tokens",

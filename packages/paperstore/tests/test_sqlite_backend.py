@@ -18,7 +18,6 @@ import pytest
 from paperstore import SqliteBackend
 from paperstore.errors import (
     InvalidSuffixError,
-    MissingAdvocatusError,
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
@@ -242,7 +241,7 @@ def test_reconcile_empty_workspace(store: SqliteBackend):
     assert store.reconcile() == {
         "sources": 0,
         "markdowns": 0,
-        "advocati": 0,
+
         "agorae": 0,
         "line_counts": 0,
     }
@@ -261,7 +260,7 @@ def test_reconcile_backfills_orphan_artifacts(
     assert counts == {
         "sources": 2,
         "markdowns": 1,
-        "advocati": 0,
+
         "agorae": 0,
         "line_counts": 1,
     }
@@ -292,7 +291,7 @@ def test_reconcile_skips_intermediates_partials_and_db(
     assert counts == {
         "sources": 0,
         "markdowns": 0,
-        "advocati": 0,
+
         "agorae": 0,
         "line_counts": 0,
     }
@@ -306,14 +305,14 @@ def test_reconcile_is_idempotent(store: SqliteBackend, tmp_path: Path):
     assert first == {
         "sources": 1,
         "markdowns": 0,
-        "advocati": 0,
+
         "agorae": 0,
         "line_counts": 0,
     }
     assert second == {
         "sources": 0,
         "markdowns": 0,
-        "advocati": 0,
+
         "agorae": 0,
         "line_counts": 0,
     }
@@ -376,83 +375,17 @@ def test_list_years(store: SqliteBackend):
 
 def test_reconcile_skips_per_tool_debug_and_trace_artifacts(store: SqliteBackend):
     """Per-tool .debug.md / .trace.md files are scratch outputs; reconcile
-    must not classify them as paper markdown or advocatus."""
+    must not classify them as paper markdown."""
     store.upsert_year("2026", [{"paper_id": "P1000R0"}])
     for name in (
-        "p1000r0.advocatus.debug.md",
-        "p1000r0.advocatus.trace.md",
+        "p1000r0.agora.debug.md",
+        "p1000r0.agora.trace.md",
     ):
         (store._papers_dir / name).write_text("scratch", encoding="utf-8")
     counts = store.reconcile()
     assert counts["markdowns"] == 0
-    assert counts["advocati"] == 0
     meta = store.get_meta("P1000R0")
     assert meta.markdown_path == ""
-    assert meta.advocatus_path == ""
-
-
-# ---- advocatus lifecycle --------------------------------------------------
-
-
-def test_write_advocatus_md(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    path = store.write_advocatus_md("P1000R0", "# Relatio\n\nContent.")
-    assert path.exists()
-    assert path.name == "p1000r0.advocatus.md"
-    assert path.read_text(encoding="utf-8") == "# Relatio\n\nContent."
-    meta = store.get_meta("P1000R0")
-    assert meta.advocatus_path == str(path)
-
-
-def test_get_advocatus_path(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    store.write_advocatus_md("P1000R0", "# Relatio")
-    assert store.get_advocatus_path("P1000R0").exists()
-
-
-def test_get_advocatus_path_missing_raises(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    with pytest.raises(MissingAdvocatusError):
-        store.get_advocatus_path("P1000R0")
-
-
-def test_get_advocatus_path_no_paper_raises(store: SqliteBackend):
-    with pytest.raises(MissingAdvocatusError):
-        store.get_advocatus_path("NOPE")
-
-
-def test_clear_advocatus_deletes_file(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    path = store.write_advocatus_md("P1000R0", "# Relatio")
-    assert path.exists()
-    store.clear_advocatus("P1000R0")
-    assert not path.exists()
-    with pytest.raises(MissingAdvocatusError):
-        store.get_advocatus_path("P1000R0")
-
-
-def test_clear_advocatus_idempotent(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    store.clear_advocatus("P1000R0")
-    store.clear_advocatus("P1000R0")
-
-
-def test_write_advocatus_md_overwrites(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    store.write_advocatus_md("P1000R0", "# Old")
-    store.write_advocatus_md("P1000R0", "# New")
-    path = store.get_advocatus_path("P1000R0")
-    assert path.read_text(encoding="utf-8") == "# New"
-
-
-def test_reconcile_finds_advocatus_files(store: SqliteBackend):
-    store.upsert_year("2026", [{"paper_id": "P1000R0"}])
-    advocatus_path = store._papers_dir / "p1000r0.advocatus.md"
-    advocatus_path.write_text("# Relatio", encoding="utf-8")
-    counts = store.reconcile()
-    assert counts["advocati"] == 1
-    meta = store.get_meta("P1000R0")
-    assert meta.advocatus_path == str(advocatus_path)
 
 
 # ---- per-paper debug/trace path helpers ------------------------------------
@@ -718,8 +651,8 @@ def test_upsert_year_skips_mailing_label_when_absent(store: SqliteBackend):
 
 _ASSAY_TABLES = (
     "assay_claims", "assay_evidence", "assay_concessions",
-    "assay_breadcrumbs", "assay_thesis", "assay_findings",
-    "assay_asks", "assay_references", "assay_strengths",
+    "assay_gaps", "assay_thesis", "assay_findings",
+    "assay_asks", "assay_pids", "assay_urls", "assay_strengths",
     "assay_checklist", "assay_compounds", "assay_synthesis",
 )
 
@@ -745,7 +678,7 @@ def _seed_assay_rows(store: SqliteBackend, pid: str) -> None:
             "VALUES (?, ?, ?, ?)", (pid, 1, 12, "conc"),
         )
         store._conn.execute(
-            "INSERT INTO assay_breadcrumbs "
+            "INSERT INTO assay_gaps "
             "(paper_id, uid, chunk_index, loc_line, gap) "
             "VALUES (?, ?, ?, ?, ?)", (pid, 1, 0, 13, "gap"),
         )
@@ -762,8 +695,12 @@ def _seed_assay_rows(store: SqliteBackend, pid: str) -> None:
             "VALUES (?, ?, ?, ?, ?)", (pid, 1, "committee", "q", "poll"),
         )
         store._conn.execute(
-            "INSERT INTO assay_references (paper_id, uid, ref_label) "
+            "INSERT INTO assay_pids (paper_id, uid, raw_pid) "
             "VALUES (?, ?, ?)", (pid, 1, "P9999R0"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_urls (paper_id, uid, url) "
+            "VALUES (?, ?, ?)", (pid, 1, "https://example.com"),
         )
         store._conn.execute(
             "INSERT INTO assay_strengths (paper_id, uid, title) "
@@ -829,7 +766,6 @@ def test_clear_downstream_outputs_skips_assay_when_path_unset(
     _seed_assay_rows(store, "P1")
 
     cleared = store.clear_downstream_outputs("P1")
-    assert cleared.advocatus is False
     assert cleared.agora is False
     assert cleared.assay is False
 
@@ -847,7 +783,6 @@ def test_clear_downstream_outputs_no_op_for_unknown_paper(
     _seed_assay_rows(store, "P1")
 
     cleared = store.clear_downstream_outputs("P_DOES_NOT_EXIST")
-    assert cleared.advocatus is False
     assert cleared.agora is False
     assert cleared.assay is False
 

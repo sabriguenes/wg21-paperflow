@@ -20,7 +20,7 @@ One-shot, fully batch. No `AskQuestion`, no human-in-the-loop, no resumable runs
 
 - `agora.md` - prompt document and pipeline authority.
 - `the-mod.md` - canonical creative reference. Injected into LLM call user messages where needed.
-- `prompt.py` - parses step metadata, validates against registered hooks, builds the ordered `StepSpec` list. Copied from advocatus, domain-free.
+- `prompt.py` - parses step metadata, validates against registered hooks, builds the ordered `StepSpec` list. Domain-free.
 - `pipeline.py` - async orchestration: `StepContext`, hook registry (`_HOOKS`), dispatch loop, public `agora_paper()` and `agora_since()` entry points. Sub-agent dispatch goes through `pipeline.tasks.run_task`, which serializes via the shared `_task_semaphore`.
 - `render.py` - debug transcript and per-step trace renderers. No HTML.
 - `parse.py` - domain-free H2 markdown section splitter.

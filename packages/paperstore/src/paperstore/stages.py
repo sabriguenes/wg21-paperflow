@@ -17,7 +17,6 @@ column stores the cause.
 STAGES = {
     "download": 0,
     "convert": 1,
-    "advocatus": 3,
     "agora": 4,
     "herald": 5,
     "ready": 6,

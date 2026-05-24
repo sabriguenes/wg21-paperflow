@@ -17,7 +17,7 @@ print unconditionally.
 These tests drive ``run_process_command`` with ``through=2`` so the
 verb resolves to ``"convert"`` and the printed stage label matches the
 original assertion. ``run_process_command`` is the shared driver for
-the advocatus / agora verbs; the convert verb has its own dispatch
+the assay / agora verbs; the convert verb has its own dispatch
 path in ``cli.jobs.run_convert``, but the honest-output branch in
 ``run_process_command`` is independent of the verb gate and is the
 contract being exercised here.

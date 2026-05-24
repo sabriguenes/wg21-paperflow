@@ -126,4 +126,4 @@ def test_truthful_status_caps_at_ready(
     # walk past STAGES["ready"].
     backend.put_source(staged_paper, b"PDF", suffix=".pdf")
     backend.write_paper_md(staged_paper, "# md\n")
-    assert truthful_status(backend, staged_paper, claimed=999) == STAGES["advocatus"]
+    assert truthful_status(backend, staged_paper, claimed=999) == STAGES["agora"]

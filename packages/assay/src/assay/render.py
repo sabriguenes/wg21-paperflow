@@ -6,7 +6,7 @@
 
 """Assay report and trace rendering.
 
-Renders the final markdown report (Step 15) via a Jinja template
+Renders the final markdown report (Step 16) via a Jinja template
 embedded in ``assay.md``, and diagnostic trace dumps for
 --trace/--step.
 
@@ -31,7 +31,7 @@ from pipeline import extract_code_blocks, load_sections
 
 from assay.models import (
     AskOutput,
-    BreadcrumbOutput,
+    GapOutput,
     ChecklistItem,
     CollectedItem,
     CollectedItems,
@@ -40,7 +40,6 @@ from assay.models import (
     FindingOutput,
     KilledFinding,
     PipelineState,
-    ReferenceEntry,
     StrengthOutput,
     SynthesisOutput,
 )
@@ -87,13 +86,22 @@ class ChecklistEntry:
 
 
 @dataclass
-class RenderReferenceEntry:
-    """A reference table entry."""
-    label: str
-    tier: str
+class RenderPaperRef:
+    """A paper-number reference for the report table."""
+    raw_pid: str
+    pid: str
     url: str
     link: str
-    mention_count: int
+    count: int
+    status: str
+
+
+@dataclass
+class RenderUrlEntry:
+    """A standalone URL for the report table."""
+    url: str
+    link: str
+    line: int
 
 
 @dataclass
@@ -113,10 +121,10 @@ class InventoryData:
     concession_count: int = 0
     question_count: int = 0
     dependency_count: int = 0
-    breadcrumb_total: int = 0
-    breadcrumb_critical: int = 0
-    breadcrumb_significant: int = 0
-    breadcrumb_minor: int = 0
+    gap_total: int = 0
+    gap_critical: int = 0
+    gap_significant: int = 0
+    gap_minor: int = 0
     findings_generated: int = 0
     findings_survived: int = 0
     findings_killed: int = 0
@@ -137,9 +145,9 @@ class ReportData:
     """
     pid: str = ""
     title: str = ""
-    central_thesis: str = ""
+    verdict_statement: str = ""
 
-    verdict: str = "Insufficient"
+    verdict_label: str = "Insufficient"
     confidence: str = "Medium"
     thesis_statement: str = ""
     thesis_survives: bool = False
@@ -170,12 +178,11 @@ class ReportData:
     checklist_passed: int = 0
     checklist_total: int = 0
 
-    references: list[RenderReferenceEntry] = field(default_factory=list)
+    paper_refs: list[RenderPaperRef] = field(default_factory=list)
+    standalone_urls: list[RenderUrlEntry] = field(default_factory=list)
 
     inventory: InventoryData = field(default_factory=InventoryData)
 
-    model_name: str = ""
-    service_name: str = ""
     chunk_count: int = 0
 
 
@@ -226,15 +233,25 @@ def prepare_report_data(state: PipelineState) -> ReportData:
     ]
     checklist_passed = sum(1 for c in checklist_items if c.passed)
 
-    references = [
-        RenderReferenceEntry(
-            label=r.ref_label or r.ref_id,
-            tier=r.relationship,
-            url=r.url or "",
-            link=f"[link]({r.url})" if r.url else "-",
-            mention_count=r.mention_count,
-        )
-        for r in (state.reference_registry or [])
+    paper_refs = []
+    for r in state.ref_pids:
+        parts = []
+        if r.in_paperstore:
+            parts.append("in-paperstore")
+        if r.stale:
+            parts.append("stale")
+        if r.author_overlap > 0:
+            parts.append(f"overlap:{r.author_overlap:.2f}")
+        status = ", ".join(parts)
+        link = f"[{r.raw_pid}]({r.url})" if r.url else r.raw_pid
+        paper_refs.append(RenderPaperRef(
+            raw_pid=r.raw_pid, pid=r.paper_id, url=r.url,
+            link=link, count=r.count, status=status,
+        ))
+
+    standalone_urls = [
+        RenderUrlEntry(url=u.url, link=f"[link]({u.url})", line=u.line)
+        for u in state.ref_urls
     ]
 
     strengths = [
@@ -247,10 +264,10 @@ def prepare_report_data(state: PipelineState) -> ReportData:
         for s in (state.strengths or [])
     ]
 
-    all_breadcrumbs: list[BreadcrumbOutput] = []
-    for lens_list in (state.breadcrumbs_by_lens or {}).values():
-        all_breadcrumbs.extend(lens_list)
-    bc_sev = Counter(b.severity for b in all_breadcrumbs)
+    all_gaps: list[GapOutput] = []
+    for lens_list in (state.gaps_by_lens or {}).values():
+        all_gaps.extend(lens_list)
+    gap_sev = Counter(b.severity for b in all_gaps)
 
     killed_list = state.killed or []
     killed_breakdown = ""
@@ -261,18 +278,24 @@ def prepare_report_data(state: PipelineState) -> ReportData:
     has_structural = bool(major_raw or compounds)
     structural_summary = ""
     if major_raw:
-        structural_summary = f"{len(major_raw)} findings touch the thesis or participate in compound dynamics."
+        compound_count = sum(1 for f in major_raw
+                            if f.title in {t for c in (state.compounds or []) for t in c.constituents})
+        thesis_count = len(major_raw) - compound_count
+        parts = []
+        if compound_count:
+            parts.append(f"{compound_count} participate in compound dynamics")
+        if thesis_count:
+            parts.append(f"{thesis_count} overlap the thesis")
+        structural_summary = f"{len(major_raw)} major findings: {', '.join(parts)}." if parts else ""
 
     asks_dicts = [{"target": a.target, "quote": a.quote, "type": a.type, "line": a.line}
                   for a in (state.asks or [])]
 
-    fm = state.front_matter
-
     return ReportData(
         pid=state.paper_id,
         title=state.paper_title,
-        central_thesis=synthesis.central_thesis if synthesis else "",
-        verdict=synthesis.verdict if synthesis else "Insufficient",
+        verdict_statement=synthesis.verdict_statement if synthesis else "",
+        verdict_label=synthesis.verdict_label if synthesis else "Insufficient",
         confidence=synthesis.verdict_confidence if synthesis else "Medium",
         thesis_statement=synthesis.thesis_statement if synthesis else "",
         thesis_survives=synthesis.thesis_survives if synthesis else False,
@@ -280,10 +303,10 @@ def prepare_report_data(state: PipelineState) -> ReportData:
         significant_count=significant,
         minor_count=minor_count,
         asks=asks_dicts,
-        intent=fm.intent if fm else "",
+        intent=state.intent,
         ask_calibration=state.derive.ask_calibration if state.derive else "",
-        wording_lines=fm.wording_lines if fm else 0,
-        targets_cwg_lwg=fm.targets_cwg_lwg if fm else False,
+        wording_lines=state.wording_lines,
+        targets_cwg_lwg=state.targets_cwg_lwg,
         has_structural=has_structural,
         dominant_dynamic=(synthesis.dominant_dynamic or "") if synthesis else "",
         structural_summary=structural_summary,
@@ -296,17 +319,18 @@ def prepare_report_data(state: PipelineState) -> ReportData:
         checklist=checklist,
         checklist_passed=checklist_passed,
         checklist_total=len(checklist_items),
-        references=references,
+        paper_refs=paper_refs,
+        standalone_urls=standalone_urls,
         inventory=InventoryData(
             claim_count=len(items.claims),
             evidence_count=len(items.evidence),
             concession_count=len(items.concessions),
             question_count=len(items.questions),
             dependency_count=len(items.dependencies),
-            breadcrumb_total=len(all_breadcrumbs),
-            breadcrumb_critical=bc_sev.get("critical", 0),
-            breadcrumb_significant=bc_sev.get("significant", 0),
-            breadcrumb_minor=bc_sev.get("minor", 0),
+            gap_total=len(all_gaps),
+            gap_critical=gap_sev.get("critical", 0),
+            gap_significant=gap_sev.get("significant", 0),
+            gap_minor=gap_sev.get("minor", 0),
             findings_generated=len(state.findings or []),
             findings_survived=survived_count,
             findings_killed=len(killed_list),
@@ -316,8 +340,6 @@ def prepare_report_data(state: PipelineState) -> ReportData:
             compound_count=len(compounds),
             strength_count=len(strengths),
         ),
-        model_name=state.model_name,
-        service_name=state.service_name,
         chunk_count=len(state.chunk_map or []),
     )
 
@@ -357,13 +379,13 @@ def render_report(state: PipelineState, section_text: str) -> str:
     summary format.
     """
     synthesis = state.synthesis
-    if synthesis is not None and synthesis.verdict == "Skipped":
+    if synthesis is not None and synthesis.verdict_label == "Skipped":
         return _render_skipped_report(state, synthesis)
 
     blocks = extract_code_blocks(section_text)
     if not blocks:
         raise RuntimeError(
-            "No Jinja template found in the '14. Report' section of assay.md. "
+            "No Jinja template found in the '17. Report' section of assay.md. "
             "Expected a fenced code block containing the report template."
         )
 
@@ -384,7 +406,7 @@ def rerender_report(pid: str, backend) -> str:
     """
     state = load_assay_state(pid, backend)
     secs = dict(load_sections("assay", "assay.md"))
-    section_text = secs.get("15. Report", "")
+    section_text = secs.get("17. Report", "")
     return render_report(state, section_text)
 
 
@@ -394,19 +416,20 @@ def rerender_report(pid: str, backend) -> str:
 def load_assay_state(pid: str, backend) -> PipelineState:
     """Reconstruct a report-ready PipelineState from database rows.
 
-    Loads claims, evidence, concessions, breadcrumbs, thesis, findings,
+    Loads claims, evidence, concessions, gaps, thesis, findings,
     asks, references, strengths, checklist, compounds, and synthesis.
-    Does NOT load paper_source or chunk_map (not needed for report).
+    Does NOT load paper_md or chunk_map (not needed for report).
     """
     meta = backend.get_meta(pid)
 
     claims_rows = backend.get_assay_claims(pid)
     evidence_rows = backend.get_assay_evidence(pid)
-    breadcrumb_rows = backend.get_assay_breadcrumbs(pid)
+    gap_rows = backend.get_assay_gaps(pid)
     thesis_row = backend.get_assay_thesis(pid)
     finding_rows = backend.get_assay_findings(pid)
     ask_rows = backend.get_assay_asks(pid)
-    ref_rows = backend.get_assay_references(pid)
+    pid_rows = backend.get_assay_pids(pid)
+    url_rows = backend.get_assay_urls(pid)
     strength_rows = backend.get_assay_strengths(pid)
     checklist_rows = backend.get_assay_checklist(pid)
     compound_rows = backend.get_assay_compounds(pid)
@@ -435,16 +458,16 @@ def load_assay_state(pid: str, backend) -> PipelineState:
         concessions=concessions,
     )
 
-    breadcrumbs_by_lens: dict[str, list[BreadcrumbOutput]] = {}
-    for b in breadcrumb_rows:
+    gaps_by_lens: dict[str, list[GapOutput]] = {}
+    for b in gap_rows:
         lens = b.primary_lens or "Other"
-        bc = BreadcrumbOutput(
+        g = GapOutput(
             chunk_index=b.chunk_index, item_quote="", line=b.loc_line,
             gap=b.gap, why_important=b.why_important,
             primary_lens=b.primary_lens, secondary_lens=b.secondary_lens or None,
             severity=b.severity,
         )
-        breadcrumbs_by_lens.setdefault(lens, []).append(bc)
+        gaps_by_lens.setdefault(lens, []).append(g)
 
     derive = None
     if thesis_row:
@@ -473,20 +496,25 @@ def load_assay_state(pid: str, backend) -> PipelineState:
                 major_titles.add(f.title)
         else:
             killed.append(KilledFinding(
-                finding_title=f.title, lens=f.lens,
+                finding_id=f.uid, finding_title=f.title, lens=f.lens,
                 challenge=f.challenge, reasoning=f.reasoning,
             ))
 
     asks = [AskOutput(target=a.target, quote=a.quote, type=a.type, line=0)
             for a in ask_rows]
 
-    reference_registry = [
-        ReferenceEntry(
-            ref_id="", ref_label=r.ref_label, url=r.url,
-            source_type="paper", relationship=r.relationship,
-            mention_count=r.mention_count,
+    from assay.references import RefEntry, UrlEntry
+    ref_pids = [
+        RefEntry(
+            paper_id=r.resolved_pid, raw_pid=r.raw_pid, url=r.url,
+            count=r.mention_count, in_paperstore=r.in_paperstore,
+            stale=r.stale, author_overlap=r.author_overlap,
         )
-        for r in ref_rows
+        for r in pid_rows
+    ]
+    ref_urls = [
+        UrlEntry(url=u.url, line=u.line)
+        for u in url_rows
     ]
 
     strengths_list = [
@@ -519,11 +547,11 @@ def load_assay_state(pid: str, backend) -> PipelineState:
         major_findings = [f for f in surviving if f.title in major_titles]
         regular_findings = [f for f in surviving if f.title not in major_titles]
         synthesis = SynthesisOutput(
-            verdict=synthesis_row.verdict,
+            verdict_label=synthesis_row.verdict,
             verdict_confidence=synthesis_row.verdict_confidence,
             thesis_statement=synthesis_row.thesis_statement,
             thesis_survives=synthesis_row.thesis_survives,
-            central_thesis=synthesis_row.central_thesis,
+            verdict_statement=synthesis_row.central_thesis,
             dominant_dynamic=synthesis_row.dominant_dynamic or None,
             critical_count=synthesis_row.critical_count,
             significant_count=synthesis_row.significant_count,
@@ -534,13 +562,12 @@ def load_assay_state(pid: str, backend) -> PipelineState:
     state = PipelineState(
         paper_id=pid,
         paper_title=meta.title or "",
-        model_name="(from DB)",
-        service_name="(from DB)",
         items=items,
-        breadcrumbs_by_lens=breadcrumbs_by_lens,
+        gaps_by_lens=gaps_by_lens,
         derive=derive,
         asks=asks,
-        reference_registry=reference_registry,
+        ref_pids=ref_pids,
+        ref_urls=ref_urls,
         findings=findings_all,
         surviving=surviving,
         killed=killed,
@@ -561,9 +588,9 @@ def render_trace(state: PipelineState, step: int, *, step_durations: list[float]
     bracketed qualifiers. Full data lives in debug.
     """
     _TRACE_STEPS = [
-        "Receive", "References", "Index", "Survey", "Extract", "Scan",
-        "Collect", "Derive", "Research", "Probe", "Analyze",
-        "Rationale", "Challenge", "Couple", "Synthesize", "Report",
+        "Receive", "References", "Index", "Survey", "Extract", "Decide",
+        "Classify", "Collect", "Derive", "Verify", "Research", "Probe",
+        "Analyze", "Rationale", "Challenge", "Couple", "Synthesize", "Report",
     ]
     _QUOTE_LEN = 60
 
@@ -585,24 +612,22 @@ def render_trace(state: PipelineState, step: int, *, step_durations: list[float]
         before = len(lines)
 
         if i == 0:
-            if state.front_matter is not None:
-                fm = state.front_matter
-                if fm.audience:
-                    lines.append(f"- audience: {', '.join(fm.audience)}")
-                if fm.intent:
-                    lines.append(f"- intent: {fm.intent}")
-                lines.append("")
+            if state.audience:
+                lines.append(f"- audience: {', '.join(state.audience)}")
+            if state.intent:
+                lines.append(f"- intent: {state.intent}")
+            lines.append("")
 
         elif i == 1:
-            if state.reference_inventory is not None:
-                refs = state.reference_inventory
+            if state.ref_pids:
+                refs = state.ref_pids
                 in_ps = sum(1 for r in refs if r.in_paperstore)
-                self_cite = sum(1 for r in refs if r.self_cite)
+                overlap_count = sum(1 for r in refs if r.author_overlap > 0)
                 summary_parts = [f"{len(refs)} refs"]
                 if in_ps:
                     summary_parts.append(f"{in_ps} in paperstore")
-                if self_cite:
-                    summary_parts.append(f"{self_cite} self-cite")
+                if overlap_count:
+                    summary_parts.append(f"{overlap_count} author overlap")
                 lines.append(f"{', '.join(summary_parts)}:")
                 for r in refs:
                     flags = []
@@ -610,11 +635,11 @@ def render_trace(state: PipelineState, step: int, *, step_durations: list[float]
                         flags.append("not found")
                     if r.stale:
                         flags.append("stale")
-                    if r.self_cite:
-                        flags.append("self-cite")
+                    if r.author_overlap > 0:
+                        flags.append(f"overlap:{r.author_overlap:.2f}")
                     count = r.count or 1
                     flag_str = f", {', '.join(flags)}" if flags else ""
-                    lines.append(f"- {r.paper_id} (x{count}{flag_str})")
+                    lines.append(f"- {r.raw_pid}->{r.paper_id} (x{count}{flag_str})")
                 lines.append("")
 
         elif i == 2:
@@ -637,30 +662,26 @@ def render_trace(state: PipelineState, step: int, *, step_durations: list[float]
                     heading = c.heading if len(c.heading) <= 50 else c.heading[:47] + "..."
                     lines.append(f"- [{c.index}] {heading} (lines {c.start_line}-{c.end_line}, ~{c.char_count // 3} tokens)")
                 lines.append("")
-            if state.front_matter is not None:
-                fm = state.front_matter
-                if fm.wording_lines or fm.targets_cwg_lwg:
-                    wording_parts = []
-                    if fm.wording_lines:
-                        wording_parts.append(f"wording_lines={fm.wording_lines}")
-                    if fm.targets_cwg_lwg:
-                        wording_parts.append("targets_cwg_lwg")
-                    lines.append(f"wording: {', '.join(wording_parts)}")
-                    lines.append("")
-            if state.synthesis is not None and state.synthesis.verdict == "Skipped":
+            if state.wording_lines or state.targets_cwg_lwg:
+                wording_parts = []
+                if state.wording_lines:
+                    wording_parts.append(f"wording_lines={state.wording_lines}")
+                if state.targets_cwg_lwg:
+                    wording_parts.append("targets_cwg_lwg")
+                lines.append(f"wording: {', '.join(wording_parts)}")
+                lines.append("")
+            if state.synthesis is not None and state.synthesis.verdict_label == "Skipped":
                 lines.append(f"triage: skipped ({state.synthesis.skip_reason})")
                 lines.append("")
 
         elif i == 4:
             if state.raw_extractions is not None:
                 all_items: list = []
-                all_refs: list = []
                 for ext in state.raw_extractions:
                     all_items.extend(ext.items)
-                    all_refs.extend(ext.references)
 
                 n_chunks = len(state.raw_extractions)
-                lines.append(f"{n_chunks} chunks, {len(all_items)} items, {len(all_refs)} references")
+                lines.append(f"{n_chunks} chunks, {len(all_items)} items")
                 lines.append("")
 
                 by_type: dict[str, list] = {}
@@ -673,28 +694,27 @@ def render_trace(state: PipelineState, step: int, *, step_durations: list[float]
                         lines.append(f"- {_q(item.quote)}")
                     lines.append("")
 
-                if all_refs:
-                    lines.append(f"### References ({len(all_refs)})")
-                    lines.append("")
-                    for ref in all_refs:
-                        label = ref.ref_label or ref.text or ref.url or "?"
-                        ctx = f" {_q(ref.context)}" if ref.context else ""
-                        lines.append(f"- {label} [{ref.relationship}]{ctx}")
-                    lines.append("")
-
         elif i == 5:
-            if state.raw_scans is not None:
-                all_bcs: list[BreadcrumbOutput] = []
-                for scan in state.raw_scans:
-                    all_bcs.extend(scan.breadcrumbs)
-                lines.append(f"{len(all_bcs)} breadcrumbs")
+            if state.raw_decisions is not None:
+                total = sum(len(d.decisions) for d in state.raw_decisions)
+                unsupported = sum(
+                    1 for d in state.raw_decisions
+                    for dec in d.decisions if not dec.supported
+                )
+                lines.append(f"{total} claims judged, {unsupported} unsupported")
+                lines.append("")
+
+        elif i == 6:
+            if state.raw_classifications is not None:
+                all_bcs: list[GapOutput] = state.raw_classifications.gaps
+                lines.append(f"{len(all_bcs)} gaps")
                 lines.append("")
                 if all_bcs:
                     for b in sorted(all_bcs, key=lambda x: {"critical": 0, "significant": 1, "minor": 2}.get(x.severity, 3)):
                         lines.append(f"- [{b.severity}] {b.gap} (line {b.line})")
                     lines.append("")
 
-        elif i == 6:
+        elif i == 7:
             if state.items is not None:
                 items = state.items
                 raw_count = sum(len(ext.items) for ext in (state.raw_extractions or []))
@@ -708,13 +728,9 @@ def render_trace(state: PipelineState, step: int, *, step_durations: list[float]
                     lines.append(f"active lenses: {', '.join(state.active_lenses)}")
                 if state.inactive_lenses:
                     lines.append(f"inactive lenses: {', '.join(state.inactive_lenses)}")
-                if state.reference_registry:
-                    lines.append(f"reference registry: {len(state.reference_registry)} entries")
-                    for rr in state.reference_registry:
-                        lines.append(f"- {rr.ref_label or rr.ref_id} [{rr.relationship}] {rr.mention_count} mentions")
                 lines.append("")
 
-        elif i == 7:
+        elif i == 8:
             if state.derive is not None:
                 d = state.derive
                 lines.append(f"thesis: {_q(d.central_claim)}")
@@ -728,19 +744,47 @@ def render_trace(state: PipelineState, step: int, *, step_durations: list[float]
                     for lb in d.load_bearing_claims:
                         lines.append(f"- [{lb.id}] {_q(lb.quote)}")
                     lines.append("")
-            if state.breadcrumbs_by_lens is not None:
-                all_bcs_derive: list[BreadcrumbOutput] = []
-                for lens_list in state.breadcrumbs_by_lens.values():
+            if state.gaps_by_lens is not None:
+                all_bcs_derive: list[GapOutput] = []
+                for lens_list in state.gaps_by_lens.values():
                     all_bcs_derive.extend(lens_list)
                 if all_bcs_derive:
                     bc_sev = Counter(b.severity for b in all_bcs_derive)
-                    lines.append(f"### Breadcrumbs ({len(all_bcs_derive)}: {bc_sev.get('critical', 0)} critical, {bc_sev.get('significant', 0)} significant, {bc_sev.get('minor', 0)} minor)")
+                    lines.append(f"### Gaps ({len(all_bcs_derive)}: {bc_sev.get('critical', 0)} critical, {bc_sev.get('significant', 0)} significant, {bc_sev.get('minor', 0)} minor)")
                     lines.append("")
                     for b in sorted(all_bcs_derive, key=lambda x: {"critical": 0, "significant": 1, "minor": 2}.get(x.severity, 3)):
-                        lines.append(f"- [{b.severity}] {b.gap} (line {b.line})")
+                        lines.append(f"- [{b.id}] [{b.severity}] {b.gap} (line {b.line})")
                     lines.append("")
 
-        elif i == 8:
+        elif i == 9:
+            if state.verify is not None:
+                v = state.verify
+                if v.closes:
+                    lines.append(f"### Closures ({len(v.closes)})")
+                    lines.append("")
+                    for r in v.closes:
+                        lines.append(f"- [{r.gap_id}] closed by evidence (line {r.evidence_line})")
+                    lines.append("")
+                if v.confirmations:
+                    lines.append(f"### Confirmations ({len(v.confirmations)})")
+                    lines.append("")
+                    for c in v.confirmations:
+                        lines.append(f"- {c}")
+                    lines.append("")
+                if v.contradictions:
+                    lines.append(f"### Contradictions ({len(v.contradictions)})")
+                    lines.append("")
+                    for c in v.contradictions:
+                        lines.append(f"- {c}")
+                    lines.append("")
+                if v.new_evidence:
+                    lines.append(f"### New evidence ({len(v.new_evidence)})")
+                    lines.append("")
+                    for e in v.new_evidence:
+                        lines.append(f"- {e}")
+                    lines.append("")
+
+        elif i == 10:
             if state.research is not None:
                 for lens, data in state.research.items():
                     findings = data.findings
@@ -751,48 +795,40 @@ def render_trace(state: PipelineState, step: int, *, step_durations: list[float]
                             lines.append(f"- {_q(f.finding)} ({f.source})")
                         lines.append("")
 
-        elif i == 9:
+        elif i == 11:
             if state.probe is not None:
                 p = state.probe
-                lines.append(f"{p.total_inventory} inventory, {p.total_registry} registry")
-                if p.cited_not_referenced:
-                    lines.append(f"- cited-not-referenced: {', '.join(p.cited_not_referenced)}")
-                if p.referenced_not_cited:
-                    lines.append(f"- referenced-not-cited: {', '.join(p.referenced_not_cited)}")
-                if p.companions:
-                    lines.append(f"- companions: {', '.join(p.companions)}")
+                lines.append(f"{p.total_inventory} references in inventory")
                 if p.stale_refs:
                     lines.append(f"- stale: {', '.join(p.stale_refs)}")
-                if p.self_cites:
-                    lines.append(f"- self-cites: {', '.join(p.self_cites)}")
                 lines.append("")
 
-        elif i == 10:
+        elif i == 12:
             if state.findings is not None:
                 sev = Counter(f.severity for f in state.findings)
                 lines.append(f"### Findings ({len(state.findings)}: {sev.get('critical', 0)} critical, {sev.get('significant', 0)} significant, {sev.get('minor', 0)} minor)")
                 lines.append("")
                 for f in sorted(state.findings, key=lambda x: {"critical": 0, "significant": 1, "minor": 2}.get(x.severity, 3)):
-                    lines.append(f"- [{f.severity}] {f.title} ({f.lens}, {f.test}, {f.confidence})")
+                    lines.append(f"- [{f.id}] [{f.severity}] {f.title} ({f.lens}, {f.test}, {f.confidence})")
                 lines.append("")
             if state.strengths is not None and state.strengths:
                 lines.append(f"### Strengths ({len(state.strengths)})")
                 lines.append("")
                 for s in state.strengths:
-                    lines.append(f"- {s.title} ({s.lens}) {_q(s.quote)} (line {s.line})")
+                    lines.append(f"- [{s.id}] {s.title} ({s.lens}) {_q(s.quote)} (line {s.line})")
                 lines.append("")
 
-        elif i == 11:
+        elif i == 13:
             if state.checklist is not None:
                 passed = sum(1 for c in state.checklist if c.passed)
                 lines.append(f"### Checklist ({passed}/{len(state.checklist)})")
                 lines.append("")
                 for c in state.checklist:
                     mark = "pass" if c.passed else "FAIL"
-                    lines.append(f"- {c.id} {c.name}: {mark}")
+                    lines.append(f"- [{c.id}] {c.name}: {mark}")
                 lines.append("")
 
-        elif i == 12:
+        elif i == 14:
             if state.surviving is not None:
                 killed = state.killed or []
                 lines.append(f"{len(state.surviving)} survived, {len(killed)} killed")
@@ -801,40 +837,49 @@ def render_trace(state: PipelineState, step: int, *, step_durations: list[float]
                     lines.append(f"### Survived ({len(state.surviving)})")
                     lines.append("")
                     for f in state.surviving:
-                        lines.append(f"- [{f.severity}] {f.title} ({f.lens})")
+                        lines.append(f"- [{f.id}] [{f.severity}] {f.title} ({f.lens})")
                     lines.append("")
                 if killed:
                     lines.append(f"### Killed ({len(killed)})")
                     lines.append("")
                     for k in killed:
-                        lines.append(f"- [{k.challenge}] {k.finding_title} - {k.reasoning[:80]}")
+                        lines.append(f"- [{k.finding_id}] [{k.challenge}] {k.finding_title} - {k.reasoning[:80]}")
                     lines.append("")
 
-        elif i == 13:
+        elif i == 15:
             if state.compounds is not None:
                 for comp in state.compounds:
-                    n_const = len(comp.constituents)
                     cross = " (cross-lens)" if comp.cross_lens else ""
-                    lines.append(f"- {comp.name} ({n_const} constituents{cross})")
+                    lines.append(f"- {comp.name} (constituents: {', '.join(f'[{c}]' for c in comp.constituents)}{cross})")
                     lines.append(f"  - mechanism: {_q(comp.mechanism)}")
                     if comp.emergent_risk:
                         lines.append(f"  - emergent risk: {_q(comp.emergent_risk)}")
                 lines.append("")
 
-        elif i == 14:
+        elif i == 16:
             if state.synthesis is not None:
                 syn = state.synthesis
-                lines.append(f"verdict: {syn.verdict} ({syn.verdict_confidence})")
+                lines.append(f"verdict: {syn.verdict_label} ({syn.verdict_confidence})")
                 lines.append(f"thesis survives: {syn.thesis_survives}")
                 if syn.thesis_statement:
                     lines.append(f"thesis: {_q(syn.thesis_statement)}")
                 if syn.dominant_dynamic:
                     lines.append(f"dominant dynamic: {syn.dominant_dynamic}")
-                lines.append(f"major: {len(syn.major_findings)}, regular: {len(syn.regular_findings)}")
-                if syn.major_findings:
-                    for mf in syn.major_findings:
-                        lines.append(f"- [{mf.severity}] {mf.title} ({mf.lens})")
                 lines.append("")
+                if syn.major_findings:
+                    lines.append(f"### Promoted ({len(syn.major_findings)})")
+                    lines.append("")
+                    for mf in syn.major_findings:
+                        reason = syn.promotion_reasons.get(mf.id, "")
+                        tag = f" - {reason}" if reason else ""
+                        lines.append(f"- [{mf.id}] [{mf.severity}] {mf.title} ({mf.lens}){tag}")
+                    lines.append("")
+                if syn.regular_findings:
+                    lines.append(f"### Regular ({len(syn.regular_findings)})")
+                    lines.append("")
+                    for rf in syn.regular_findings:
+                        lines.append(f"- [{rf.severity}] {rf.title} ({rf.lens})")
+                    lines.append("")
 
         if len(lines) == before:
             pass
@@ -848,7 +893,7 @@ def _render_skipped_report(state: PipelineState, synthesis: SynthesisOutput) -> 
     pid = state.paper_id
     title = state.paper_title
     stats = synthesis.paper_stats
-    paper_type = synthesis.central_thesis or "Skipped"
+    paper_type = synthesis.verdict_statement or "Skipped"
     reason = synthesis.skip_reason
 
     lines.append(f"# {pid} Assay")

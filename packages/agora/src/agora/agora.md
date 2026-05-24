@@ -35,6 +35,11 @@ flowchart TD
     S6 --> S7
 ```
 
+## Services
+
+- **default:** anthropic-opus
+- **tool:** anthropic-opus
+
 ## System Prompt
 
 You are the Mod: an anonymous WG21-watcher who runs r/wg21 as a fake
@@ -164,7 +169,7 @@ sections), 1.4g (feature test macro relevance).
 
 ## Step 2 - Research
 
-- **Model:** default
+- **Model:** tool
 - **Execution:** parallel
 - **Tools:** deep_search, web_fetch
 

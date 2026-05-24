@@ -20,12 +20,11 @@ WG21_DATA_DIR/
     <pid>.html-images.json         # typed manifest written by mailing,
                                    # consumed by tomd's HTML path. Schema:
                                    # paperstore.html_manifest.HtmlImagesManifest
-    <pid>.advocatus.md             # advocatus Relatio (paperflow advocatus)
     <pid>.<tool>.debug.md          # per-tool debug transcript (--debug)
     <pid>.<tool>.trace.md          # per-tool pipeline trace (--trace)
 ```
 
-Per-tool debug/trace artifacts are namespaced by `<tool>` (e.g. `advocatus`, `agora`, future `herald`) so multiple pipelines coexist without filename collisions. Every consumer routes through `backend.get_debug_md_path(pid, tool)` and `backend.get_trace_md_path(pid, tool)`; no tool reinvents path construction.
+Per-tool debug/trace artifacts are namespaced by `<tool>` (e.g. `agora`, future `herald`) so multiple pipelines coexist without filename collisions. Every consumer routes through `backend.get_debug_md_path(pid, tool)` and `backend.get_trace_md_path(pid, tool)`; no tool reinvents path construction.
 
 ## Module layout
 
@@ -63,7 +62,7 @@ The image-extraction work added six accessors that callers route through; no con
 - `get_paper_image_path(pid, page, index, ext) -> Path` and `write_paper_image(pid, page, index, ext, data)` for `<pid>-fig{page}-{index}.{ext}`. `page=0` is the HTML "no page concept" sentinel.
 - `iter_paper_image_paths(pid)` and `delete_paper_images(pid)` filter via a compiled stem regex (`_IMAGE_FILENAME_RE`), not glob: so `delete_paper_images("P30")` can never reach `p301-fig...` or unrelated `p30-meta.json` artifacts. The regex is the authoritative gate.
 - `get_html_images_manifest_path(pid)` for the mailing-to-tomd handoff sidecar.
-- `clear_downstream_outputs(pid) -> ClearedSet` invalidates every downstream artifact whose `loc.line` offsets (or paper-text-derived content) would go stale on a content change: the `.advocatus.md` file, the `.agora.json` file, the `.assay.md` file, and all 12 `assay_*` tables (via `clear_assay`). Called by `paperflow convert` after a re-convert that changed the markdown. `--keep-downstream` opts out and logs a warning. The dissect-era extract tables (claims, evidence, paper_citations, external_citations, questions, rhetoric, caput_causae, citation_audit) are no longer written by any production pipeline and are not touched here; if you reactivate one, add it back to this routine in the same change.
+- `clear_downstream_outputs(pid) -> ClearedSet` invalidates every downstream artifact whose `loc.line` offsets (or paper-text-derived content) would go stale on a content change: the `.agora.json` file, the `.assay.md` file, and all 12 `assay_*` tables (via `clear_assay`). Called by `paperflow convert` after a re-convert that changed the markdown. `--keep-downstream` opts out and logs a warning. The dissect-era extract tables (claims, evidence, paper_citations, external_citations, questions, rhetoric, caput_causae, citation_audit) are no longer written by any production pipeline and are not touched here; if you reactivate one, add it back to this routine in the same change.
 
 `try_read_paper_md(pid) -> str | None` is the non-raising read of the current markdown, used for the byte-equality check that gates downstream invalidation.
 

@@ -91,6 +91,21 @@ class TestChunkPaperBasic:
         assert result[0].heading == "(untitled)"
 
 
+
+class TestDefaultChunking:
+    def test_all_sections_returned(self):
+        result = chunk_paper(SIMPLE_PAPER, max_chars=50)
+        headings = [s.heading for s in result]
+        assert any("Section One" in h for h in headings)
+        assert any("Section Three" in h for h in headings)
+
+    def test_short_sections_merged(self):
+        result = chunk_paper(SIMPLE_PAPER)
+        assert len(result) >= 1
+        assert all(s.char_count > 0 for s in result)
+
+
+
 class TestMaxChars:
     def test_large_max_no_split(self):
         result = chunk_paper(SIMPLE_PAPER, max_chars=999999)

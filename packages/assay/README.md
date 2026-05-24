@@ -14,17 +14,17 @@ paperflow assay P4003R3 --service fast=h200-qwen3-32b
 
 ## Architecture
 
-Pass 1 (Steps 0-4) extracts claims, evidence, breadcrumbs, and asks per chunk
+Pass 1 (Steps 0-4) extracts claims, evidence, gaps, and asks per chunk
 without a thesis. Step 4 compresses claims into a thesis and identifies
 load-bearing claims.
 
 Pass 2 (Steps 5-11) re-scans every chunk with the thesis, cross-chunk
-breadcrumbs, external research, and companion paper summaries injected.
+gaps, external research, and companion paper summaries injected.
 Produces findings, challenges them against concessions/evidence/scope, detects
 compound dynamics, and derives a verdict.
 
 Output: `{pid}.assay.md` in paperstore. Intermediate artifacts (claims,
-evidence, breadcrumbs, thesis, findings) stored in DB for downstream use by
+evidence, gaps, thesis, findings) stored in DB for downstream use by
 agora.
 
 ## Lenses

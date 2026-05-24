@@ -155,6 +155,8 @@ class AgentBackend:
                 f"service={self._service_name or 'unknown'} | "
                 f"model={model_name} | "
                 f"max_tokens={resolved_max_tokens} -->\n"
+                f"<!-- system -->\n{system_prompt.rstrip()}\n"
+                f"<!-- user -->\n{user_message.rstrip()}\n"
             )
         return await self._model.run(
             system_prompt,

@@ -8,9 +8,9 @@
 """Per-paper pipeline orchestration.
 
 ``process_paper`` walks one paper through the linear processing
-pipeline (download -> convert -> advocatus -> agora -> herald ->
-ready). Each verb in the CLI maps to a ``through`` value that says
-how far to advance.
+pipeline (download -> convert -> agora -> herald -> ready). Each
+verb in the CLI maps to a ``through`` value that says how far to
+advance.
 
 ``ensure_paper_md`` is the citation shortcut: download + convert as
 one unit with a CAS guard, used by citation verification to prepare
@@ -47,7 +47,6 @@ async def process_paper(
     trace: bool = False,
     stop_after: int | None = None,
     chunk_index: int | None = None,
-    service_overrides: dict[str, str] | None = None,
     classifier_overrides: dict[str, str] | None = None,
     provider_override: str | None = None,
     force: bool = False,
@@ -130,7 +129,6 @@ async def process_paper(
             stage_result = await _run_stage(
                 pid, status, backend, debug=debug, trace=trace,
                 stop_after=stop_after, chunk_index=chunk_index,
-                service_overrides=service_overrides,
                 classifier_overrides=classifier_overrides,
                 provider_override=provider_override,
                 keep_downstream=keep_downstream,
@@ -190,7 +188,7 @@ async def ensure_paper_md(pid: str, backend: StorageBackend) -> str | None:
         return None
 
     backend.advance_status(pid, STAGES["download"], STAGES["convert"])
-    backend.advance_status(pid, STAGES["convert"], STAGES["advocatus"])
+    backend.advance_status(pid, STAGES["convert"], STAGES["agora"])
 
     try:
         return backend.get_paper_md(pid)
@@ -207,7 +205,6 @@ async def _run_stage(
     trace: bool = False,
     stop_after: int | None = None,
     chunk_index: int | None = None,
-    service_overrides: dict[str, str] | None = None,
     classifier_overrides: dict[str, str] | None = None,
     provider_override: str | None = None,
     keep_downstream: bool = False,
@@ -218,14 +215,8 @@ async def _run_stage(
         await _stage_download(pid, backend, on_progress=on_progress)
     elif stage == STAGES["convert"]:
         return await _stage_convert(pid, backend, keep_downstream=keep_downstream)
-    elif stage == STAGES["advocatus"]:
-        await _stage_advocatus(pid, backend, debug=debug, trace=trace,
-                               service_overrides=service_overrides,
-                               provider_override=provider_override,
-                               on_progress=on_progress)
     elif stage == STAGES["agora"]:
         await _stage_agora(pid, backend, debug=debug, trace=trace,
-                           service_overrides=service_overrides,
                            provider_override=provider_override,
                            on_progress=on_progress)
     elif stage == STAGES["herald"]:
@@ -361,9 +352,9 @@ async def _stage_convert(
     conditionally invalidate downstream pipelines.
 
     No artifact-exists short-circuit: ``truthful_status`` upstream
-    already decided we need to run. (The advocatus / agora stages
-    follow the same pattern; only ``--force`` reruns reach this body
-    with a still-good prior markdown_path.)
+    already decided we need to run. (The agora stage follows the same
+    pattern; only ``--force`` reruns reach this body with a still-good
+    prior markdown_path.)
 
     For skipped papers (slide-deck, standards-draft, unreadable):
     nothing is written to disk and no DB state is touched. The caller
@@ -371,12 +362,11 @@ async def _stage_convert(
     not advanced past ``download``.
 
     Otherwise: byte-equality check against any prior markdown decides
-    whether downstream pipelines (advocatus, agora) should be
-    invalidated. A re-convert that produces identical markdown leaves
-    extract-table rows intact, since their stored ``loc.line`` offsets
-    are still valid. When the markdown does change AND
-    ``keep_downstream`` is False, the .advocatus.md / .agora.json
-    files and the extract rows are wiped.
+    whether downstream pipelines (agora) should be invalidated. A
+    re-convert that produces identical markdown leaves extract-table
+    rows intact, since their stored ``loc.line`` offsets are still
+    valid. When the markdown does change AND ``keep_downstream`` is
+    False, the .agora.json files and the extract rows are wiped.
     """
     import asyncio
     from pathlib import Path
@@ -485,35 +475,8 @@ async def _stage_convert(
     )
 
 
-async def _stage_advocatus(
-    pid: str, backend: StorageBackend, *, debug: bool = False, trace: bool = False,
-    service_overrides: dict[str, str] | None = None,
-    provider_override: str | None = None,
-    on_progress: object = None,
-) -> None:
-    """Run advocatus pipeline on the paper.
-
-    No artifact-exists short-circuit: this stage is only reached from
-    ``process_paper``, which already used ``truthful_status`` to decide
-    we needed to run.
-    """
-    from advocatus import advocatus_paper
-
-    relatio = await advocatus_paper(
-        pid, backend, debug=debug, trace=trace,
-        service_overrides=service_overrides,
-        on_progress=on_progress,
-    )
-    backend.write_advocatus_md(pid, relatio)
-    # provider_override is accepted for API parity but advocatus does
-    # not currently load classifiers; passing it through is a no-op
-    # today and a future-friendly hook.
-    _ = provider_override
-
-
 async def _stage_agora(
     pid: str, backend: StorageBackend, *, debug: bool = False, trace: bool = False,
-    service_overrides: dict[str, str] | None = None,
     provider_override: str | None = None,
     on_progress: object = None,
 ) -> None:
@@ -527,7 +490,6 @@ async def _stage_agora(
 
     await agora_paper(
         pid, backend, debug=debug, trace=trace,
-        service_overrides=service_overrides,
         on_progress=on_progress,
     )
     _ = provider_override

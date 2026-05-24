@@ -31,15 +31,6 @@ def command(args, backend):
         trace = True
     stop_after = step_val
 
-    service_overrides = None
-    svc_raw = getattr(args, "service", None)
-    if svc_raw:
-        if "=" in svc_raw:
-            k, v = svc_raw.split("=", 1)
-            service_overrides = {k: v}
-        else:
-            service_overrides = {"fast": svc_raw, "default": svc_raw, "tool": svc_raw}
-
     try:
         backend.get_meta(pid)
     except MissingMetaError:
@@ -63,7 +54,6 @@ def command(args, backend):
                 pid, backend,
                 debug=debug, trace=trace,
                 stop_after=stop_after,
-                service_overrides=service_overrides,
                 on_progress=on_progress,
             ))
 

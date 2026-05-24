@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import httpx
 import trafilatura
 
-from pipeline.tools import wrap_source
+from pipeline.tools import _random_tag, inject_untrusted
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,7 @@ class WebResearcher:
         *,
         backend: SearchBackend | None = None,
         binary_extractors: dict[str, BinaryExtractor] | None = None,
+        guard_tag: str | None = None,
     ) -> None:
         from pipeline.backends import get_default_backend
 
@@ -133,6 +134,7 @@ class WebResearcher:
         self._binary_extractors: dict[str, BinaryExtractor] = (
             dict(binary_extractors) if binary_extractors else {}
         )
+        self._guard_tag = guard_tag or _random_tag()
         self._closed = False
 
     async def __aenter__(self) -> WebResearcher:
@@ -440,7 +442,7 @@ class WebResearcher:
                 total_chars += len(content)
                 title = url_to_result.get(url)
                 label = title.title if title else url
-                parts.append(f"\n### {label}\n{wrap_source(content)}\n")
+                parts.append(f"\n### {label}\n{inject_untrusted(content, self._guard_tag)}\n")
 
         return "\n".join(parts)
 

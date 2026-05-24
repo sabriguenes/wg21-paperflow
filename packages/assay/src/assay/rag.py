@@ -23,7 +23,7 @@ import numpy as np
 
 from pipeline.transformer_backend import EmbeddingBackend
 
-from assay.models import BreadcrumbOutput, FindingOutput, ReferenceEntry
+from assay.models import GapOutput, FindingOutput
 from assay.references import RefEntry
 
 logger = logging.getLogger(__name__)
@@ -175,7 +175,6 @@ def _chunk_markdown(
 
 def build_cited_paper_index(
     reference_inventory: list[RefEntry],
-    reference_registry: list[ReferenceEntry] | None,
     backend: Any,
     embedder: EmbeddingBackend,
     *,
@@ -187,13 +186,6 @@ def build_cited_paper_index(
     Indexes all cited papers except the paper under analysis itself.
     Self-cites (same author) are included - they are often companion papers.
     """
-    registry_map: dict[str, str] = {}
-    if reference_registry:
-        for entry in reference_registry:
-            label = (entry.ref_label or "").upper()
-            if label and entry.relationship:
-                registry_map[label] = entry.relationship
-
     all_chunks: list[RagChunk] = []
     for ref in reference_inventory:
         if not ref.in_paperstore:
@@ -205,7 +197,7 @@ def build_cited_paper_index(
         if not md:
             continue
 
-        relationship = registry_map.get(ref.paper_id.upper(), "citation")
+        relationship = "citation"
         chunks = _chunk_markdown(md, ref.paper_id, relationship, max_tokens=max_tokens)
         all_chunks.extend(chunks)
 
@@ -217,6 +209,24 @@ def build_cited_paper_index(
     embeddings = raw_embeddings.float().cpu().numpy()
 
     return CitedPaperIndex(chunks=all_chunks, embeddings=embeddings)
+
+
+def build_single_paper_index(
+    paper_md: str,
+    paper_id: str,
+    embedder: EmbeddingBackend,
+    *,
+    relationship: str = "companion",
+    max_tokens: int = 400,
+) -> CitedPaperIndex | None:
+    """Build an ephemeral vector index over one paper's markdown."""
+    chunks = _chunk_markdown(paper_md, paper_id, relationship, max_tokens=max_tokens)
+    if not chunks:
+        return None
+    texts = [c.text for c in chunks]
+    raw_embeddings = embedder.embed(texts)
+    embeddings = raw_embeddings.float().cpu().numpy()
+    return CitedPaperIndex(chunks=chunks, embeddings=embeddings)
 
 
 def query_index(
@@ -300,16 +310,16 @@ def query_for_research(
     index: CitedPaperIndex,
     embedder: EmbeddingBackend,
     lens: str,
-    breadcrumbs: list[BreadcrumbOutput],
+    gaps: list[GapOutput],
     thesis: str,
 ) -> str:
-    """Query index with breadcrumbs for a given lens. Returns formatted evidence."""
-    if not breadcrumbs:
+    """Query index with gaps for a given lens. Returns formatted evidence."""
+    if not gaps:
         return ""
 
-    lens_bcs = [b for b in breadcrumbs if (b.primary_lens or "") == lens]
+    lens_bcs = [b for b in gaps if (b.primary_lens or "") == lens]
     if not lens_bcs:
-        lens_bcs = breadcrumbs[:3]
+        lens_bcs = gaps[:3]
 
     all_hits: list[RagHit] = []
     seen_chunks: set[tuple[str, int]] = set()

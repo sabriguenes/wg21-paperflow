@@ -65,14 +65,11 @@ def _stub_args(
 
 def _seed(backend: SqliteBackend, pid: str, *,
           with_md: bool = False,
-          with_advocatus: bool = False,
           with_agora: bool = False) -> None:
     backend.upsert_year("2026", [{"paper_id": pid, "title": pid}])
     backend.put_source(pid, b"%PDF stub", suffix=".pdf")
     if with_md:
         backend.write_paper_md(pid, "# body\n")
-    if with_advocatus:
-        backend.write_advocatus_md(pid, "# advocatus\n")
     if with_agora:
         backend.write_agora_json(pid, {"x": 1})
 
@@ -114,7 +111,7 @@ def test_single_paper_invocation_skips_prompt(
     """Single paper, deliberate user action, no prompt regardless of
     downstream state."""
     _seed(backend, "P1234R0",
-          with_md=True, with_advocatus=True)
+          with_md=True, with_agora=True)
 
     rc = _run(
         backend, _stub_args(["P1234R0"]),
@@ -149,8 +146,8 @@ def test_batch_with_no_downstream_skips_prompt(
 def test_batch_with_downstream_prompts(backend: SqliteBackend, capsys):
     """Batch of papers, at least one with downstream artifacts AND
     existing markdown: prompt fires."""
-    _seed(backend, "P1", with_md=True, with_advocatus=True)
-    _seed(backend, "P2", with_md=True, with_advocatus=True)
+    _seed(backend, "P1", with_md=True, with_agora=True)
+    _seed(backend, "P2", with_md=True, with_agora=True)
     _seed(backend, "P3", with_md=True)   # no downstream
 
     rc = _run(
@@ -161,15 +158,15 @@ def test_batch_with_downstream_prompts(backend: SqliteBackend, capsys):
 
     out = capsys.readouterr().out
     assert "invalidate downstream artifacts for 2 paper(s)" in out
-    assert "advocatus outputs: 2" in out
+    assert "agora outputs: 2" in out
     # User declined.
     assert "aborted" in out
     assert rc == 0
 
 
 def test_prompt_accepts_y_and_proceeds(backend: SqliteBackend, capsys):
-    _seed(backend, "P1", with_md=True, with_advocatus=True)
-    _seed(backend, "P2", with_md=True, with_advocatus=True)
+    _seed(backend, "P1", with_md=True, with_agora=True)
+    _seed(backend, "P2", with_md=True, with_agora=True)
 
     rc = _run(
         backend, _stub_args(["2026"]),
@@ -184,8 +181,8 @@ def test_prompt_accepts_y_and_proceeds(backend: SqliteBackend, capsys):
 
 
 def test_yes_flag_skips_prompt(backend: SqliteBackend, capsys):
-    _seed(backend, "P1", with_md=True, with_advocatus=True)
-    _seed(backend, "P2", with_md=True, with_advocatus=True)
+    _seed(backend, "P1", with_md=True, with_agora=True)
+    _seed(backend, "P2", with_md=True, with_agora=True)
 
     rc = _run(
         backend, _stub_args(["2026"], yes=True),
@@ -201,8 +198,8 @@ def test_yes_flag_skips_prompt(backend: SqliteBackend, capsys):
 
 def test_non_tty_skips_prompt(backend: SqliteBackend, capsys):
     """Non-interactive (cron, CI) invocations don't hang on input()."""
-    _seed(backend, "P1", with_md=True, with_advocatus=True)
-    _seed(backend, "P2", with_md=True, with_advocatus=True)
+    _seed(backend, "P1", with_md=True, with_agora=True)
+    _seed(backend, "P2", with_md=True, with_agora=True)
 
     rc = _run(
         backend, _stub_args(["2026"]),
@@ -218,8 +215,8 @@ def test_non_tty_skips_prompt(backend: SqliteBackend, capsys):
 
 def test_keep_downstream_skips_prompt(backend: SqliteBackend, capsys):
     """--keep-downstream means we don't clear anything, so no prompt."""
-    _seed(backend, "P1", with_md=True, with_advocatus=True)
-    _seed(backend, "P2", with_md=True, with_advocatus=True)
+    _seed(backend, "P1", with_md=True, with_agora=True)
+    _seed(backend, "P2", with_md=True, with_agora=True)
 
     rc = _run(
         backend, _stub_args(["2026"], keep_downstream=True),
@@ -263,11 +260,11 @@ def test_truncation_summary_lists_capped_papers(
 def test_invalidation_summary_lists_cleared_pipelines(
     backend: SqliteBackend, capsys,
 ):
-    _seed(backend, "P1", with_md=True, with_advocatus=True)
-    _seed(backend, "P2", with_md=True, with_advocatus=True, with_agora=True)
+    _seed(backend, "P1", with_md=True, with_agora=True)
+    _seed(backend, "P2", with_md=True, with_agora=True)
 
     async def fake(pid, be, **kwargs):
-        cleared = ("advocatus",) if pid == "P1" else ("advocatus", "agora")
+        cleared = ("agora",)
         return ProcessResult(
             final_status=2,
             stages_run=[1],
@@ -282,9 +279,9 @@ def test_invalidation_summary_lists_cleared_pipelines(
 
     out = capsys.readouterr().out
     assert "convert: 2 paper(s) had downstream artifacts invalidated" in out
-    assert "P1 (advocatus)" in out
-    assert "P2 (advocatus, agora)" in out
-    assert "re-run `paperflow advocatus`" in out
+    assert "P1 (agora)" in out
+    assert "P2 (agora)" in out
+    assert "re-run `paperflow agora`" in out
 
 
 def test_no_summary_when_nothing_to_report(

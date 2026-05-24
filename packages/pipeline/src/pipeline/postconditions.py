@@ -86,8 +86,6 @@ def postcondition_satisfied(
         return bool(paper.source_file) and Path(paper.source_file).exists()
     if stage == STAGES["convert"]:
         return bool(paper.markdown_path) and Path(paper.markdown_path).exists()
-    if stage == STAGES["advocatus"]:
-        return bool(paper.advocatus_path) and Path(paper.advocatus_path).exists()
     if stage == STAGES["agora"]:
         return bool(paper.agora_path) and Path(paper.agora_path).exists()
     return True

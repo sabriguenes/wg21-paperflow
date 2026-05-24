@@ -13,7 +13,6 @@ from paperstore.backend import ClearedSet, PaperRow, StorageBackend, parse_autho
 from paperstore.errors import (
     InvalidPaperstoreUriError,
     InvalidSuffixError,
-    MissingAdvocatusError,
     MissingAgoraError,
     MissingMailingIndexError,
     MissingMetaError,
@@ -23,7 +22,7 @@ from paperstore.errors import (
     PaperstoreError,
 )
 from paperstore.extract_rows import (
-    AssayBreadcrumbRow,
+    AssayGapRow,
     AssayClaimRow,
     AssayConcessionRow,
     AssayEvidenceRow,
@@ -68,7 +67,6 @@ __all__ = [
     "MissingMetaError",
     "MissingSourceError",
     "MissingPaperMdError",
-    "MissingAdvocatusError",
     "MissingAgoraError",
     "MissingMailingIndexError",
     "InvalidPaperstoreUriError",
@@ -84,7 +82,7 @@ __all__ = [
     "STAGE_NAMES",
     "failed_status",
     "failed_stage",
-    "AssayBreadcrumbRow",
+    "AssayGapRow",
     "AssayClaimRow",
     "AssayConcessionRow",
     "AssayEvidenceRow",

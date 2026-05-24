@@ -91,7 +91,6 @@ class PaperRow:
     source_file: str = ""
     markdown_path: str = ""
     dissect_path: str = ""
-    advocatus_path: str = ""
     agora_path: str = ""
     assay_path: str = ""
     line_count: int = 0
@@ -104,22 +103,19 @@ class ClearedSet:
     """Record of which downstream pipelines a ``clear_downstream_outputs`` call wiped.
 
     The CLI consumes this to build a per-paper summary line such as
-    ``P3556R0 (advocatus)`` after a re-convert. ``bool(set)`` is
-    True iff anything was cleared (so the CLI can skip empty summaries).
+    ``P3556R0 (agora)`` after a re-convert. ``bool(set)`` is True iff
+    anything was cleared (so the CLI can skip empty summaries).
     """
 
-    advocatus: bool = False
     agora: bool = False
     assay: bool = False
 
     def __bool__(self) -> bool:
-        return self.advocatus or self.agora or self.assay
+        return self.agora or self.assay
 
     def names(self) -> list[str]:
         """Return the pipeline names that were cleared, in stable order."""
         out: list[str] = []
-        if self.advocatus:
-            out.append("advocatus")
         if self.agora:
             out.append("agora")
         if self.assay:
@@ -203,18 +199,6 @@ class StorageBackend(ABC):
     @abstractmethod
     def write_paper_md(self, paper_id: str, markdown: str) -> Path:
         """Persist the converted markdown. Atomic write. Returns path."""
-
-    @abstractmethod
-    def write_advocatus_md(self, paper_id: str, markdown: str) -> Path:
-        """Persist the advocatus markdown (Relatio). Atomic write. Returns path."""
-
-    @abstractmethod
-    def clear_advocatus(self, paper_id: str) -> None:
-        """Delete the advocatus file and clear its path in the store.
-
-        Called at the start of an advocatus run so a crash does not leave
-        a stale Relatio from a previous run.
-        """
 
     @abstractmethod
     def write_agora_json(self, paper_id: str, payload: Any) -> Path:
@@ -342,13 +326,13 @@ class StorageBackend(ABC):
 
     @abstractmethod
     def clear_downstream_outputs(self, paper_id: str) -> ClearedSet:
-        """Invalidate advocatus and agora artifacts for ``paper_id``.
+        """Invalidate agora artifacts for ``paper_id``.
 
         Called by ``paperflow convert`` after a re-convert that changed
         the markdown content. This method:
 
-        - Deletes the ``.advocatus.md`` / ``.agora.json`` files (if
-          present) and clears their path columns.
+        - Deletes the ``.agora.json`` file (if present) and clears its
+          path column.
 
         Does not touch ``paper.md`` or extracted images. Returns a
         :class:`ClearedSet` describing which pipelines had artifacts
@@ -388,8 +372,8 @@ class StorageBackend(ABC):
         Non-raising alternative to :meth:`get_paper_md`, used by the
         convert orchestration to perform the byte-equality check that
         gates downstream invalidation. A first conversion returns None;
-        a re-convert producing the same bytes leaves advocatus / agora
-        artifacts intact.
+        a re-convert producing the same bytes leaves agora artifacts
+        intact.
         """
 
     @abstractmethod
@@ -400,14 +384,6 @@ class StorageBackend(ABC):
         (which raises :class:`MissingPaperMdError` if not yet written). This
         accessor exists for callers that need a stable filesystem path
         before the file exists, such as file watchers.
-        """
-
-    @abstractmethod
-    def get_advocatus_path(self, paper_id: str) -> Path:
-        """Return the local path to the advocatus file (Relatio).
-
-        Raises:
-            paperstore.MissingAdvocatusError: no advocatus for ``paper_id``.
         """
 
     @abstractmethod
@@ -478,8 +454,8 @@ class StorageBackend(ABC):
         """Replace assay concession entries for ``paper_id``."""
 
     @abstractmethod
-    def store_assay_breadcrumbs(self, paper_id: str, breadcrumbs) -> None:
-        """Replace assay breadcrumb entries for ``paper_id``."""
+    def store_assay_gaps(self, paper_id: str, gaps) -> None:
+        """Replace assay gap entries for ``paper_id``."""
 
     @abstractmethod
     def store_assay_thesis(self, paper_id: str, thesis) -> None:
@@ -504,8 +480,8 @@ class StorageBackend(ABC):
         """Return all assay concessions for ``paper_id``."""
 
     @abstractmethod
-    def get_assay_breadcrumbs(self, paper_id: str) -> list:
-        """Return all assay breadcrumbs for ``paper_id``."""
+    def get_assay_gaps(self, paper_id: str) -> list:
+        """Return all assay gaps for ``paper_id``."""
 
     @abstractmethod
     def get_assay_thesis(self, paper_id: str):
@@ -524,12 +500,20 @@ class StorageBackend(ABC):
         """Return all assay asks for ``paper_id``."""
 
     @abstractmethod
-    def store_assay_references(self, paper_id: str, refs) -> None:
-        """Replace assay reference registry entries for ``paper_id``."""
+    def store_assay_pids(self, paper_id: str, pids) -> None:
+        """Replace assay paper-number references for ``paper_id``."""
 
     @abstractmethod
-    def get_assay_references(self, paper_id: str) -> list:
-        """Return all assay references for ``paper_id``."""
+    def get_assay_pids(self, paper_id: str) -> list:
+        """Return all assay paper-number references for ``paper_id``."""
+
+    @abstractmethod
+    def store_assay_urls(self, paper_id: str, urls) -> None:
+        """Replace assay standalone URLs for ``paper_id``."""
+
+    @abstractmethod
+    def get_assay_urls(self, paper_id: str) -> list:
+        """Return all assay standalone URLs for ``paper_id``."""
 
     @abstractmethod
     def store_assay_strengths(self, paper_id: str, strengths) -> None:

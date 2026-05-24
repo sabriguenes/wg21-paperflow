@@ -1,6 +1,6 @@
 # pipeline
 
-Shared framework for the LLM analytical pipelines (`advocatus`, `agora`). Both depend on `pipeline`. Project-wide rules and the determinism rule numbering live in the root `CLAUDE.md`. Sampling and concurrency rationale lives in `MODELS.md`.
+Shared framework for the LLM analytical pipelines (`agora`). Depends on `pipeline`. Project-wide rules and the determinism rule numbering live in the root `CLAUDE.md`. Sampling and concurrency rationale lives in `MODELS.md`.
 
 ## Modules
 
@@ -86,7 +86,7 @@ Determinism contract: offline-first weight loading, per-instance pipeline single
 ## Determinism rules anchored here
 
 - D2. Every backend class applies sampling pins (temperature=0, seed=0, top_k=1) internally. Adding a backend that omits these pins is forbidden.
-- D3. Parallel fan-out goes through one of the two semaphores: `pipeline.runner._parallel_semaphore` for parallel-step dispatch in `dispatch()`, `pipeline.tasks._task_semaphore` for sub-agent dispatch in `run_task`. Both default to `asyncio.Semaphore(1)`. The `advocatus` pipeline depends on this serial default for verdict reproducibility (D11 in the root `CLAUDE.md`). The framework permits future packages to widen these by switching from a module-global semaphore to a per-dispatch / per-`run_task` parameter; any such widening must leave `advocatus` at concurrency 1. A bare bump of the module-global constants is forbidden because it silently breaks that pipeline.
+- D3. Parallel fan-out goes through one of the two semaphores: `pipeline.runner._parallel_semaphore` for parallel-step dispatch in `dispatch()`, `pipeline.tasks._task_semaphore` for sub-agent dispatch in `run_task`. Both default to `asyncio.Semaphore(1)`.
 
 ## Invariants
 
@@ -94,7 +94,7 @@ Determinism contract: offline-first weight loading, per-instance pipeline single
 - Capability validation runs once at pipeline-construction time. `validate_capabilities()` rejects any step whose declared `meta.tools` or assigned `thinking_budget` would land on a backend whose class attributes do not support it. The runtime `NotImplementedError` in `AgentBackend.run` is secondary defense, retained for custom hooks that pass ad-hoc tools via `run_task` outside `meta.tools`.
 - `dispatch()` and `validate_capabilities()` must use identical `stop_after` scoping logic. Today both filter by `enumerate` index against the step list; if you switch one site to `spec.meta.number`, switch both in the same commit.
 - Three-layer system prompts. Every LLM step receives the framework floor, plus the pipeline `## System Prompt`, plus an optional per-step `### System Prompt`. Per-step mode is `append` by default, or `replace` for floor + step only. The floor always applies.
-- Source delimiter contract. Source material is wrapped with the configured `WG21_SOURCE_TAG` delimiters. `pipeline.tools.wrap_source` is the only legal way to introduce those markers; it escapes forged delimiter text before wrapping.
+- Source delimiter contract. Every piece of external/untrusted text injected into an LLM prompt must be wrapped via `ctx.inject_untrusted()` (on `StepContext`). Never inject raw external content. Callers format line numbers before calling `inject_untrusted`. The guard tag is randomized per pipeline run; `inject_untrusted` escapes forged delimiter text before wrapping.
 - Step failures fail the pipeline. `dispatch()` preserves failures as `StepError`, flushes trace/debug diagnostics, and does not call `on_step_complete` for a failed step.
 - Fan-out thresholds are explicit. Custom fan-out steps may tolerate item failures only under a named threshold. Above the threshold they raise `StepError`.
 - PaperRow failure persistence. Pipeline failure updates the paper row with `status = -(stage + 1)`, stores `error = str(exc)`, and refreshes `updated_at`.

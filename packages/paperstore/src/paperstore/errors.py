@@ -37,10 +37,6 @@ class MissingPaperMdError(MissingPaperError):
     """Raised when no converted markdown is stored for the paper."""
 
 
-class MissingAdvocatusError(MissingPaperError):
-    """Raised when no advocatus file (Relatio) is stored for the paper."""
-
-
 class MissingAgoraError(MissingPaperError):
     """Raised when no agora JSON (planned Reddit thread) is stored for the paper."""
 

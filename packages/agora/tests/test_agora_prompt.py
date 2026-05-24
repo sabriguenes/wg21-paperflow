@@ -10,107 +10,122 @@ from __future__ import annotations
 
 import pytest
 
-from pipeline import HookMismatchError, MissingMetadataError
-from pipeline import sections
-from agora.pipeline import _build_hooks, load_sections
-from pipeline import StepHooks, build_pipeline, parse_step_meta
-from pipeline.agents import AgentBackend
-from pipeline.model_backends import Llama3Backend
+from pipeline import (
+    HookMismatchError,
+    MissingMetadataError,
+    PipelinePrompt,
+    StepHooks,
+    build_pipeline,
+    parse_step_prompt,
+)
+from pipeline.prompt import _parse_prompt
+from agora.pipeline import _build_hooks
 
 
-def _make_test_hooks():
-    stub = AgentBackend(Llama3Backend(base_url="", api_key="", model=""))
-    return _build_hooks(stub, stub)
+def _agora_prompt() -> PipelinePrompt:
+    return PipelinePrompt.load("agora", "agora.md")
 
 
-def test_load_sections_returns_all_step_headers():
-    secs = dict(load_sections("agora", "agora.md"))
-    step_keys = sorted(k for k in secs if k.startswith("Step "))
-    assert len(step_keys) == 8
-    assert step_keys[0] == "Step 0 - Load"
-    assert set(step_keys) == set(_make_test_hooks())
+def test_load_returns_all_step_headers():
+    prompt = _agora_prompt()
+    step_names = [s.name for s in prompt.steps]
+    assert len(step_names) == 8
+    assert step_names[0] == "Step 0 - Load"
+    assert set(step_names) == set(_build_hooks())
 
 
-def test_load_sections_has_system_prompt():
-    secs = dict(load_sections("agora", "agora.md"))
-    assert "System Prompt" in secs
-    assert secs["System Prompt"].strip()
+def test_load_has_system_prompt():
+    prompt = _agora_prompt()
+    assert prompt.system_prompt.strip()
+
+
+def test_load_has_services():
+    prompt = _agora_prompt()
+    assert "default" in prompt.services
+    assert "tool" in prompt.services
 
 
 def test_build_pipeline_returns_8_specs_in_numeric_order():
-    secs = dict(load_sections("agora", "agora.md"))
-    specs = build_pipeline(secs, _make_test_hooks())
+    prompt = _agora_prompt()
+    specs = build_pipeline(prompt, _build_hooks())
     assert len(specs) == 8
-    assert [s.meta.number for s in specs] == list(range(8))
+    assert [s.step.number for s in specs] == list(range(8))
 
 
-def test_step_2_research_declares_real_model_slot_for_subagents():
-    """Step 2 spawns sub-agents via run_task. If its model slot is
-    'none' the dispatch would crash with 'Unknown model: none'."""
-    secs = dict(load_sections("agora", "agora.md"))
-    specs = build_pipeline(secs, _make_test_hooks())
-    by_name = {s.meta.name: s for s in specs}
-    assert by_name["Step 2 - Research"].meta.model_slot != "none"
+def test_step_2_research_uses_a_real_model():
+    """Step 2 spawns sub-agents via run_task. If its model is 'none'
+    the dispatch would crash with 'Unknown model: none'."""
+    prompt = _agora_prompt()
+    specs = build_pipeline(prompt, _build_hooks())
+    by_name = {s.step.name: s for s in specs}
+    assert by_name["Step 2 - Research"].step.model != "none"
 
 
 def test_step_6_encounters_declares_condition():
-    secs = dict(load_sections("agora", "agora.md"))
-    specs = build_pipeline(secs, _make_test_hooks())
-    by_name = {s.meta.name: s for s in specs}
+    prompt = _agora_prompt()
+    specs = build_pipeline(prompt, _build_hooks())
+    by_name = {s.step.name: s for s in specs}
     enc = by_name["Step 6 - Encounters"]
-    assert enc.meta.condition is not None
-    assert "encounter_count" in enc.meta.condition
+    assert enc.step.condition is not None
+    assert "encounter_count" in enc.step.condition
 
 
-def test_parse_step_meta_extracts_fields():
+def test_parse_step_prompt_extracts_fields():
     body = """
 - **Model:** default
 - **Execution:** main
 
 Some narrative.
 """
-    meta = parse_step_meta("Step 1 - Smell Test", body)
-    assert meta.number == 1
-    assert meta.model_slot == "default"
-    assert meta.execution == "main"
+    s = parse_step_prompt("Step 1 - Smell Test", body)
+    assert s.number == 1
+    assert s.model == "default"
+    assert s.execution == "main"
 
 
-def test_parse_step_meta_defaults_missing_model_to_none():
+def test_parse_step_prompt_defaults_missing_model_to_default():
+    """No `**Model:**` line means the implicit 'default' logical name,
+    not 'none'. Pure-Python steps must say `**Model:** none`
+    explicitly."""
     body = """
 - **Execution:** main
 """
-    meta = parse_step_meta("Step 1 - Smell Test", body)
-    assert meta.model_slot == "none"
-    assert meta.execution == "main"
+    s = parse_step_prompt("Step 1 - Smell Test", body)
+    assert s.model == "default"
+    assert s.execution == "main"
 
 
-def test_parse_step_meta_bad_header_raises():
+def test_parse_step_prompt_bad_header_raises():
     body = "- **Model:** default\n- **Execution:** main\n"
     with pytest.raises(MissingMetadataError):
-        parse_step_meta("Not A Step", body)
+        parse_step_prompt("Not A Step", body)
+
+
+def _prompt_with(step_md: str) -> PipelinePrompt:
+    return _parse_prompt(
+        "test",
+        "test.md",
+        "# T\n\n## Services\n\n- **default:** s1\n\n"
+        "## System Prompt\n\nBe helpful.\n\n"
+        + step_md,
+    )
 
 
 def test_build_pipeline_orphan_hook_raises():
-    body = """## Step 0 - Foo
-
-- **Model:** none
-- **Execution:** main
-"""
-    secs = sections(body)
+    prompt = _prompt_with(
+        "## Step 0 - Foo\n\n- **Model:** none\n- **Execution:** main\n"
+    )
     hooks = {
         "Step 0 - Foo": StepHooks(),
         "Step 1 - Orphan": StepHooks(),
     }
     with pytest.raises(HookMismatchError):
-        build_pipeline(secs, hooks)
+        build_pipeline(prompt, hooks)
 
 
 def test_build_pipeline_missing_hook_raises():
-    body = """## Step 0 - Foo
-
-- **Model:** none
-- **Execution:** main
-"""
-    secs = sections(body)
+    prompt = _prompt_with(
+        "## Step 0 - Foo\n\n- **Model:** none\n- **Execution:** main\n"
+    )
     with pytest.raises(HookMismatchError):
-        build_pipeline(secs, {})
+        build_pipeline(prompt, {})

@@ -44,7 +44,6 @@ from paperstore.extract_rows import (
 )
 from paperstore.errors import (
     InvalidSuffixError,
-    MissingAdvocatusError,
     MissingAgoraError,
     MissingMailingIndexError,
     MissingMetaError,
@@ -68,7 +67,7 @@ CREATE TABLE IF NOT EXISTS papers (
     source_file      TEXT DEFAULT '',
     markdown_path    TEXT DEFAULT '',
     dissect_path     TEXT DEFAULT '',  -- deprecated, kept for migration safety
-    advocatus_path   TEXT DEFAULT '',
+    advocatus_path   TEXT DEFAULT '',  -- deprecated, kept for migration safety
     agora_path       TEXT DEFAULT '',
     line_count       INTEGER DEFAULT 0,
     status           INTEGER NOT NULL DEFAULT 0,
@@ -234,6 +233,7 @@ CREATE TABLE IF NOT EXISTS assay_evidence (
     subtype      TEXT DEFAULT '',
     quality_tier TEXT DEFAULT '',
     supports     TEXT DEFAULT '[]',
+    source_pid   TEXT DEFAULT '',
     PRIMARY KEY (paper_id, uid)
 );
 CREATE TABLE IF NOT EXISTS assay_concessions (
@@ -245,7 +245,7 @@ CREATE TABLE IF NOT EXISTS assay_concessions (
     subtype  TEXT DEFAULT '',
     PRIMARY KEY (paper_id, uid)
 );
-CREATE TABLE IF NOT EXISTS assay_breadcrumbs (
+CREATE TABLE IF NOT EXISTS assay_gaps (
     paper_id       TEXT NOT NULL,
     uid            INTEGER NOT NULL,
     chunk_index    INTEGER NOT NULL,
@@ -255,6 +255,7 @@ CREATE TABLE IF NOT EXISTS assay_breadcrumbs (
     primary_lens   TEXT DEFAULT '',
     secondary_lens TEXT DEFAULT '',
     severity       TEXT DEFAULT 'minor',
+    closed_by      TEXT DEFAULT '',
     PRIMARY KEY (paper_id, uid)
 );
 CREATE TABLE IF NOT EXISTS assay_thesis (
@@ -278,6 +279,7 @@ CREATE TABLE IF NOT EXISTS assay_findings (
     major       INTEGER DEFAULT 0,
     challenge   TEXT DEFAULT '',
     reasoning   TEXT DEFAULT '',
+    from_gap_ids TEXT DEFAULT '',
     PRIMARY KEY (paper_id, uid)
 );
 CREATE TABLE IF NOT EXISTS assay_asks (
@@ -288,13 +290,23 @@ CREATE TABLE IF NOT EXISTS assay_asks (
     type     TEXT NOT NULL,
     PRIMARY KEY (paper_id, uid)
 );
-CREATE TABLE IF NOT EXISTS assay_references (
-    paper_id       TEXT NOT NULL,
-    uid            INTEGER NOT NULL,
-    ref_label      TEXT NOT NULL,
-    relationship   TEXT DEFAULT 'citation',
-    url            TEXT DEFAULT '',
-    mention_count  INTEGER DEFAULT 0,
+CREATE TABLE IF NOT EXISTS assay_pids (
+    paper_id        TEXT NOT NULL,
+    uid             INTEGER NOT NULL,
+    raw_pid         TEXT NOT NULL,
+    resolved_pid    TEXT DEFAULT '',
+    url             TEXT DEFAULT '',
+    mention_count   INTEGER DEFAULT 0,
+    in_paperstore   BOOLEAN DEFAULT 0,
+    stale           BOOLEAN DEFAULT 0,
+    author_overlap  REAL DEFAULT 0.0,
+    PRIMARY KEY (paper_id, uid)
+);
+CREATE TABLE IF NOT EXISTS assay_urls (
+    paper_id TEXT NOT NULL,
+    uid      INTEGER NOT NULL,
+    url      TEXT NOT NULL,
+    line     INTEGER DEFAULT 0,
     PRIMARY KEY (paper_id, uid)
 );
 CREATE TABLE IF NOT EXISTS assay_strengths (
@@ -368,7 +380,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
             UPDATE papers SET status =
                 CASE
                     WHEN agora_path != ''     THEN 5
-                    WHEN advocatus_path != '' THEN 4
                     WHEN dissect_path != ''   THEN 3
                     WHEN markdown_path != ''  THEN 2
                     WHEN source_file != ''    THEN 1
@@ -435,6 +446,41 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE assay_findings ADD COLUMN reasoning TEXT DEFAULT ''"
         )
 
+    evidence_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(assay_evidence)"
+    ).fetchall()}
+    if evidence_cols and "source_pid" not in evidence_cols:
+        conn.execute(
+            "ALTER TABLE assay_evidence ADD COLUMN source_pid TEXT DEFAULT ''"
+        )
+
+    gap_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(assay_gaps)"
+    ).fetchall()}
+    if gap_cols and "closed_by" not in gap_cols:
+        conn.execute(
+            "ALTER TABLE assay_gaps ADD COLUMN closed_by TEXT DEFAULT ''"
+        )
+    # Widen legacy INTEGER closed_by to TEXT in place. SQLite stores values
+    # by declared column affinity, so an INTEGER column still accepts strings;
+    # the rewrite is harmless and one-shot.
+    elif gap_cols:
+        info = {r[1]: r[2].upper() for r in conn.execute(
+            "PRAGMA table_info(assay_gaps)"
+        ).fetchall()}
+        if info.get("closed_by", "").startswith("INT"):
+            with conn:
+                conn.execute(
+                    "UPDATE assay_gaps SET closed_by = CASE "
+                    "WHEN closed_by = 0 OR closed_by IS NULL THEN '' "
+                    "ELSE CAST(closed_by AS TEXT) END"
+                )
+
+    if finding_cols and "from_gap_ids" not in finding_cols:
+        conn.execute(
+            "ALTER TABLE assay_findings ADD COLUMN from_gap_ids TEXT DEFAULT ''"
+        )
+
     conn.executescript(_SCHEMA)
 
 
@@ -451,14 +497,37 @@ _IMAGE_FILENAME_RE = re.compile(
 
 _ASSAY_TABLES = [
     "assay_claims", "assay_evidence", "assay_concessions",
-    "assay_breadcrumbs", "assay_thesis", "assay_findings",
-    "assay_asks", "assay_references", "assay_strengths",
+    "assay_gaps", "assay_thesis", "assay_findings",
+    "assay_asks", "assay_pids", "assay_urls", "assay_strengths",
     "assay_checklist", "assay_compounds", "assay_synthesis",
 ]
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _format_id_list(v) -> str:
+    """Serialize a list-or-int-or-None gap/finding ID field to TEXT."""
+    if v is None or v == 0 or v == "":
+        return ""
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, str):
+        return v
+    return ",".join(str(int(x)) for x in v)
+
+
+def _parse_id_list(v) -> list[int]:
+    """Deserialize TEXT-encoded ID list back to ``list[int]``."""
+    if v is None:
+        return []
+    if isinstance(v, int):
+        return [v] if v else []
+    s = str(v).strip()
+    if not s or s == "0":
+        return []
+    return [int(p) for p in s.split(",") if p.strip()]
 
 
 def _atomic_replace(src: Path, dst: Path) -> None:
@@ -588,7 +657,6 @@ class SqliteBackend(StorageBackend):
             source_file=d.get("source_file", ""),
             markdown_path=d.get("markdown_path", ""),
             dissect_path=d.get("dissect_path", ""),
-            advocatus_path=d.get("advocatus_path", ""),
             agora_path=d.get("agora_path", ""),
             assay_path=d.get("assay_path", ""),
             line_count=d.get("line_count", 0),
@@ -761,38 +829,6 @@ class SqliteBackend(StorageBackend):
         self.record_markdown(pid, final_path, line_count=line_count)
         return final_path
 
-    def write_advocatus_md(self, paper_id: str, markdown: str) -> Path:
-        """Write advocatus markdown (Relatio) atomically and record the path."""
-        pid = paper_id.strip().upper()
-        final_path = self._atomic_write_text(
-            self._papers_dir / f"{pid.lower()}.advocatus.md", markdown
-        )
-        with self._conn:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
-            )
-            self._conn.execute(
-                "UPDATE papers SET advocatus_path = ? WHERE paper_id = ?",
-                (str(final_path), pid),
-            )
-        return final_path
-
-    def clear_advocatus(self, paper_id: str) -> None:
-        """Delete the advocatus file and clear ``advocatus_path`` in the DB."""
-        pid = paper_id.strip().upper()
-        row = self._conn.execute(
-            "SELECT advocatus_path FROM papers WHERE paper_id = ?", (pid,)
-        ).fetchone()
-        if row and row["advocatus_path"]:
-            path = Path(row["advocatus_path"])
-            if path.exists():
-                path.unlink()
-        with self._conn:
-            self._conn.execute(
-                "UPDATE papers SET advocatus_path = '' WHERE paper_id = ?",
-                (pid,),
-            )
-
     def write_agora_json(self, paper_id: str, payload: Any) -> Path:
         """Write the agora thread blueprint as JSON atomically; record the path."""
         pid = paper_id.strip().upper()
@@ -885,7 +921,6 @@ class SqliteBackend(StorageBackend):
         """Backfill DB rows from on-disk artifacts. See ABC for semantics."""
         sources: list[tuple[str, Path]] = []
         markdowns: list[tuple[str, Path]] = []
-        advocati: list[tuple[str, Path]] = []
         agorae: list[tuple[str, Path]] = []
 
         for path in sorted(self._papers_dir.iterdir()):
@@ -905,9 +940,6 @@ class SqliteBackend(StorageBackend):
             # would be mis-classified as markdown.
             if name.endswith(".debug.md") or name.endswith(".trace.md"):
                 continue
-            if name.endswith(".advocatus.md"):
-                advocati.append((name[: -len(".advocatus.md")].upper(), path))
-                continue
             if name.endswith(".md"):
                 markdowns.append((name[: -len(".md")].upper(), path))
                 continue
@@ -919,7 +951,6 @@ class SqliteBackend(StorageBackend):
         counts = {
             "sources": 0,
             "markdowns": 0,
-            "advocati": 0,
             "agorae": 0,
             "line_counts": 0,
         }
@@ -946,17 +977,6 @@ class SqliteBackend(StorageBackend):
                 )
                 if cursor.rowcount > 0:
                     counts["markdowns"] += 1
-            for pid, path in advocati:
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
-                )
-                cursor = self._conn.execute(
-                    "UPDATE papers SET advocatus_path = ? "
-                    "WHERE paper_id = ? AND advocatus_path = ''",
-                    (str(path), pid),
-                )
-                if cursor.rowcount > 0:
-                    counts["advocati"] += 1
             for pid, path in agorae:
                 self._conn.execute(
                     "INSERT OR IGNORE INTO papers (paper_id) VALUES (?)", (pid,)
@@ -1040,12 +1060,9 @@ class SqliteBackend(StorageBackend):
         except MissingMetaError:
             return ClearedSet()
 
-        advocatus_present = bool(meta.advocatus_path)
         agora_present = bool(meta.agora_path)
         assay_present = bool(meta.assay_path)
 
-        if advocatus_present:
-            self.clear_advocatus(pid)
         if agora_present:
             self.clear_agora(pid)
         if assay_present:
@@ -1054,7 +1071,6 @@ class SqliteBackend(StorageBackend):
             self.clear_assay(pid)
 
         return ClearedSet(
-            advocatus=advocatus_present,
             agora=agora_present,
             assay=assay_present,
         )
@@ -1124,24 +1140,6 @@ class SqliteBackend(StorageBackend):
     def get_paper_md_path(self, paper_id: str) -> Path:
         pid = paper_id.strip().upper()
         return self._papers_dir / f"{pid.lower()}.md"
-
-    def get_advocatus_path(self, paper_id: str) -> Path:
-        row = self._conn.execute(
-            "SELECT advocatus_path FROM papers WHERE paper_id = ?",
-            (paper_id.strip().upper(),),
-        ).fetchone()
-        if row is None or not row["advocatus_path"]:
-            raise MissingAdvocatusError(
-                f"No advocatus for {paper_id!r}. "
-                f"Run 'paperflow advocatus {paper_id}' first."
-            )
-        path = Path(row["advocatus_path"])
-        if not path.exists():
-            raise MissingAdvocatusError(
-                f"Advocatus file missing for {paper_id!r}: {path}. "
-                f"Run 'paperflow advocatus {paper_id}' again."
-            )
-        return path
 
     def get_agora_path(self, paper_id: str) -> Path:
         row = self._conn.execute(
@@ -1542,8 +1540,8 @@ class SqliteBackend(StorageBackend):
         with self._conn:
             self._conn.execute("DELETE FROM assay_evidence WHERE paper_id = ?", (paper_id,))
             self._conn.executemany(
-                "INSERT INTO assay_evidence (paper_id, uid, loc_line, quote, section, subtype, quality_tier, supports) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [(paper_id, e.uid, e.loc_line, e.quote, e.section, e.subtype, e.quality_tier, e.supports) for e in evidence],
+                "INSERT INTO assay_evidence (paper_id, uid, loc_line, quote, section, subtype, quality_tier, supports, source_pid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(paper_id, e.uid, e.loc_line, e.quote, e.section, e.subtype, e.quality_tier, e.supports, getattr(e, 'source_pid', '')) for e in evidence],
             )
 
     def store_assay_concessions(self, paper_id: str, concessions) -> None:
@@ -1562,12 +1560,12 @@ class SqliteBackend(StorageBackend):
         ).fetchall()
         return [AssayConcessionRow(*r) for r in rows]
 
-    def store_assay_breadcrumbs(self, paper_id: str, breadcrumbs) -> None:
+    def store_assay_gaps(self, paper_id: str, gaps) -> None:
         with self._conn:
-            self._conn.execute("DELETE FROM assay_breadcrumbs WHERE paper_id = ?", (paper_id,))
+            self._conn.execute("DELETE FROM assay_gaps WHERE paper_id = ?", (paper_id,))
             self._conn.executemany(
-                "INSERT INTO assay_breadcrumbs (paper_id, uid, chunk_index, loc_line, gap, why_important, primary_lens, secondary_lens, severity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [(paper_id, b.uid, b.chunk_index, b.loc_line, b.gap, b.why_important, b.primary_lens, b.secondary_lens or "", b.severity) for b in breadcrumbs],
+                "INSERT INTO assay_gaps (paper_id, uid, chunk_index, loc_line, gap, why_important, primary_lens, secondary_lens, severity, closed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(paper_id, b.uid, b.chunk_index, b.loc_line, b.gap, b.why_important, b.primary_lens, b.secondary_lens or "", b.severity, _format_id_list(getattr(b, 'closed_by', None))) for b in gaps],
             )
 
     def store_assay_thesis(self, paper_id: str, thesis) -> None:
@@ -1581,8 +1579,8 @@ class SqliteBackend(StorageBackend):
         with self._conn:
             self._conn.execute("DELETE FROM assay_findings WHERE paper_id = ?", (paper_id,))
             self._conn.executemany(
-                "INSERT INTO assay_findings (paper_id, uid, title, lens, severity, quote, loc_line, explanation, test, survived, major, challenge, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [(paper_id, f.uid, f.title, f.lens, f.severity, f.quote, f.loc_line, f.explanation, f.test, int(f.survived), int(f.major), getattr(f, 'challenge', ''), getattr(f, 'reasoning', '')) for f in findings],
+                "INSERT INTO assay_findings (paper_id, uid, title, lens, severity, quote, loc_line, explanation, test, survived, major, challenge, reasoning, from_gap_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(paper_id, f.uid, f.title, f.lens, f.severity, f.quote, f.loc_line, f.explanation, f.test, int(f.survived), int(f.major), getattr(f, 'challenge', ''), getattr(f, 'reasoning', ''), _format_id_list(getattr(f, 'from_gap_ids', None))) for f in findings],
             )
 
     def get_assay_claims(self, paper_id: str) -> list:
@@ -1596,18 +1594,18 @@ class SqliteBackend(StorageBackend):
     def get_assay_evidence(self, paper_id: str) -> list:
         from paperstore.extract_rows import AssayEvidenceRow
         rows = self._conn.execute(
-            "SELECT paper_id, uid, loc_line, quote, section, subtype, quality_tier, supports FROM assay_evidence WHERE paper_id = ?",
+            "SELECT paper_id, uid, loc_line, quote, section, subtype, quality_tier, supports, source_pid FROM assay_evidence WHERE paper_id = ?",
             (paper_id,),
         ).fetchall()
         return [AssayEvidenceRow(*r) for r in rows]
 
-    def get_assay_breadcrumbs(self, paper_id: str) -> list:
-        from paperstore.extract_rows import AssayBreadcrumbRow
+    def get_assay_gaps(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayGapRow
         rows = self._conn.execute(
-            "SELECT paper_id, uid, chunk_index, loc_line, gap, why_important, primary_lens, secondary_lens, severity FROM assay_breadcrumbs WHERE paper_id = ?",
+            "SELECT paper_id, uid, chunk_index, loc_line, gap, why_important, primary_lens, secondary_lens, severity, closed_by FROM assay_gaps WHERE paper_id = ?",
             (paper_id,),
         ).fetchall()
-        return [AssayBreadcrumbRow(*r) for r in rows]
+        return [AssayGapRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], _parse_id_list(r[9])) for r in rows]
 
     def get_assay_thesis(self, paper_id: str):
         from paperstore.extract_rows import AssayThesisRow
@@ -1620,10 +1618,10 @@ class SqliteBackend(StorageBackend):
     def get_assay_findings(self, paper_id: str) -> list:
         from paperstore.extract_rows import AssayFindingRow
         rows = self._conn.execute(
-            "SELECT paper_id, uid, title, lens, severity, quote, loc_line, explanation, test, survived, major, challenge, reasoning FROM assay_findings WHERE paper_id = ?",
+            "SELECT paper_id, uid, title, lens, severity, quote, loc_line, explanation, test, survived, major, challenge, reasoning, from_gap_ids FROM assay_findings WHERE paper_id = ?",
             (paper_id,),
         ).fetchall()
-        return [AssayFindingRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], bool(r[9]), bool(r[10]), r[11], r[12]) for r in rows]
+        return [AssayFindingRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], bool(r[9]), bool(r[10]), r[11], r[12], _parse_id_list(r[13])) for r in rows]
 
     def store_assay_asks(self, paper_id: str, asks) -> None:
         with self._conn:
@@ -1641,21 +1639,37 @@ class SqliteBackend(StorageBackend):
         ).fetchall()
         return [AssayAskRow(*r) for r in rows]
 
-    def store_assay_references(self, paper_id: str, refs) -> None:
+    def store_assay_pids(self, paper_id: str, pids) -> None:
         with self._conn:
-            self._conn.execute("DELETE FROM assay_references WHERE paper_id = ?", (paper_id,))
+            self._conn.execute("DELETE FROM assay_pids WHERE paper_id = ?", (paper_id,))
             self._conn.executemany(
-                "INSERT INTO assay_references (paper_id, uid, ref_label, relationship, url, mention_count) VALUES (?, ?, ?, ?, ?, ?)",
-                [(paper_id, i, r.get("ref_label", r.get("ref_id", "")), r.get("relationship", "citation"), r.get("url", ""), r.get("mention_count", 0)) for i, r in enumerate(refs, 1)],
+                "INSERT INTO assay_pids (paper_id, uid, raw_pid, resolved_pid, url, mention_count, in_paperstore, stale, author_overlap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(paper_id, i, r.get("raw_pid", ""), r.get("resolved_pid", ""), r.get("url", ""), r.get("mention_count", 0), r.get("in_paperstore", False), r.get("stale", False), r.get("author_overlap", 0.0)) for i, r in enumerate(pids, 1)],
             )
 
-    def get_assay_references(self, paper_id: str) -> list:
-        from paperstore.extract_rows import AssayReferenceRow
+    def get_assay_pids(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayPidRow
         rows = self._conn.execute(
-            "SELECT paper_id, uid, ref_label, relationship, url, mention_count FROM assay_references WHERE paper_id = ?",
+            "SELECT paper_id, uid, raw_pid, resolved_pid, url, mention_count, in_paperstore, stale, author_overlap FROM assay_pids WHERE paper_id = ?",
             (paper_id,),
         ).fetchall()
-        return [AssayReferenceRow(*r) for r in rows]
+        return [AssayPidRow(paper_id=r[0], uid=r[1], raw_pid=r[2], resolved_pid=r[3], url=r[4], mention_count=r[5], in_paperstore=bool(r[6]), stale=bool(r[7]), author_overlap=float(r[8])) for r in rows]
+
+    def store_assay_urls(self, paper_id: str, urls) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM assay_urls WHERE paper_id = ?", (paper_id,))
+            self._conn.executemany(
+                "INSERT INTO assay_urls (paper_id, uid, url, line) VALUES (?, ?, ?, ?)",
+                [(paper_id, i, u.get("url", ""), u.get("line", 0)) for i, u in enumerate(urls, 1)],
+            )
+
+    def get_assay_urls(self, paper_id: str) -> list:
+        from paperstore.extract_rows import AssayUrlRow
+        rows = self._conn.execute(
+            "SELECT paper_id, uid, url, line FROM assay_urls WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [AssayUrlRow(*r) for r in rows]
 
     def store_assay_strengths(self, paper_id: str, strengths) -> None:
         with self._conn:

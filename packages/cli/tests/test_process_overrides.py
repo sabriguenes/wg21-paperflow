@@ -5,30 +5,38 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Tests for ``_process._parse_service_overrides`` and
-``_process._parse_classifier_overrides``."""
+"""Tests for ``_process._parse_classifier_overrides`` and the now-removed
+``--service`` CLI flag.
+
+Model selection now lives in each pipeline's markdown file under
+``## Services``; the ``--service`` flag is gone. These tests pin that
+removal so a future revert can't sneak it back in without failing CI.
+"""
 
 from __future__ import annotations
 
-from cli._process import (
-    _parse_classifier_overrides,
-    _parse_service_overrides,
-)
+import subprocess
+import sys
+
+from cli._process import _parse_classifier_overrides
 
 
-def test_service_overrides_none():
-    assert _parse_service_overrides(None) is None
-    assert _parse_service_overrides([]) is None
+def test_service_overrides_function_removed():
+    """The CLI no longer parses ``--service``; the helper is gone."""
+    import cli._process as proc
+
+    assert not hasattr(proc, "_parse_service_overrides")
 
 
-def test_service_overrides_bare_applies_to_all_slots():
-    out = _parse_service_overrides(["b200-r1"])
-    assert out == {"fast": "b200-r1", "default": "b200-r1", "tool": "b200-r1"}
-
-
-def test_service_overrides_slot_equals_name():
-    out = _parse_service_overrides(["fast=b200-r1", "tool=b200-llama"])
-    assert out == {"fast": "b200-r1", "tool": "b200-llama"}
+def test_service_flag_rejected_by_cli():
+    """``paperflow assay --service ...`` is no longer a recognized flag."""
+    result = subprocess.run(
+        [sys.executable, "-m", "cli", "assay", "P0000R0", "--service", "x"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    combined = (result.stdout + result.stderr).lower()
+    assert "--service" in combined or "unrecognized" in combined
 
 
 def test_classifier_overrides_none():

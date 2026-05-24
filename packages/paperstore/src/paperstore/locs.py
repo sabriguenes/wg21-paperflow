@@ -13,7 +13,7 @@ because that is where the underlying columns live (``ClaimRow``,
 ``EvidenceRow``, and ``RhetoricRow`` carry ``loc_line`` / ``loc_start``
 / ``loc_end`` columns).
 
-Consumers (``advocatus`` and future tools) import this type rather
+Consumers (future tools) import this type rather
 than redefining it. ``loc_from_row`` centralizes the
 column-triple to ``SourceLoc`` reconstruction every consumer would
 otherwise duplicate.

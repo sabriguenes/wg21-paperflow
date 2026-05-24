@@ -24,11 +24,14 @@ upstream issue links and retire-when conditions.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, TypeVar
+
+import openai
 
 from pydantic import BaseModel, ValidationError
 
@@ -226,7 +229,7 @@ class VllmThinkingBackend(ModelBackend):
                  max_context_window: int = 131072,
                  chars_per_token: float = 0,
                  token_multiplier: float = 0,
-                 stream: bool = False,
+                 stream: bool = True,
                  tools_capable: bool = False, **kwargs: Any) -> None:
         self._base_url = base_url
         self._api_key = api_key
@@ -253,9 +256,12 @@ class VllmThinkingBackend(ModelBackend):
         from openai import AsyncOpenAI
 
         if tools:
-            raise NotImplementedError(
-                f"{type(self).__name__} does not support tools. "
-                "Use a tools_capable backend for tool-using steps."
+            return await self._run_with_tools(
+                system_prompt, user_message, output_type,
+                tools=tools, max_tokens=max_tokens,
+                thinking_budget=thinking_budget,
+                label=label, debug_log=debug_log,
+                request_limit=request_limit,
             )
         if request_limit < 1:
             raise ModelBackendConfigError(
@@ -283,34 +289,46 @@ class VllmThinkingBackend(ModelBackend):
         for attempt in range(max_attempts):
             effective_max = max_tokens
 
-            if self._stream:
-                stream = await client.chat.completions.create(
-                    model=self._model,
-                    messages=messages,
-                    temperature=0.0,
-                    top_p=1.0,
-                    seed=0,
-                    max_tokens=effective_max,
-                    stream=True,
-                    **extra,
-                )
-                parts: list[str] = []
-                async for chunk in stream:
-                    delta = chunk.choices[0].delta.content
-                    if delta:
-                        parts.append(delta)
-                raw_content = "".join(parts)
-            else:
-                response = await client.chat.completions.create(
-                    model=self._model,
-                    messages=messages,
-                    temperature=0.0,
-                    top_p=1.0,
-                    seed=0,
-                    max_tokens=effective_max,
-                    **extra,
-                )
-                raw_content = response.choices[0].message.content or ""
+            try:
+                if self._stream:
+                    stream = await client.chat.completions.create(
+                        model=self._model,
+                        messages=messages,
+                        temperature=0.0,
+                        top_p=1.0,
+                        seed=0,
+                        max_tokens=effective_max,
+                        stream=True,
+                        **extra,
+                    )
+                    parts: list[str] = []
+                    async for chunk in stream:
+                        delta = chunk.choices[0].delta.content
+                        if delta:
+                            parts.append(delta)
+                    raw_content = "".join(parts)
+                else:
+                    response = await client.chat.completions.create(
+                        model=self._model,
+                        messages=messages,
+                        temperature=0.0,
+                        top_p=1.0,
+                        seed=0,
+                        max_tokens=effective_max,
+                        **extra,
+                    )
+                    raw_content = response.choices[0].message.content or ""
+            except (openai.NotFoundError, openai.APIConnectionError,
+                    openai.InternalServerError, openai.APITimeoutError) as exc:
+                if attempt < max_attempts - 1:
+                    delay = 2 ** (attempt + 1)
+                    logger.warning(
+                        "Transient API error (attempt %d/%d), retrying in %ds: %s",
+                        attempt + 1, max_attempts, delay, exc,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
             reasoning, content = _strip_think_block(raw_content)
 
             if debug_log is not None:
@@ -357,6 +375,71 @@ class VllmThinkingBackend(ModelBackend):
         raise AssertionError(
             f"unreachable: loop must return or raise (max_attempts={max_attempts})"
         )
+
+    async def _run_with_tools(
+        self,
+        system_prompt: str,
+        user_message: str,
+        output_type: type[_T],
+        *,
+        tools: dict[str, Callable],
+        max_tokens: int = 16384,
+        thinking_budget: int | None = None,
+        label: str = "",
+        debug_log: list[str] | None = None,
+        request_limit: int = DEFAULT_REQUEST_LIMIT,
+    ) -> _T:
+        """Tool-calling path via pydantic-ai Agent.
+
+        Uses the OpenAI-compatible tool calling API exposed by vLLM
+        with ``--tool-call-parser gemma4``. The non-tool path stays
+        on raw completions with schema-in-prompt.
+        """
+        from pydantic_ai import Agent
+        from pydantic_ai.exceptions import UsageLimitExceeded
+        from pydantic_ai.settings import ModelSettings
+        from pydantic_ai.usage import UsageLimits
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.openai import OpenAIProvider
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(base_url=self._base_url, api_key=self._api_key)
+        provider = OpenAIProvider(openai_client=client)
+        model = OpenAIChatModel(self._model, provider=provider)
+
+        settings = ModelSettings(
+            temperature=0.0,
+            top_p=1.0,
+            seed=0,
+            parallel_tool_calls=False,
+            max_tokens=max_tokens,
+        )
+
+        agent: Agent[None, _T] = Agent(
+            model=model,
+            output_type=output_type,
+            system_prompt=system_prompt,
+            retries=3,
+            model_settings=settings,
+        )
+
+        for name, fn in tools.items():
+            agent.tool_plain(fn)
+
+        try:
+            result = await agent.run(
+                user_message,
+                usage_limits=UsageLimits(request_limit=request_limit),
+            )
+        except UsageLimitExceeded as exc:
+            exc.add_note(f"request_limit={request_limit}")
+            raise
+
+        if debug_log is not None:
+            from pipeline.tasks import render_debug_md
+            debug_log.append(render_debug_md(result, label))
+
+        return result.output
 
 
 # ---------------------------------------------------------------------------

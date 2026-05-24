@@ -9,6 +9,7 @@ dependencies = [
     "httpx",
     "openai",
     "pydantic-ai-slim",
+    "sentence-transformers",
     "trafilatura",
 ]
 

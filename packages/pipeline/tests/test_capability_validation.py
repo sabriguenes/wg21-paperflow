@@ -18,8 +18,22 @@ from pydantic import BaseModel
 from pipeline.agents import AgentBackend
 from pipeline.errors import CapabilityMismatchError, PipelineError
 from pipeline.model_backends import DEFAULT_REQUEST_LIMIT, ModelBackend
-from pipeline.prompt import StepHooks, StepMeta, StepSpec
+from pipeline.prompt import PipelinePrompt, StepHooks, StepPrompt, StepSpec
 from pipeline.validate import validate_capabilities
+
+
+def _prompt(*models: str) -> PipelinePrompt:
+    """PipelinePrompt where every logical name in *models is declared."""
+    return PipelinePrompt(
+        package="test",
+        filename="test.md",
+        sections={},
+        services={m: f"svc-{m}" for m in models},
+        config={},
+        system_prompt="",
+        preamble="",
+        steps=(),
+    )
 
 
 class _Empty(BaseModel):
@@ -98,14 +112,15 @@ def _spec(
     number: int = 11,
     tools: list[str] | None = None,
     agent: AgentBackend | None = None,
+    model: str = "tool",
 ) -> StepSpec:
     return StepSpec(
-        meta=StepMeta(
+        step=StepPrompt(
             name=name,
             number=number,
-            model_slot="tool",
+            model=model,
             execution="main",
-            tools=tools or [],
+            tools=tuple(tools or ()),
         ),
         hooks=StepHooks(agent=agent),
     )
@@ -134,7 +149,7 @@ def test_validate_rejects_tools_on_toolless_agent():
     )
     spec = _spec(tools=["web_fetch"], agent=agent)
     with pytest.raises(CapabilityMismatchError) as exc_info:
-        validate_capabilities([spec])
+        validate_capabilities([spec], _prompt("tool"))
     msg = str(exc_info.value)
     assert 11 in _step_numbers_in(msg)
     assert "tool" in msg
@@ -143,7 +158,6 @@ def test_validate_rejects_tools_on_toolless_agent():
     assert "declares tools" in msg
     # The trailing footer.
     assert "documentation-only" in msg
-    assert "--service SLOT=" in msg
 
 
 def test_validate_accepts_tools_on_capable_agent():
@@ -153,7 +167,7 @@ def test_validate_accepts_tools_on_capable_agent():
         service_name="b200-llama",
     )
     spec = _spec(tools=["web_fetch"], agent=agent)
-    validate_capabilities([spec])  # should not raise
+    validate_capabilities([spec], _prompt("tool"))  # should not raise
 
 
 def test_validate_rejects_thinking_budget_on_non_thinking_agent():
@@ -168,9 +182,10 @@ def test_validate_rejects_thinking_budget_on_non_thinking_agent():
         number=9,
         tools=[],
         agent=agent,
+        model="default",
     )
     with pytest.raises(CapabilityMismatchError) as exc_info:
-        validate_capabilities([spec])
+        validate_capabilities([spec], _prompt("default"))
     msg = str(exc_info.value)
     assert 9 in _step_numbers_in(msg)
     assert "default" in msg
@@ -186,8 +201,8 @@ def test_validate_accepts_thinking_budget_on_thinking_agent():
         slot_name="default",
         service_name="b200-r1",
     )
-    spec = _spec(name="9. Verify", number=9, tools=[], agent=agent)
-    validate_capabilities([spec])  # should not raise
+    spec = _spec(name="9. Verify", number=9, tools=[], agent=agent, model="default")
+    validate_capabilities([spec], _prompt("default"))  # should not raise
 
 
 def test_validate_accepts_step_without_tools_or_thinking():
@@ -196,14 +211,14 @@ def test_validate_accepts_step_without_tools_or_thinking():
         slot_name="fast",
         service_name="b200-r1",
     )
-    spec = _spec(tools=[], agent=agent)
-    validate_capabilities([spec])  # no requirements -> no error
+    spec = _spec(tools=[], agent=agent, model="fast")
+    validate_capabilities([spec], _prompt("fast"))  # no requirements -> no error
 
 
 def test_validate_accepts_step_with_tools_and_no_agent():
-    # Custom hook may declare meta.tools without binding an agent.
+    # Custom hook may declare step.tools without binding an agent.
     spec = _spec(tools=["web_fetch"], agent=None)
-    validate_capabilities([spec])  # nothing to gate -> no error
+    validate_capabilities([spec], _prompt("tool"))  # nothing to gate -> no error
 
 
 def test_validate_reports_all_mismatches():
@@ -223,12 +238,12 @@ def test_validate_reports_all_mismatches():
         service_name="good-svc",
     )
     specs = [
-        _spec(name="11. Verify Citations", number=11, tools=["web_fetch"], agent=toolless),
-        _spec(name="9. Verify", number=9, tools=[], agent=non_thinking),
-        _spec(name="2. Extract Claims", number=2, tools=[], agent=capable),
+        _spec(name="11. Verify Citations", number=11, tools=["web_fetch"], agent=toolless, model="tool"),
+        _spec(name="9. Verify", number=9, tools=[], agent=non_thinking, model="default"),
+        _spec(name="2. Extract Claims", number=2, tools=[], agent=capable, model="fast"),
     ]
     with pytest.raises(CapabilityMismatchError) as exc_info:
-        validate_capabilities(specs)
+        validate_capabilities(specs, _prompt("tool", "default", "fast"))
     msg = str(exc_info.value)
     nums = _step_numbers_in(msg)
     assert 11 in nums
@@ -286,23 +301,23 @@ def test_validate_stop_after_skips_out_of_scope_specs():
         service_name="bad",
     )
     specs = [
-        _spec(name="0. Read", number=0, tools=[], agent=clean),
-        _spec(name="11. Verify Citations", number=11, tools=["web_fetch"], agent=bad),
+        _spec(name="0. Read", number=0, tools=[], agent=clean, model="fast"),
+        _spec(name="11. Verify Citations", number=11, tools=["web_fetch"], agent=bad, model="tool"),
     ]
-    validate_capabilities(specs, stop_after=0)  # bad spec is out of scope
+    prompt = _prompt("fast", "tool")
+    validate_capabilities(specs, prompt, stop_after=0)  # bad spec is out of scope
     with pytest.raises(CapabilityMismatchError):
-        validate_capabilities(specs, stop_after=1)  # bad spec is in scope
+        validate_capabilities(specs, prompt, stop_after=1)  # bad spec is in scope
 
 
-def test_validate_thinking_budget_zero_is_treated_as_unset():
-    # An agent without an explicit thinking_budget gets None; an
-    # explicit 0 should also not trigger the thinking-capable check
-    # because the agent is asking for no thinking at all.
+def test_validate_thinking_budget_zero_does_not_require_thinking_capable():
+    # thinking_budget=0 means "disable thinking", not "unset".
+    # A non-thinking backend can satisfy this since no thinking is needed.
     agent = AgentBackend(
         _NonThinkingBackend(),
         thinking_budget=0,
         slot_name="default",
         service_name="non-thinker",
     )
-    spec = _spec(name="9. Verify", number=9, tools=[], agent=agent)
-    validate_capabilities([spec])  # no raise
+    spec = _spec(name="9. Verify", number=9, tools=[], agent=agent, model="default")
+    validate_capabilities([spec], _prompt("default"))  # no raise

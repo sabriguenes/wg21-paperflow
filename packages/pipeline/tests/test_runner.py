@@ -9,10 +9,23 @@ from __future__ import annotations
 
 import pytest
 
-from pipeline import StepContext
+from pipeline import PipelinePrompt, StepContext
 from pipeline.errors import StepError
-from pipeline.prompt import StepHooks, StepMeta, StepSpec
+from pipeline.prompt import StepHooks, StepPrompt, StepSpec
 from pipeline.runner import _compose_system_prompt, dispatch
+
+
+def _prompt(system_prompt: str = "") -> PipelinePrompt:
+    return PipelinePrompt(
+        package="test",
+        filename="test.md",
+        sections={},
+        services={},
+        config={},
+        system_prompt=system_prompt,
+        preamble="",
+        steps=(),
+    )
 
 
 def _spec(
@@ -22,10 +35,10 @@ def _spec(
     custom=None,
 ) -> StepSpec:
     return StepSpec(
-        meta=StepMeta(
+        step=StepPrompt(
             name="1. Test",
             number=1,
-            model_slot="default",
+            model="default",
             execution="main",
             system_prompt=system_prompt,
             system_prompt_mode=system_prompt_mode,
@@ -36,28 +49,27 @@ def _spec(
 
 def test_step_context_classifiers_defaults_to_empty():
     """StepContext gains a classifiers slot parallel to agents."""
-    ctx = StepContext(sections={})
+    ctx = StepContext()
     assert ctx.classifiers == {}
 
 
 def test_step_context_classifiers_populated_from_orchestrator():
     """Smoke: pass a resolved classifier dict; it lands keyed by slot name."""
     sentinel = object()
-    ctx = StepContext(sections={}, classifiers={"selector": sentinel})
+    ctx = StepContext(classifiers={"selector": sentinel})
     assert ctx.classifiers["selector"] is sentinel
 
 
 def test_compose_system_prompt_append():
-    ctx = StepContext(sections={"System Prompt": "Pipeline role."}, agents={})
+    ctx = StepContext(prompt=_prompt(system_prompt="Pipeline role."), agents={})
     prompt = _compose_system_prompt(_spec(system_prompt="Step role."), ctx)
 
     assert "Pipeline role." in prompt
     assert "Step role." in prompt
-    assert "Input data appears between" in prompt
 
 
 def test_compose_system_prompt_replace():
-    ctx = StepContext(sections={"System Prompt": "Pipeline role."}, agents={})
+    ctx = StepContext(prompt=_prompt(system_prompt="Pipeline role."), agents={})
     prompt = _compose_system_prompt(
         _spec(system_prompt="Step role.", system_prompt_mode="replace"),
         ctx,
@@ -65,14 +77,13 @@ def test_compose_system_prompt_replace():
 
     assert "Pipeline role." not in prompt
     assert "Step role." in prompt
-    assert "Input data appears between" in prompt
 
 
 def test_step_failure_propagates_as_step_error():
     async def boom(state, ctx, spec):
         raise RuntimeError("boom")
 
-    ctx = StepContext(sections={}, agents={})
+    ctx = StepContext(agents={})
 
     with pytest.raises(StepError, match="Step 0"):
         import asyncio
@@ -84,7 +95,7 @@ def test_failed_step_does_not_call_on_step_complete():
         raise RuntimeError("boom")
 
     completed = []
-    ctx = StepContext(sections={}, agents={})
+    ctx = StepContext(agents={})
 
     with pytest.raises(StepError):
         import asyncio
@@ -105,7 +116,7 @@ def test_step_failure_flushes_trace(tmp_path):
         state["seen"] = True
         raise RuntimeError("boom")
 
-    ctx = StepContext(sections={}, agents={})
+    ctx = StepContext(agents={})
     trace_path = tmp_path / "trace.md"
 
     with pytest.raises(StepError):

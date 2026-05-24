@@ -8,7 +8,7 @@ May 2026, by Vinnie Falco
 
 ## 1. Executive Summary
 
-paperflow is a nine-package Python monorepo that scrapes WG21 C++ standards mailings, converts papers to markdown, and runs three chained LLM analytical pipelines - dissect (claim extraction), advocatus (adversarial examination), and agora (discussion planning) - over the converted text. The project describes itself as "social technology to influence how people perceive the papers." That framing makes the outputs, not the API surface, the product. It also makes output fidelity the only metric that matters.
+paperflow is an eight-package Python monorepo that scrapes WG21 C++ standards mailings, converts papers to markdown, and runs two chained LLM analytical pipelines - dissect (claim extraction) and agora (discussion planning) - over the converted text. The project describes itself as "social technology to influence how people perceive the papers." That framing makes the outputs, not the API surface, the product. It also makes output fidelity the only metric that matters.
 
 The dominant dynamic across the diagnosis is an unguarded determinism contract. CLAUDE.md documents eleven invariants (D1-D11) governing how LLM calls must be made, collections sorted, and concurrency serialized. These are strong engineering rules. They are also tribal knowledge: no type enforcement, no lint rule, no snapshot test, and no CI gate defends them. A prior code-quality review already found multiple violations. pyright runs with `continue-on-error: true`. The CI matrix omits half the analytical packages. The invariants are correct and the architecture is sound, but the verification layer has not caught up to the design ambition.
 
@@ -20,17 +20,16 @@ Verdict: Promising. The core architecture - storage abstraction, pipeline framew
 
 ## 2. The Project
 
-paperflow is a uv-managed Python 3.12+ monorepo at `cppalliance/wg21-paperflow`, version 0.3.0, licensed under BSL-1.0.<sup>1</sup> Nine packages share a common storage backend:
+paperflow is a uv-managed Python 3.12+ monorepo at `cppalliance/wg21-paperflow`, version 0.3.0, licensed under BSL-1.0.<sup>1</sup> Eight packages share a common storage backend:
 
 1. **paperstore** - SQLite storage abstraction (`SqliteBackend` behind a `StorageBackend` ABC). No network dependencies.
 2. **mailing** - Scrapes open-std.org mailing indexes. Downloads paper PDFs and HTML sources.
 3. **tomd** - Converts PDF/HTML to clean markdown with stable YAML front matter.
 4. **pipeline** - LLM pipeline framework built on pydantic-ai. Step dispatch, agent/task runners, model backends, error hierarchy, web tools, prompt-injection defense.
 5. **dissect** - Extracts claims, evidence, and rhetoric from a paper's markdown.
-6. **advocatus** - Adversarial examination of a dissected paper. Files charges, runs defenses, produces a "relatio."
-7. **agora** - Plans a discussion thread for a dissected and examined paper.
-8. **cli** - Command-line interface. Maps verbs to pipeline stages.
-9. **preview** - Flask-based local preview server.
+6. **agora** - Plans a discussion thread for a dissected paper.
+7. **cli** - Command-line interface. Maps verbs to pipeline stages.
+8. **preview** - Flask-based local preview server.
 
 The internal dependency graph is acyclic at module load time: `pipeline` uses lazy imports for stage-specific packages, and `paperstore` sits at the root with no dependencies.<sup>2</sup> Four model backends - DeepSeek R1 distill (vLLM), Llama 3, Qwen 3, and Anthropic - are declared in `SERVICES.toml` and accessed through a two-layer abstraction: `ModelBackend` (mechanical concerns per provider) wrapped by `AgentBackend` (pipeline-level config like thinking budget).<sup>3</sup>
 
@@ -78,7 +77,7 @@ No open-source project occupies paperflow's combined niche. The competitive fiel
 
 **Differentiators:**
 - WG21 as a first-class domain. The only project combining mailing scrape, paper conversion, and structured claim/argument analysis for ISO C++.
-- The "rhetoric stack" (dissect, advocatus, agora) as deterministic Pydantic pipelines. Academic argument-mining tools stop at span tagging.
+- The "rhetoric stack" (dissect, agora) as deterministic Pydantic pipelines. Academic argument-mining tools stop at span tagging.
 - Determinism as a stated systems-level contract, not a best-effort aspiration.
 - Heterogeneous storage parity (SQLite public, Postgres+S3 private) behind a single ABC.
 - BSL-1.0 in a field dominated by GPL and AGPL.
@@ -89,7 +88,7 @@ No open-source project occupies paperflow's combined niche. The competitive fiel
 
 ### 5.1 The Unguarded Determinism Contract
 
-The single most consequential dynamic in the codebase. CLAUDE.md documents eleven invariants governing LLM call discipline: all calls through `run_agent` or `run_task` (D1), no direct `pydantic_ai.Agent` construction, no `parallel_tool_calls=True` (D4), no per-call temperature overrides (D5), `output_type=<PydanticModel>` on every step (D6), sorted collections before prompts (D7), serial execution for dissect and advocatus (D11).<sup>5</sup> The MODELS.md workaround inventory tracks eight upstream issues that affect determinism, with explicit retire-when conditions.<sup>3</sup>
+The single most consequential dynamic in the codebase. CLAUDE.md documents eleven invariants governing LLM call discipline: all calls through `run_agent` or `run_task` (D1), no direct `pydantic_ai.Agent` construction, no `parallel_tool_calls=True` (D4), no per-call temperature overrides (D5), `output_type=<PydanticModel>` on every step (D6), sorted collections before prompts (D7), serial execution for dissect (D11).<sup>5</sup> The MODELS.md workaround inventory tracks eight upstream issues that affect determinism, with explicit retire-when conditions.<sup>3</sup>
 
 These are genuine engineering rules, not aspirational wishes. Reconnaissance confirmed that `temperature=0.0` and `seed=0` are set in all four model backends, `_task_semaphore` is `asyncio.Semaphore(1)`, `output_type` Pydantic models are used on agent calls, and `pydantic_ai.Agent` construction is confined to `model_backends.py`.<sup>6</sup>
 
@@ -101,7 +100,7 @@ Most critically, no snapshot or replay test guards determinism. The project coul
 
 The CI workflow runs ruff, pyright, and per-package pytest across a matrix of ubuntu-latest and windows-latest.<sup>8</sup> Three gaps undermine its value:
 
-1. The matrix lists a package called `web_tools` that does not exist in the repository. It omits `advocatus`, `agora`, `pipeline`, and `preview`, all of which have test directories that `pyproject.toml`'s `testpaths` includes.<sup>10</sup> Passing CI does not exercise the analytical pipelines.
+1. The matrix lists a package called `web_tools` that does not exist in the repository. It omits `agora`, `pipeline`, and `preview`, all of which have test directories that `pyproject.toml`'s `testpaths` includes.<sup>10</sup> Passing CI does not exercise the analytical pipelines.
 
 2. `pyright` runs with `continue-on-error: true`. Type errors are visible in logs but do not block merges. For a project whose raw-int status type (T6) and multi-backend model dispatch depend on type correctness, advisory type checking is a structural gap (Meyers 2004).
 

@@ -283,12 +283,10 @@ def _make_claim(text="claim", section="intro", question="why?", line=1, uid=1):
 
 def test_cleared_set_truthiness_and_names():
     assert not ClearedSet()
-    assert bool(ClearedSet(advocatus=True))
+    assert bool(ClearedSet(agora=True))
     assert bool(ClearedSet(assay=True))
-    assert ClearedSet(advocatus=True, agora=True).names() == ["advocatus", "agora"]
-    assert ClearedSet(
-        advocatus=True, agora=True, assay=True,
-    ).names() == ["advocatus", "agora", "assay"]
+    assert ClearedSet(agora=True).names() == ["agora"]
+    assert ClearedSet(agora=True, assay=True).names() == ["agora", "assay"]
 
 
 def test_clear_downstream_outputs_unknown_paper(store: SqliteBackend):
@@ -315,7 +313,6 @@ def test_clear_downstream_outputs_full_sweep(store: SqliteBackend, tmp_path):
     md_path = store.write_paper_md(pid, "# Body\n")
     image_path = store.write_paper_image(pid, 1, 1, "png", b"image-bytes")
 
-    advocatus_path = store.write_advocatus_md(pid, "# Relatio\n")
     agora_path = store.write_agora_json(pid, {"threads": []})
     assay_path = store.write_assay_md(pid, "# Assay\n")
 
@@ -335,8 +332,8 @@ def test_clear_downstream_outputs_full_sweep(store: SqliteBackend, tmp_path):
             "VALUES (?, ?)", (pid, "neutral"),
         )
 
+
     # Pre-sweep sanity
-    assert advocatus_path.exists()
     assert agora_path.exists()
     assert assay_path.exists()
     assert store._conn.execute(
@@ -345,19 +342,18 @@ def test_clear_downstream_outputs_full_sweep(store: SqliteBackend, tmp_path):
 
     cleared = store.clear_downstream_outputs(pid)
 
-    assert cleared == ClearedSet(advocatus=True, agora=True, assay=True)
-    assert cleared.names() == ["advocatus", "agora", "assay"]
+    assert cleared == ClearedSet(agora=True, assay=True)
+    assert cleared.names() == ["agora", "assay"]
 
     # Files gone
-    assert not advocatus_path.exists()
     assert not agora_path.exists()
     assert not assay_path.exists()
 
     # Assay rows gone
     for table in (
         "assay_claims", "assay_evidence", "assay_concessions",
-        "assay_breadcrumbs", "assay_thesis", "assay_findings",
-        "assay_asks", "assay_references", "assay_strengths",
+        "assay_gaps", "assay_thesis", "assay_findings",
+        "assay_asks", "assay_pids", "assay_urls", "assay_strengths",
         "assay_checklist", "assay_compounds", "assay_synthesis",
     ):
         n = store._conn.execute(
@@ -365,9 +361,9 @@ def test_clear_downstream_outputs_full_sweep(store: SqliteBackend, tmp_path):
         ).fetchone()[0]
         assert n == 0, f"{table} not wiped"
 
+
     # Meta paths cleared
     meta = store.get_meta(pid)
-    assert meta.advocatus_path == ""
     assert meta.agora_path == ""
     assert meta.assay_path == ""
 
@@ -381,9 +377,8 @@ def test_clear_downstream_outputs_partial(store: SqliteBackend):
     """Only the pipelines that had data are reported as cleared."""
     pid = "P1000R0"
     store.upsert_year("2026", [{"paper_id": pid}])
-    store.write_advocatus_md(pid, "# Relatio")
-    # agora never ran
+    store.write_agora_json(pid, {"threads": []})
 
     cleared = store.clear_downstream_outputs(pid)
-    assert cleared == ClearedSet(advocatus=True)
-    assert cleared.names() == ["advocatus"]
+    assert cleared == ClearedSet(agora=True)
+    assert cleared.names() == ["agora"]

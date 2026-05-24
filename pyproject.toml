@@ -10,7 +10,6 @@ dependencies = [
     "mailing",
     "tomd",
     "pipeline",
-    "advocatus",
     "agora",
     "assay",
     "cli",
@@ -31,7 +30,6 @@ paperstore   = {workspace = true}
 mailing      = {workspace = true}
 tomd         = {workspace = true}
 pipeline     = {workspace = true}
-advocatus    = {workspace = true}
 agora        = {workspace = true}
 assay        = {workspace = true}
 cli          = {workspace = true}
@@ -44,7 +42,6 @@ testpaths = [
     "packages/mailing/tests",
     "packages/tomd/tests",
     "packages/pipeline/tests",
-    "packages/advocatus/tests",
     "packages/agora/tests",
     "packages/assay/tests",
     "packages/cli/tests",

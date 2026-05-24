@@ -15,9 +15,29 @@ provides instructions; these models enforce output structure via
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
+
+
+def _ensure_int_list(v: Any) -> Any:
+    """Coerce legacy ``closed_by`` values (sentinel 0, single int) to ``list[int]``.
+
+    The field was previously a single ``int`` with ``0`` meaning "open".
+    Persisted rows and older pickles may still carry that shape; this
+    validator normalizes them so reads do not blow up. New writers
+    serialize a list directly.
+    """
+    if v is None or v == 0:
+        return []
+    if isinstance(v, int):
+        return [v]
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return []
+        return [int(p) for p in s.split(",") if p.strip()]
+    return v
 
 
 # -- Enumerations -----------------------------------------------------------
@@ -36,21 +56,6 @@ RelationshipKind = Literal["companion", "predecessor", "dependency", "citation",
 
 # -- Dataclasses (internal, not LLM output) ---------------------------------
 
-
-@dataclass(frozen=True)
-class FrontMatter:
-    """Built once at end of Survey with all fields known."""
-
-    document: str = ""
-    title: str = ""
-    date: str = ""
-    audience: list[str] = field(default_factory=list)
-    authors: list[str] = field(default_factory=list)
-    intent: str = ""
-    wording_lines: int = 0
-    targets_cwg_lwg: bool = False
-
-
 @dataclass(frozen=True)
 class ChunkEntry:
     """A chunk boundary from the survey step."""
@@ -62,25 +67,11 @@ class ChunkEntry:
     char_count: int
 
 
-@dataclass
-class ReferenceEntry:
-    """A deduped reference in the registry."""
-
-    ref_id: str
-    ref_label: str
-    url: str | None
-    source_type: str
-    contexts: list[str] = field(default_factory=list)
-    chunk_appearances: list[int] = field(default_factory=list)
-    relationship: str = "citation"
-    same_author: bool = False
-    mention_count: int = 1
-
-
 @dataclass(frozen=True)
 class KilledFinding:
     """A finding killed by cross-examination."""
 
+    finding_id: int
     finding_title: str
     lens: str
     challenge: str
@@ -89,16 +80,17 @@ class KilledFinding:
 
 @dataclass(frozen=True)
 class SynthesisOutput:
-    """Verdict derivation result from Step 11."""
+    """Verdict derivation result from the Synthesize step."""
 
-    verdict: str = "Insufficient"
+    verdict_label: str = "Insufficient"
     verdict_confidence: str = "Medium"
-    central_thesis: str = ""
+    verdict_statement: str = ""
     dominant_dynamic: str | None = None
     thesis_survives: bool = False
     thesis_statement: str = ""
     major_findings: list = field(default_factory=list)
     regular_findings: list = field(default_factory=list)
+    promotion_reasons: dict = field(default_factory=dict)
     critical_count: int = 0
     significant_count: int = 0
     skip_reason: str = ""
@@ -107,19 +99,13 @@ class SynthesisOutput:
 
 @dataclass
 class ProbeResult:
-    """Reference inventory vs registry diff from Step 6."""
+    """Reference inventory summary from Step 10."""
 
     total_inventory: int = 0
-    total_registry: int = 0
-    cited_not_referenced: list[str] = field(default_factory=list)
-    referenced_not_cited: list[str] = field(default_factory=list)
-    companions: list[str] = field(default_factory=list)
     stale_refs: list[str] = field(default_factory=list)
-    self_cites: list[str] = field(default_factory=list)
 
 
-# -- Step 2: Extract output -------------------------------------------------
-
+# -- Step 4: Extract output -------------------------------------------------
 
 class ItemOutput(BaseModel, frozen=True):
     """A single extracted item from a chunk."""
@@ -129,12 +115,18 @@ class ItemOutput(BaseModel, frozen=True):
     line: int = Field(description="Line number.")
     quality_tier: str | None = Field(default=None, description="Evidence quality tier.")
 
+class ChunkExtractOutput(BaseModel, frozen=True):
+    """Structured output from one extract sub-agent (one chunk)."""
 
-class CollectedItem(ItemOutput):
+    chunk_index: int = Field(description="Which chunk this extraction covers.")
+    items: list[ItemOutput] = Field(default=[], description="Extracted items.")
+
+class CollectedItem(ItemOutput, frozen=True):
     """ItemOutput extended with collect-assigned id and section."""
 
-    id: str = Field(default="", description="Assigned ID (e.g. C1, E1).")
+    id: int = Field(default=0, description="Global unique ID assigned by pipeline.")
     section: str = Field(default="", description="Section heading for persistence.")
+    source_pid: str = Field(default="", description="Source paper ID if from companion, empty if from paper under analysis.")
 
 
 @dataclass(frozen=True)
@@ -149,61 +141,100 @@ class CollectedItems:
     scope: list[ItemOutput] = field(default_factory=list)
 
 
-class BreadcrumbOutput(BaseModel, frozen=True):
-    """A gap identified during extraction."""
+class GapOutput(BaseModel, frozen=True):
+    """A gap identified during scanning."""
 
+    id: int = Field(default=0, description="Global unique ID assigned by pipeline.")
     chunk_index: int = Field(description="Source chunk index.")
     item_quote: str = Field(description="Quote of the item with the gap.")
     line: int = Field(description="Line number.")
-    gap: str = Field(description="One sentence describing the gap.")
+    gap: str = Field(description="One-sentence reviewer question targeting the gap.")
     why_important: str = Field(description="One sentence: why this matters.")
     primary_lens: str = Field(description="Primary analytical lens.")
     secondary_lens: str | None = Field(default=None, description="Optional secondary lens.")
     severity: str = Field(default="minor", description="significant|minor (no critical in Pass 1).")
+    closed_by: Annotated[list[int], BeforeValidator(_ensure_int_list)] = Field(
+        default_factory=list,
+        description="Evidence IDs that closed this gap; empty list if open.",
+    )
 
 
 class AskOutput(BaseModel, frozen=True):
     """An explicit ask from the paper to the committee."""
 
+    id: int = Field(default=0, description="Global unique ID assigned by pipeline.")
     quote: str = Field(description="Verbatim quote.")
     line: int = Field(description="Line number.")
     target: str = Field(description="Target group or entity.")
     type: str = Field(description="adopt|direction|review|poll|feedback|inform")
 
 
-class ReferenceOutput(BaseModel, frozen=True):
-    """A reference found in a chunk."""
-
-    ref_label: str | None = Field(default=None, description="Reference label e.g. [12].")
-    text: str = Field(default="", description="Display text of the link.")
-    url: str | None = Field(default=None, description="Resolved URL.")
-    line: int = Field(default=0, description="Line number.")
-    context: str = Field(default="", description="One sentence: what paper says about this ref.")
-    relationship: str = Field(default="citation", description="companion|predecessor|dependency|citation|background|tool")
-
-
-class ChunkExtractOutput(BaseModel, frozen=True):
-    """Structured output from one extract sub-agent (one chunk)."""
-
-    chunk_index: int = Field(description="Which chunk this extraction covers.")
-    items: list[ItemOutput] = Field(default=[], description="Extracted items.")
-    references: list[ReferenceOutput] = Field(default=[], description="References found.")
-
 
 class ScanOutput(BaseModel, frozen=True):
     """Structured output from one scan sub-agent (one chunk or batch)."""
 
     chunk_index: int = Field(description="Which chunk this scan covers.")
-    breadcrumbs: list[BreadcrumbOutput] = Field(default=[], description="Identified gaps.")
+    gaps: list[GapOutput] = Field(default=[], description="Identified gaps.")
 
 
-# -- Step 4: Derive output --------------------------------------------------
+# -- Step 5: Decide output --------------------------------------------------
+
+
+class ClaimDecision(BaseModel, frozen=True):
+    """Per-claim support judgment from the Decide step."""
+
+    claim_id: int = Field(description="Global claim ID from Extract.")
+    supported: bool = Field(description="True if chunk provides support.")
+    reason: str = Field(description="One-line reason for the decision.")
+
+
+class ChunkDecideOutput(BaseModel, frozen=True):
+    """Structured output from one decide sub-agent (one chunk)."""
+
+    chunk_index: int = Field(description="Which chunk this covers.")
+    decisions: list[ClaimDecision] = Field(default=[], description="Per-claim decisions.")
+
+
+class CrossChunkClaimDecision(BaseModel, frozen=True):
+    """Per-claim judgment from the cross-chunk Decide follow-up.
+
+    The ``claim_id`` is the global, paper-wide claim ID (pre-assigned by
+    Extract). The model echoes it back verbatim so the orchestrator can
+    re-bind decisions to the original ``(chunk_index, local_id)`` pair.
+    """
+
+    claim_id: int = Field(description="Global claim ID echoed back from the input.")
+    supported: bool = Field(description="True if any cross-chunk evidence supports the claim.")
+    supporting_evidence_lines: list[int] = Field(
+        default_factory=list,
+        description="Line numbers of evidence relied on.",
+    )
+    reason: str = Field(description="One sentence describing the cross-chunk basis or its absence.")
+
+
+class CrossChunkDecideOutput(BaseModel, frozen=True):
+    """Structured output from the cross-chunk Decide follow-up pass."""
+
+    decisions: list[CrossChunkClaimDecision] = Field(
+        default=[], description="One decision per input claim.")
+
+
+# -- Step 6: Classify output ------------------------------------------------
+
+
+class BatchClassifyOutput(BaseModel, frozen=True):
+    """Structured output from the single-batch classify step."""
+
+    gaps: list[GapOutput] = Field(default=[], description="Gaps for unsupported claims.")
+
+
+# -- Step 8: Derive output --------------------------------------------------
 
 
 class LoadBearingClaim(BaseModel, frozen=True):
     """A claim identified as load-bearing for the thesis."""
 
-    id: str = Field(description="Claim ID (e.g. C1).")
+    id: int = Field(description="Global unique ID of the collected claim.")
     quote: str = Field(description="Exact quote of the claim.")
 
 
@@ -217,7 +248,41 @@ class DeriveOutput(BaseModel, frozen=True):
     ask_calibration: str = Field(default="direction", description="adopt|direction|review|poll|feedback|inform")
 
 
-# -- Step 5: Research output ------------------------------------------------
+# -- Step 8: Verify output --------------------------------------------------
+
+
+class GapResolution(BaseModel, frozen=True):
+    """Evidence from a companion paper that closes a gap."""
+
+    gap_id: int = Field(description="ID of the gap being closed.")
+    evidence_quote: str = Field(description="Verbatim quote from companion paper.")
+    evidence_line: int = Field(description="Line number in companion paper.")
+
+
+class VerifyContradiction(BaseModel, frozen=True):
+    """A specific contradiction found in a companion paper."""
+
+    source_pid: str = Field(description="Companion paper ID containing the contradicting passage.")
+    quote: str = Field(description="Verbatim quote from the companion paper.")
+    line: int = Field(description="Line number in the companion paper.")
+    refutes: str = Field(description="What the quote refutes (claim text or paraphrase).")
+    claim_id: int | None = Field(default=None, description="Optional global claim ID this refutes.")
+
+
+class VerifyOutput(BaseModel, frozen=True):
+    """Structured output from companion-paper verification."""
+
+    confirmations: list[str] = Field(
+        default=[], description="Claims confirmed by the companion paper.")
+    contradictions: list[VerifyContradiction] = Field(
+        default=[], description="Structured contradictions from companion papers.")
+    new_evidence: list[str] = Field(
+        default=[], description="Relevant evidence not previously identified.")
+    closes: list[GapResolution] = Field(
+        default=[], description="Gaps closed by companion evidence.")
+
+
+# -- Step 9: Research output ------------------------------------------------
 
 
 class ResearchFinding(BaseModel, frozen=True):
@@ -235,12 +300,13 @@ class ResearchLensOutput(BaseModel, frozen=True):
     findings: list[ResearchFinding] = Field(default=[], description="Research findings.")
 
 
-# -- Step 7: Analyze output -------------------------------------------------
+# -- Step 11: Analyze output ------------------------------------------------
 
 
 class FindingOutput(BaseModel, frozen=True):
     """A single finding from per-chunk analysis."""
 
+    id: int = Field(default=0, description="Global unique ID assigned by pipeline.")
     title: str = Field(description="Finding title.")
     lens: str = Field(description="Performance|Design|Specification|Usability|Ecosystem|Rationale")
     severity: str = Field(description="critical|significant|minor")
@@ -248,7 +314,10 @@ class FindingOutput(BaseModel, frozen=True):
     line: int = Field(description="Line number.")
     explanation: str = Field(description="Why this is a problem. 2-4 sentences.")
     test: str = Field(default="novel", description="Test number and name, or 'novel'.")
-    from_breadcrumb: bool = Field(default=False, description="Whether derived from a breadcrumb.")
+    from_gap_ids: list[int] = Field(
+        default_factory=list,
+        description="Global IDs of upstream gaps this finding derives from; empty if novel.",
+    )
     external_evidence: str | None = Field(default=None, description="External evidence if any.")
     examiner: str = Field(default="", description="Committee role that would raise this.")
     damage: str = Field(default="", description="Structural consequence. 1-2 sentences.")
@@ -258,6 +327,7 @@ class FindingOutput(BaseModel, frozen=True):
 class StrengthOutput(BaseModel, frozen=True):
     """A strength identified during analysis."""
 
+    id: int = Field(default=0, description="Global unique ID assigned by pipeline.")
     title: str = Field(description="Strength title.")
     lens: str = Field(description="Analytical lens.")
     quote: str = Field(description="Verbatim quote from paper.")
@@ -276,7 +346,7 @@ class ChunkAnalyzeOutput(BaseModel, frozen=True):
 class ChecklistItem(BaseModel, frozen=True):
     """One item from the SD-4 rationale checklist."""
 
-    id: str = Field(description="E.g. SD4-1.")
+    id: int = Field(default=0, description="Global unique ID assigned by pipeline.")
     name: str = Field(description="Item name.")
     passed: bool = Field(description="Whether the item passes.")
     location: str | None = Field(default=None, description="Section heading or 'absent'.")
@@ -296,13 +366,14 @@ ChallengeName = Literal[
 ]
 
 
-# -- Step 9a: Cross-examination output --------------------------------------
+# -- Step 13: Challenge output ----------------------------------------------
 
 
 class CrossExamVerdict(BaseModel, frozen=True):
     """Per-finding verdict from LLM cross-examination."""
 
-    finding_title: str = Field(description="Title of the finding being examined.")
+    finding_id: int = Field(description="ID of the finding being examined.")
+    finding_title: str = Field(default="", description="Finding title for readability.")
     survived: bool = Field(description="True if finding survives all five challenges.")
     killed_by: ChallengeName | None = Field(default=None, description="Challenge that killed this finding, or null.")
     reasoning: str = Field(description="One sentence explaining the verdict.")
@@ -314,17 +385,17 @@ class CrossExamBatchOutput(BaseModel, frozen=True):
     verdicts: list[CrossExamVerdict] = Field(default=[], description="Per-finding verdicts.")
 
 
-# -- Step 9b: Couple output -------------------------------------------------
+# -- Step 14: Couple output -------------------------------------------------
 
 
 class CompoundOutput(BaseModel, frozen=True):
     """A compound dynamic where findings combine."""
 
-    name: str = Field(description="Compound name.")
-    constituents: list[str] = Field(description="Finding titles in this compound.")
-    mechanism: str = Field(description="One sentence per causal link.")
-    cross_lens: bool = Field(default=False, description="Whether it spans lenses.")
-    emergent_risk: str | None = Field(default=None, description="New risk from combination.")
+    name: str = Field(description="Short lowercase phrase describing the causal chain.")
+    constituents: list[int] = Field(description="IDs of findings involved.")
+    mechanism: str = Field(description="One sentence per causal link: why A's consequence triggers or amplifies B.")
+    cross_lens: bool = Field(default=False, description="True only if constituents span different lenses.")
+    emergent_risk: str | None = Field(default=None, description="A new concrete consequence that neither finding produces alone, or null.")
 
 
 class CoupleOutput(BaseModel, frozen=True):
@@ -339,61 +410,80 @@ class CoupleOutput(BaseModel, frozen=True):
 class PipelineState(BaseModel):
     """Mutable accumulator threaded through every assay pipeline step."""
 
-    # Init
-    service_name: str = ""
-    model_name: str = ""
-    paper_source: Optional[str] = None
+    _next_id: int = 1
+
+    # Step 0 - Receive
     paper_id: str = ""
+    paper_md: str = ""
     paper_title: str = ""
+    paper_date: str = ""
+    audience: list[str] = Field(default_factory=list)
+    authors: list[str] = Field(default_factory=list)
+    intent: str = ""
 
     # Step 1 - References
-    reference_inventory: Optional[list] = None
+    ref_pids: list = Field(default_factory=list)
+    ref_urls: list = Field(default_factory=list)
 
     # Step 2 - Index
     cited_paper_index: Any = None
     index_stats: Any = None
 
     # Step 3 - Survey
-    front_matter: Optional[FrontMatter] = None
     chunk_map: Optional[list[ChunkEntry]] = None
+    wording_lines: int = 0
+    targets_cwg_lwg: bool = False
 
-    # Step 3 - Extract
+    # Step 4 - Extract
     raw_extractions: Optional[list[ChunkExtractOutput]] = None
 
-    # Step 4 - Scan
+    # Step 5 - Decide
+    raw_decisions: Optional[list[ChunkDecideOutput]] = None
+    # (chunk_index, local_claim_id) -> global claim ID. Populated at end of
+    # Extract and consumed by the cross-chunk Decide follow-up.
+    claim_global_id_map: dict[tuple[int, int], int] = Field(default_factory=dict)
+
+    # Step 6 - Classify
+    raw_classifications: Optional[BatchClassifyOutput] = None
+
+    # Step 5/6 compat - legacy Scan (kept for migration)
     raw_scans: Optional[list[ScanOutput]] = None
 
-    # Step 5 - Collect
+    # Step 7 - Collect
     items: Optional[CollectedItems] = None
-    breadcrumbs_by_lens: Optional[dict[str, list[BreadcrumbOutput]]] = None
+    gaps_by_lens: Optional[dict[str, list[GapOutput]]] = None
     asks: Optional[list[AskOutput]] = None
     active_lenses: Optional[list[str]] = None
     inactive_lenses: Optional[list[str]] = None
-    reference_registry: Optional[list[ReferenceEntry]] = None
 
-    # Step 6 - Derive
+    # Step 8 - Derive
     derive: Optional[DeriveOutput] = None
 
-    # Step 7 - Research
+    # Step 9 - Verify
+    verify: Optional[VerifyOutput] = None
+
+    # Step 10 - Research
     research: Optional[dict[str, ResearchLensOutput]] = None
 
-    # Step 8 - Probe
+    # Step 11 - Probe
     probe: Optional[ProbeResult] = None
 
-    # Step 9 - Analyze
+    # Step 12 - Analyze
     findings: Optional[list[FindingOutput]] = None
     strengths: Optional[list[StrengthOutput]] = None
+
+    # Step 13 - Rationale
     checklist: Optional[list[ChecklistItem]] = None
 
-    # Step 10 - Challenge
+    # Step 14 - Challenge
     surviving: Optional[list[FindingOutput]] = None
     killed: Optional[list[KilledFinding]] = None
 
-    # Step 11 - Couple
+    # Step 15 - Couple
     compounds: Optional[list[CompoundOutput]] = None
 
-    # Step 12 - Synthesize
+    # Step 16 - Synthesize
     synthesis: Optional[SynthesisOutput] = None
 
-    # Step 11 - Report
+    # Step 17 - Report
     report: Optional[str] = None

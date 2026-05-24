@@ -25,7 +25,7 @@ from pipeline.model_backends import (
     ModelBackend,
     Qwen3Backend,
 )
-from pipeline.prompt import StepHooks, StepMeta, StepSpec
+from pipeline.prompt import StepHooks, StepPrompt, StepSpec
 from pipeline.runner import dispatch
 
 
@@ -68,10 +68,10 @@ def _spec(
     parallel: bool = False,
 ) -> StepSpec:
     return StepSpec(
-        meta=StepMeta(
+        step=StepPrompt(
             name="1. Test",
             number=1,
-            model_slot="default",
+            model="default",
             execution="main",
         ),
         hooks=StepHooks(
@@ -86,7 +86,7 @@ def _spec(
 
 
 def _ctx() -> StepContext:
-    return StepContext(sections={})
+    return StepContext()
 
 
 def _run(coro: Any) -> Any:
@@ -227,7 +227,7 @@ def test_deepseek_backend_honors_request_limit(
     monkeypatch.setattr("openai.AsyncOpenAI", _FakeOpenAI)
 
     backend = VllmThinkingBackend(
-        base_url="http://x", api_key="y", model="z",
+        base_url="http://x", api_key="y", model="z", stream=False,
     )
 
     async def _go() -> Any:

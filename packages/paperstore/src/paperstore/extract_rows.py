@@ -13,7 +13,7 @@ accept duck-typed domain objects; read methods return these frozen dataclasses.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -150,6 +150,7 @@ class AssayEvidenceRow:
     subtype: str = ""
     quality_tier: str = ""
     supports: str = "[]"
+    source_pid: str = ""
 
 
 @dataclass(frozen=True)
@@ -163,7 +164,7 @@ class AssayConcessionRow:
 
 
 @dataclass(frozen=True)
-class AssayBreadcrumbRow:
+class AssayGapRow:
     paper_id: str
     uid: int
     chunk_index: int
@@ -173,6 +174,7 @@ class AssayBreadcrumbRow:
     primary_lens: str = ""
     secondary_lens: str = ""
     severity: str = "minor"
+    closed_by: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -199,6 +201,7 @@ class AssayFindingRow:
     major: bool = False
     challenge: str = ""
     reasoning: str = ""
+    from_gap_ids: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -212,14 +215,26 @@ class AssayAskRow:
 
 
 @dataclass(frozen=True)
-class AssayReferenceRow:
-    """A persisted assay reference registry entry."""
+class AssayPidRow:
+    """A persisted paper-number reference from assay inventory."""
     paper_id: str
     uid: int
-    ref_label: str
-    relationship: str = "citation"
+    raw_pid: str
+    resolved_pid: str
     url: str = ""
     mention_count: int = 0
+    in_paperstore: bool = False
+    stale: bool = False
+    author_overlap: float = 0.0
+
+
+@dataclass(frozen=True)
+class AssayUrlRow:
+    """A persisted standalone URL from assay inventory."""
+    paper_id: str
+    uid: int
+    url: str
+    line: int = 0
 
 
 @dataclass(frozen=True)

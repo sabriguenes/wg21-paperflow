@@ -1,6 +1,6 @@
 # Models
 
-How the analytical pipelines (`dissect`, `advocatus`, `agora`) configure LLMs for semantic stability across runs.
+How the analytical pipelines (`dissect`, `agora`) configure LLMs for semantic stability across runs.
 
 ## Goal
 
