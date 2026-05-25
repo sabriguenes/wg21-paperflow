@@ -110,9 +110,10 @@ class ClearedSet:
 
     advocatus: bool = False
     agora: bool = False
+    assay: bool = False
 
     def __bool__(self) -> bool:
-        return self.advocatus or self.agora
+        return self.advocatus or self.agora or self.assay
 
     def names(self) -> list[str]:
         """Return the pipeline names that were cleared, in stable order."""
@@ -121,6 +122,8 @@ class ClearedSet:
             out.append("advocatus")
         if self.agora:
             out.append("agora")
+        if self.assay:
+            out.append("assay")
         return out
 
 

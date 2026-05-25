@@ -17,6 +17,7 @@ from __future__ import annotations
 DEFAULT_USER_AGENT = "paperflow/0.1 (+https://github.com/cppalliance/wg21-paperflow)"
 
 from mailing.download import content_length, default_client, download_paper  # noqa: E402
+from mailing.errors import InvalidSourceUrlError, MailingError  # noqa: E402
 from mailing.html_images import HtmlFetchedImage, fetch_html_images  # noqa: E402
 from mailing.scrape import (  # noqa: E402
     discover_years,
@@ -30,6 +31,8 @@ from mailing.scrape import (  # noqa: E402
 __all__ = [
     "DEFAULT_USER_AGENT",
     "HtmlFetchedImage",
+    "InvalidSourceUrlError",
+    "MailingError",
     "content_length",
     "default_client",
     "discover_years",

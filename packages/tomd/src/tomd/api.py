@@ -35,6 +35,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tomd.errors import UnsupportedSourceFormatError
 from tomd.lib import (
     format_front_matter,
     sanitize_metadata,
@@ -330,7 +331,7 @@ def _convert_with_tomd(path: Path) -> tuple[str, list[str] | None]:
         return convert_pdf(path)
     if suffix in (".html", ".htm"):
         return convert_html(path)
-    raise ValueError(
+    raise UnsupportedSourceFormatError(
         f"Unsupported source format {suffix!r} for {path.name}; "
         f"expected .pdf, .html, or .htm"
     )
@@ -394,7 +395,7 @@ def _convert_with_tomd_full(
             images_truncated=html_result.images_truncated,
             skipped=False, skip_reason="",
         )
-    raise ValueError(
+    raise UnsupportedSourceFormatError(
         f"Unsupported source format {suffix!r} for {path.name}; "
         f"expected .pdf, .html, or .htm"
     )

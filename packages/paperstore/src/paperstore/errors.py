@@ -47,3 +47,15 @@ class MissingAgoraError(MissingPaperError):
 
 class MissingMailingIndexError(PaperstoreError):
     """Raised when the requested mailing index has never been upserted."""
+
+
+class InvalidPaperstoreUriError(PaperstoreError):
+    """Raised by :func:`paperstore.from_uri` for malformed or unsupported URIs.
+
+    Covers missing workspace fallback, non-empty/non-localhost authority on
+    ``file://``, empty path with no fallback, and unsupported schemes.
+    """
+
+
+class InvalidSuffixError(PaperstoreError):
+    """Raised when a write API receives a suffix that does not start with ``.``."""

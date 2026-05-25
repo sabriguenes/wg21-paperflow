@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from pipeline.errors import BackendConfigError
 from pipeline.session import (
     FetchResponse,
     SearchBackend,
@@ -222,7 +223,7 @@ def test_fetch_response_frozen():
 def test_brave_missing_key_raises():
     from pipeline.backends.brave import BraveBackend
     with patch.dict("os.environ", {}, clear=True):
-        with pytest.raises(ValueError, match="BRAVE_API_KEY"):
+        with pytest.raises(BackendConfigError, match="BRAVE_API_KEY"):
             BraveBackend()
 
 

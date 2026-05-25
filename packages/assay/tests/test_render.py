@@ -6,7 +6,22 @@
 
 from __future__ import annotations
 
-from assay.models import PipelineState
+from assay.models import (
+    AskOutput,
+    BreadcrumbOutput,
+    ChecklistItem,
+    ChunkEntry,
+    CollectedItem,
+    CollectedItems,
+    CompoundOutput,
+    DeriveOutput,
+    FindingOutput,
+    KilledFinding,
+    PipelineState,
+    ReferenceEntry,
+    StrengthOutput,
+    SynthesisOutput,
+)
 from assay.render import prepare_report_data, render_report
 
 
@@ -17,61 +32,80 @@ def _make_state() -> PipelineState:
         paper_title="Test Paper",
         model_name="test-model",
         service_name="test-svc",
-        items={
-            "claims": [{"line": 1, "quote": "claim1"}],
-            "evidence": [{"line": 2, "quote": "ev1"}],
-            "concessions": [],
-            "questions": [],
-            "dependencies": [],
-        },
+        items=CollectedItems(
+            claims=[CollectedItem(type="claim", line=1, quote="claim1")],
+            evidence=[CollectedItem(type="evidence", line=2, quote="ev1")],
+        ),
         breadcrumbs_by_lens={
-            "Design": [{"severity": "critical", "gap": "gap1", "line": 10, "chunk_index": 0}],
-            "Performance": [{"severity": "minor", "gap": "gap2", "line": 20, "chunk_index": 1}],
+            "Design": [BreadcrumbOutput(
+                chunk_index=0, item_quote="iq1", line=10,
+                gap="gap1", why_important="matters", primary_lens="Design",
+                severity="critical",
+            )],
+            "Performance": [BreadcrumbOutput(
+                chunk_index=1, item_quote="iq2", line=20,
+                gap="gap2", why_important="matters", primary_lens="Performance",
+                severity="minor",
+            )],
         },
-        asks=[{"target": "committee", "quote": "do X", "type": "poll"}],
-        reference_registry=[
-            {"ref_label": "R1", "relationship": "citation", "url": "http://x", "mention_count": 3},
-        ],
-        derive={"central_claim": "thesis"},
+        asks=[AskOutput(target="committee", quote="do X", type="poll", line=1)],
+        reference_registry=[ReferenceEntry(
+            ref_id="R1", ref_label="R1", url="http://x",
+            source_type="paper", relationship="citation", mention_count=3,
+        )],
+        derive=DeriveOutput(
+            central_claim="thesis",
+            problem_statement="problem",
+            scope_boundary="scope",
+        ),
         findings=[
-            {"title": "F1", "severity": "significant", "lens": "Design"},
-            {"title": "F2", "severity": "minor", "lens": "Usability"},
+            FindingOutput(
+                title="F1", severity="significant", lens="Design",
+                quote="q1", line=5, explanation="expl1",
+            ),
+            FindingOutput(
+                title="F2", severity="minor", lens="Usability",
+                quote="q2", line=6, explanation="expl2",
+            ),
         ],
-        surviving=[
-            {"title": "F1", "severity": "significant", "lens": "Design",
-             "quote": "q1", "line": 5, "explanation": "expl1", "test": "t1",
-             "promotion_reason": "compound"},
-        ],
-        killed=[
-            {"finding_title": "F2", "lens": "Usability",
-             "challenge": "resolution", "reasoning": "paper answers it"},
-        ],
-        strengths=[
-            {"title": "S1", "quote": "strong", "line": 30, "explanation": "well done"},
-        ],
+        surviving=[FindingOutput(
+            title="F1", severity="significant", lens="Design",
+            quote="q1", line=5, explanation="expl1", test="t1",
+        )],
+        killed=[KilledFinding(
+            finding_title="F2", lens="Usability",
+            challenge="resolution", reasoning="paper answers it",
+        )],
+        strengths=[StrengthOutput(
+            title="S1", lens="Design", quote="strong",
+            line=30, explanation="well done",
+        )],
         checklist=[
-            {"id": "SD4-1", "name": "Motivating Examples", "passed": True, "location": "sec 2", "note": ""},
-            {"id": "SD4-2", "name": "Design Principles", "passed": False, "location": "", "note": "missing"},
+            ChecklistItem(id="SD4-1", name="Motivating Examples", passed=True, location="sec 2", note=""),
+            ChecklistItem(id="SD4-2", name="Design Principles", passed=False, location="", note="missing"),
         ],
-        compounds=[
-            {"name": "Comp1", "constituents": ["F1"], "mechanism": "mech", "emergent_risk": "risk"},
+        compounds=[CompoundOutput(
+            name="Comp1", constituents=["F1"], mechanism="mech", emergent_risk="risk",
+        )],
+        synthesis=SynthesisOutput(
+            verdict="Weakened",
+            verdict_confidence="Medium",
+            thesis_statement="The paper argues X",
+            thesis_survives=True,
+            central_thesis="Central thesis text",
+            dominant_dynamic="Comp1",
+            critical_count=0,
+            significant_count=1,
+            major_findings=[FindingOutput(
+                title="F1", severity="significant", lens="Design",
+                quote="q1", line=5, explanation="expl1", test="t1",
+            )],
+            regular_findings=[],
+        ),
+        chunk_map=[
+            ChunkEntry(index=0, heading="S1", start_line=1, end_line=10, char_count=100),
+            ChunkEntry(index=1, heading="S2", start_line=11, end_line=20, char_count=100),
         ],
-        synthesis={
-            "verdict": "Weakened",
-            "verdict_confidence": "Medium",
-            "thesis_statement": "The paper argues X",
-            "thesis_survives": True,
-            "central_thesis": "Central thesis text",
-            "dominant_dynamic": "Comp1",
-            "critical_count": 0,
-            "significant_count": 1,
-            "major_findings": [
-                {"title": "F1", "severity": "significant", "lens": "Design",
-                 "quote": "q1", "line": 5, "explanation": "expl1", "test": "t1"},
-            ],
-            "regular_findings": [],
-        },
-        chunk_map=[{"index": 0}, {"index": 1}],
     )
 
 

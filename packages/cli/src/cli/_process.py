@@ -236,7 +236,8 @@ def run_process_command(
         for pid, r in invalidated:
             print(f"  {pid} ({', '.join(r.downstream_cleared)})")
         print(
-            "  re-run `paperflow advocatus` / `paperflow agora` to refresh."
+            "  re-run `paperflow advocatus` / `paperflow agora` / "
+            "`paperflow assay` to refresh."
         )
 
     ok = total - failed

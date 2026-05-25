@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mailing import download as md
+from mailing.errors import InvalidSourceUrlError
 
 
 class _FakeResponse:
@@ -69,5 +70,5 @@ def test_download_paper_returns_none_for_empty_url():
 
 
 def test_download_paper_rejects_unknown_suffix():
-    with pytest.raises(ValueError, match="must end with"):
+    with pytest.raises(InvalidSourceUrlError, match="must end with"):
         asyncio.run(md.download_paper("p1", source_url="https://x/paper.docx"))

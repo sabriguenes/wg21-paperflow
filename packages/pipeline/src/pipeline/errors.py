@@ -66,6 +66,41 @@ class HookMismatchError(PromptFileError):
     """
 
 
+class ServiceConfigError(PipelineError):
+    """Raised when SERVICES.toml service or slot resolution fails.
+
+    Covers unknown backend keys, required-api-key-env mismatches, and
+    bound slots whose declared env var is missing, empty, or
+    whitespace-only.
+    """
+
+
+class ModelBackendConfigError(PipelineError):
+    """Raised when a :class:`ModelBackend` receives an invalid runtime value
+    (e.g. ``request_limit < 1``).
+    """
+
+
+class MalformedModelOutputError(PipelineError):
+    """Raised when a model response could not be parsed into the expected
+    structured form even after the backend's internal retries.
+    """
+
+
+class TransformerConfigError(PipelineError):
+    """Raised when a :class:`TransformerProvider` TOML entry is malformed."""
+
+
+class BackendConfigError(PipelineError):
+    """Raised when a search backend (e.g. Brave) is misconfigured at construction."""
+
+
+class UnknownStageError(PipelineError):
+    """Raised when :func:`pipeline.process.run_pipeline` is asked to run an
+    unknown stage.
+    """
+
+
 class CapabilityMismatchError(PipelineError):
     """A step's declared requirements exceed the assigned agent's capabilities.
 

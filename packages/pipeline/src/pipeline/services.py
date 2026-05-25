@@ -38,14 +38,18 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pipeline.classifier_backends import (
     CLASSIFIER_BACKEND_REGISTRY,
     ClassifierBackend,
 )
+from pipeline.errors import ServiceConfigError
 from pipeline.model_backends import BACKEND_REGISTRY, ModelBackend
 from pipeline.transformer_backend import TransformerProvider, default_auto_provider
+
+if TYPE_CHECKING:
+    from pipeline.transformer_backend import EmbeddingBackend
 
 logger = logging.getLogger(__name__)
 
@@ -118,14 +122,14 @@ def load_services(path: Path | None = None) -> ServiceRegistry:
     2. Read ``backend_cls.required_api_key_env``. If non-None, the
        entry's ``api_key_env`` must match (raises otherwise). This
        shape check fires *before* the backend constructor runs, so
-       the framework's :class:`ValueError` wins over any backend
-       ``__init__`` strictness.
+       the framework's :class:`ServiceConfigError` wins over any
+       backend ``__init__`` strictness.
     3. Read the env var (may be unset; no error here).
     4. Construct the backend.
     5. Record the env var name in ``api_key_envs``.
 
     Raises ``FileNotFoundError`` if the config file is not found.
-    Raises ``ValueError`` for unknown backend types and for
+    Raises :class:`ServiceConfigError` for unknown backend types and for
     ``required_api_key_env`` mismatches.
     """
     if path is None:
@@ -148,7 +152,7 @@ def load_services(path: Path | None = None) -> ServiceRegistry:
         # (1) Resolve the backend class.
         backend_key = svc.get("backend")
         if backend_key not in BACKEND_REGISTRY:
-            raise ValueError(
+            raise ServiceConfigError(
                 f"Service '{name}' declares backend '{backend_key}' "
                 f"which is not in the registry. "
                 f"Available: {sorted(BACKEND_REGISTRY)}"
@@ -180,7 +184,7 @@ def load_services(path: Path | None = None) -> ServiceRegistry:
         # name. Reject mismatches before constructing the backend.
         required = backend_cls.required_api_key_env
         if required is not None and api_key_env != required:
-            raise ValueError(
+            raise ServiceConfigError(
                 f"Service '{name}': backend='{backend_key}' requires "
                 f"api_key_env='{required}' (got {api_key_env!r}). "
                 f"This backend reads {required} from the environment "
@@ -253,7 +257,7 @@ def resolve_slots(
 
     Raises ``KeyError`` if a slot references a service name that
     doesn't exist in ``registry.services``.
-    Raises ``ValueError`` if a bound service's declared
+    Raises :class:`ServiceConfigError` if a bound service's declared
     ``api_key_env`` env var is missing, empty, or whitespace-only.
     """
     merged = dict(registry.defaults)
@@ -273,7 +277,7 @@ def resolve_slots(
         if env_var:
             value = os.environ.get(env_var, "").strip()
             if not value:
-                raise ValueError(
+                raise ServiceConfigError(
                     f"Slot '{slot_name}' is bound to service "
                     f"'{service_name}', which requires env var "
                     f"'{env_var}'.\n"
@@ -318,7 +322,7 @@ def load_classifiers(
     entirely. The returned dicts are empty in that case.
 
     Raises ``FileNotFoundError`` if the config file is not found.
-    Raises ``ValueError`` for unknown backend types.
+    Raises :class:`ServiceConfigError` for unknown backend types.
     """
     if path is None:
         path = _find_services_toml()
@@ -341,7 +345,7 @@ def load_classifiers(
     for name, cfg in classifiers_config.items():
         backend_key = cfg.get("backend")
         if backend_key not in CLASSIFIER_BACKEND_REGISTRY:
-            raise ValueError(
+            raise ServiceConfigError(
                 f"Classifier '{name}' declares backend '{backend_key}' "
                 f"which is not in the registry. "
                 f"Available: {sorted(CLASSIFIER_BACKEND_REGISTRY)}"
@@ -369,7 +373,7 @@ def load_embedders(
     path: Path | None = None,
     *,
     provider: TransformerProvider | None = None,
-) -> tuple[dict[str, "EmbeddingBackend"], dict[str, str]]:
+) -> tuple[dict[str, EmbeddingBackend], dict[str, str]]:
     """Parse SERVICES.toml ``[embedders.*]``, build EmbeddingBackend instances.
 
     Parallel to :func:`load_classifiers`. Returns ``(embedders, defaults)``
@@ -404,7 +408,7 @@ def load_embedders(
     for name, cfg in embedders_config.items():
         model_id = cfg.get("model", "")
         if not model_id:
-            raise ValueError(
+            raise ServiceConfigError(
                 f"Embedder '{name}' is missing required 'model' field."
             )
         embedders[name] = EmbeddingBackend(model_id, provider)
@@ -431,8 +435,8 @@ def load_transformer_providers(
     :func:`resolve_transformer_provider` will still land on ``"auto"``.
 
     Raises ``FileNotFoundError`` if the config file is not found.
-    Raises ``ValueError`` for malformed entries (missing required
-    keys under ``mode = "explicit"``).
+    Raises :class:`pipeline.errors.TransformerConfigError` for malformed
+    entries (missing required keys under ``mode = "explicit"``).
     """
     if path is None:
         path = _find_services_toml()

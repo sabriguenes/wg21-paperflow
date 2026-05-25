@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from paperstore import SqliteBackend
 
+from tomd.errors import CheckContentArgError
 from tomd.lib.check_content import (
     MisalignedRegion,
     _dedup_regions,
@@ -304,7 +305,7 @@ class TestIntegrationCoverage:
         src.rename(new_path)
         store.record_source("P0004", new_path)
         store.write_paper_md("P0004", "body\n")
-        with pytest.raises(ValueError):
+        with pytest.raises(CheckContentArgError):
             check_paper_content("P0004", store)
 
 

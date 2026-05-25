@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from paperstore.backend import ClearedSet, PaperRow, StorageBackend, parse_authors_raw
 from paperstore.errors import (
+    InvalidPaperstoreUriError,
+    InvalidSuffixError,
     MissingAdvocatusError,
     MissingAgoraError,
     MissingMailingIndexError,
@@ -69,6 +71,8 @@ __all__ = [
     "MissingAdvocatusError",
     "MissingAgoraError",
     "MissingMailingIndexError",
+    "InvalidPaperstoreUriError",
+    "InvalidSuffixError",
     "from_uri",
     "default_workspace_dir",
     "WORKSPACE_ENV_VAR",

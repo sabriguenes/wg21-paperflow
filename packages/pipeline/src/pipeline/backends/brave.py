@@ -18,6 +18,7 @@ import time
 
 import httpx
 
+from pipeline.errors import BackendConfigError
 from pipeline.session import SearchBackend, SearchResponse, SearchResult
 
 logger = logging.getLogger(__name__)
@@ -59,8 +60,9 @@ class BraveBackend(SearchBackend):
     own ``httpx.AsyncClient`` for persistent connection pooling and a
     token-bucket rate limiter (50 req/s) for budget protection.
 
-    Reads ``BRAVE_API_KEY`` from the environment. Raises ``ValueError``
-    immediately if the key is missing.
+    Reads ``BRAVE_API_KEY`` from the environment. Raises
+    :class:`pipeline.errors.BackendConfigError` immediately if the key
+    is missing.
     """
 
     name = "brave"
@@ -68,7 +70,7 @@ class BraveBackend(SearchBackend):
     def __init__(self) -> None:
         key = os.environ.get("BRAVE_API_KEY", "")
         if not key:
-            raise ValueError(
+            raise BackendConfigError(
                 "BRAVE_API_KEY environment variable is required. "
                 "Get a key at https://api-dashboard.search.brave.com/register"
             )

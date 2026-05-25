@@ -17,6 +17,7 @@ import pytest
 
 from paperstore import SqliteBackend
 from paperstore.errors import (
+    InvalidSuffixError,
     MissingAdvocatusError,
     MissingMailingIndexError,
     MissingMetaError,
@@ -155,7 +156,7 @@ def test_context_manager_closes_connection(tmp_path: Path):
 
 
 def test_put_source_rejects_suffix_without_dot(store: SqliteBackend):
-    with pytest.raises(ValueError, match=r"must start with '\.'"):
+    with pytest.raises(InvalidSuffixError, match=r"must start with '\.'"):
         store.put_source("P1", b"x", suffix="pdf")
 
 
@@ -713,3 +714,142 @@ def test_upsert_year_skips_mailing_label_when_absent(store: SqliteBackend):
     """Papers without mailing_label don't insert empty labels."""
     store.upsert_year("2026", [{"paper_id": "P1", "mailing_date": "2026-01"}])
     assert store.get_mailing_label("2026-01") == ""
+
+
+_ASSAY_TABLES = (
+    "assay_claims", "assay_evidence", "assay_concessions",
+    "assay_breadcrumbs", "assay_thesis", "assay_findings",
+    "assay_asks", "assay_references", "assay_strengths",
+    "assay_checklist", "assay_compounds", "assay_synthesis",
+)
+
+
+def _seed_assay_rows(store: SqliteBackend, pid: str) -> None:
+    """Insert one row into each assay_* table for ``pid`` via raw SQL.
+
+    Bypasses the typed writers so this test stays focused on the DELETE
+    side of the contract. Each table gets enough columns to satisfy its
+    NOT NULL constraints.
+    """
+    with store._conn:
+        store._conn.execute(
+            "INSERT INTO assay_claims (paper_id, uid, loc_line, quote) "
+            "VALUES (?, ?, ?, ?)", (pid, 1, 10, "c"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_evidence (paper_id, uid, loc_line, quote) "
+            "VALUES (?, ?, ?, ?)", (pid, 1, 11, "e"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_concessions (paper_id, uid, loc_line, quote) "
+            "VALUES (?, ?, ?, ?)", (pid, 1, 12, "conc"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_breadcrumbs "
+            "(paper_id, uid, chunk_index, loc_line, gap) "
+            "VALUES (?, ?, ?, ?, ?)", (pid, 1, 0, 13, "gap"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_thesis (paper_id, central_claim) "
+            "VALUES (?, ?)", (pid, "thesis"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_findings (paper_id, uid, title, lens, severity) "
+            "VALUES (?, ?, ?, ?, ?)", (pid, 1, "t", "design", "minor"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_asks (paper_id, uid, target, quote, type) "
+            "VALUES (?, ?, ?, ?, ?)", (pid, 1, "committee", "q", "poll"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_references (paper_id, uid, ref_label) "
+            "VALUES (?, ?, ?)", (pid, 1, "P9999R0"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_strengths (paper_id, uid, title) "
+            "VALUES (?, ?, ?)", (pid, 1, "strong"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_checklist (paper_id, item_id, name) "
+            "VALUES (?, ?, ?)", (pid, "item1", "name"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_compounds (paper_id, uid, name) "
+            "VALUES (?, ?, ?)", (pid, 1, "compound"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_synthesis (paper_id, verdict) "
+            "VALUES (?, ?)", (pid, "neutral"),
+        )
+
+
+def _count(store: SqliteBackend, table: str, pid: str) -> int:
+    return store._conn.execute(
+        f"SELECT COUNT(*) FROM {table} WHERE paper_id = ?", (pid,)
+    ).fetchone()[0]
+
+
+def test_clear_downstream_outputs_wipes_assay_rows(store: SqliteBackend):
+    """``clear_downstream_outputs`` deletes every ``assay_*`` row for the
+    target paper alongside the ``.assay.md`` report file. Stored
+    ``loc.line`` offsets go stale on any markdown content change, so
+    leaving them in place after a re-convert would cause a subsequent
+    ``paperflow assay --rerender`` to point at the wrong lines.
+    """
+    store.upsert_year("2026", [{"paper_id": "P1"}, {"paper_id": "P2"}])
+    store.write_assay_md("P1", "# assay\n")
+    _seed_assay_rows(store, "P1")
+    _seed_assay_rows(store, "P2")
+
+    for table in _ASSAY_TABLES:
+        assert _count(store, table, "P1") == 1
+        assert _count(store, table, "P2") == 1
+
+    cleared = store.clear_downstream_outputs("P1")
+    assert cleared.assay is True
+
+    for table in _ASSAY_TABLES:
+        assert _count(store, table, "P1") == 0, (
+            f"{table} not wiped for P1"
+        )
+        assert _count(store, table, "P2") == 1, (
+            f"{table} unexpectedly wiped for unrelated paper P2"
+        )
+
+
+def test_clear_downstream_outputs_skips_assay_when_path_unset(
+    store: SqliteBackend,
+):
+    """Without an ``assay_path``, ``clear_downstream_outputs`` reports
+    ``assay=False`` and the wipe is gated by ``meta.assay_path`` (matching
+    the advocatus/agora pattern). Orphan rows are uncommon in practice
+    but left alone here.
+    """
+    store.upsert_year("2026", [{"paper_id": "P1"}])
+    _seed_assay_rows(store, "P1")
+
+    cleared = store.clear_downstream_outputs("P1")
+    assert cleared.advocatus is False
+    assert cleared.agora is False
+    assert cleared.assay is False
+
+    for table in _ASSAY_TABLES:
+        assert _count(store, table, "P1") == 1
+
+
+def test_clear_downstream_outputs_no_op_for_unknown_paper(
+    store: SqliteBackend,
+):
+    """An unknown paper id returns an empty ClearedSet and leaves
+    every assay_* table untouched."""
+    store.upsert_year("2026", [{"paper_id": "P1"}])
+    store.write_assay_md("P1", "# assay\n")
+    _seed_assay_rows(store, "P1")
+
+    cleared = store.clear_downstream_outputs("P_DOES_NOT_EXIST")
+    assert cleared.advocatus is False
+    assert cleared.agora is False
+    assert cleared.assay is False
+
+    for table in _ASSAY_TABLES:
+        assert _count(store, table, "P1") == 1

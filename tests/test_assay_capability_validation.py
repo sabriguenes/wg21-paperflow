@@ -1,20 +1,31 @@
 #
-# Copyright (c) 2026 Dmitriy Chukhin (dmitriy@lincolnloop.com)
+# Copyright (c) 2026 Greg Kaleka (greg@gregkaleka.com)
 #
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
+# Official repository: https://github.com/cppalliance/wg21-paperflow
+#
 
 """Cross-package integration tests for capability validation.
 
-Drives through the public `dissect.pipeline.build_dissect_pipeline` and
-verifies that:
+Drives through the public ``assay.pipeline.assay_paper`` entry point
+and through ``pipeline.build_pipeline`` + ``pipeline.validate_capabilities``
+directly to verify that:
 
 - Misbound slots fail before any LLM call.
-- `stop_after` correctly scopes which steps are checked.
-- `validate_capabilities` and `dispatch` agree on what `stop_after` means.
-- `dissect_paper` fails fast end-to-end when SERVICES.toml resolves to a
+- ``stop_after`` correctly scopes which steps are checked.
+- ``validate_capabilities`` and ``dispatch`` agree on what ``stop_after``
+  means.
+- ``assay_paper`` fails fast end-to-end when SERVICES.toml resolves to a
   toolless tool slot.
+
+Ports the dissect-era ``test_dissect_capability_validation.py`` to the
+assay pipeline. The dissect→assay rename had silently dropped the
+``validate_capabilities`` call from ``assay_paper``; this test exists in
+tandem with restoring that call so the documented invariant
+(``packages/pipeline/src/pipeline/CLAUDE.md``: "called by each pipeline's
+entry function right after ``build_pipeline``") stays enforced.
 """
 
 from __future__ import annotations
@@ -24,18 +35,19 @@ from typing import Any
 
 import pytest
 
+from assay import pipeline as assay_pipeline_mod
 from pipeline import (
     AgentBackend,
     CapabilityMismatchError,
     StepContext,
+    build_pipeline,
     dispatch,
     load_sections,
     validate_capabilities,
 )
 from pipeline.model_backends import DEFAULT_REQUEST_LIMIT, ModelBackend
 from pipeline.prompt import StepHooks, StepMeta, StepSpec
-
-from dissect.pipeline import build_dissect_pipeline
+from pipeline.services import ServiceRegistry
 
 
 class _ToolsCapableStub(ModelBackend):
@@ -86,8 +98,8 @@ class _ToollessStub(ModelBackend):
         return output_type()
 
 
-def _dissect_sections() -> dict[str, str]:
-    return dict(load_sections("dissect", "dissect.md"))
+def _assay_sections() -> dict[str, str]:
+    return dict(load_sections("assay", "assay.md"))
 
 
 def _step_numbers_in(msg: str) -> set[int]:
@@ -99,45 +111,61 @@ def _step_numbers_in(msg: str) -> set[int]:
     return nums
 
 
-def test_build_dissect_pipeline_rejects_toolless_tool_slot():
+def _assay_hooks_with_bad_tool_slot(
+    tool_service: str, tool_backend: ModelBackend,
+) -> dict[str, StepHooks]:
+    """Build the assay hook table with a deliberately misbound tool slot.
+
+    Mirrors ``assay.pipeline._build_hooks`` step-for-step but with the
+    research agent forced onto ``tool_backend`` (which is toolless in
+    the negative cases). Fast and default agents stay tools-capable so
+    only the tool slot's mismatch surfaces in the rendered table.
+    """
     capable = _ToolsCapableStub()
+    extraction_agent = AgentBackend(
+        capable, slot_name="fast", service_name="svc-fast",
+    )
+    synthesis_agent = AgentBackend(
+        capable, slot_name="default", service_name="svc-default",
+    )
+    research_agent = AgentBackend(
+        tool_backend, slot_name="tool", service_name=tool_service,
+    )
+    return assay_pipeline_mod._build_hooks(
+        extraction_agent, synthesis_agent, research_agent,
+    )
+
+
+def test_assay_pipeline_rejects_toolless_tool_slot():
     toolless = _ToollessStub()
-    slot_bindings = {
-        "fast": ("svc-fast", capable),
-        "default": ("svc-default", capable),
-        "tool": ("b200-r1", toolless),
-    }
+    hooks = _assay_hooks_with_bad_tool_slot("b200-r1", toolless)
+    pipeline = build_pipeline(_assay_sections(), hooks)
+
     with pytest.raises(CapabilityMismatchError) as exc_info:
-        build_dissect_pipeline(_dissect_sections(), slot_bindings, {})
+        validate_capabilities(pipeline)
     msg = str(exc_info.value)
     nums = _step_numbers_in(msg)
-    assert 11 in nums
-    assert 12 in nums
+    # Step 8 (Research) is the only step that declares Tools in assay.md;
+    # it is the only one that should appear in the mismatch table.
+    assert 8 in nums
     assert "tool" in msg
     assert "b200-r1" in msg
     assert "documentation-only" in msg
-    # The bad slot is the tool slot only; tools-capable agents on fast
-    # and default with thinking_budget should not appear in the
-    # mismatch listing.
-    assert 2 not in nums
-    assert 9 not in nums
+    # Fast / default slots are tools-capable and must not appear.
+    assert 4 not in nums
+    assert 5 not in nums
+    assert 7 not in nums
 
 
-def test_build_dissect_pipeline_with_stop_after_skips_out_of_scope_failures():
-    capable = _ToolsCapableStub()
+def test_assay_pipeline_with_stop_after_skips_out_of_scope_failures():
     toolless = _ToollessStub()
-    slot_bindings = {
-        "fast": ("svc-fast", capable),
-        "default": ("svc-default", capable),
-        "tool": ("b200-r1", toolless),
-    }
-    # Steps 11 and 12 are out of scope when stop_after=5; the misbound
-    # tool slot is never reached by dispatch, so validate must not
-    # punish the user for it.
-    pipeline, _ = build_dissect_pipeline(
-        _dissect_sections(), slot_bindings, {}, stop_after=5,
-    )
-    assert len(pipeline) >= 6  # sanity: pipeline survived construction
+    hooks = _assay_hooks_with_bad_tool_slot("b200-r1", toolless)
+    pipeline = build_pipeline(_assay_sections(), hooks)
+
+    # Step 8 is out of scope when stop_after=5; dispatch will never
+    # reach the misbound tool slot, so validate must not punish the
+    # user for it.
+    validate_capabilities(pipeline, stop_after=5)  # must not raise
 
 
 def _parity_spec(
@@ -154,7 +182,7 @@ def _parity_spec(
         service_name="bad-svc" if bad else "good-svc",
     )
 
-    async def _noop(state: Any, ctx: StepContext) -> None:
+    async def _noop(state: Any, ctx: StepContext, spec: StepSpec) -> None:
         visited: set[int] = state.setdefault("visited", set())
         visited.add(number)
 
@@ -197,19 +225,20 @@ def test_validate_capabilities_filtering_matches_dispatch_filtering(stop_after):
         validate_capabilities(specs, stop_after=stop_after)
 
 
-def test_dissect_paper_fails_fast_with_bad_service_binding(monkeypatch, tmp_path):
-    # Drive dissect_paper far enough to reach build_dissect_pipeline
-    # but no further. Patches happen at dissect.pipeline.* (the import
-    # alias in the module under test) so a future import-form refactor
-    # would surface here instead of silently neutering the patch.
-    from dissect import pipeline as dissect_pipeline_mod
-    from pipeline.services import ServiceRegistry
-
+def test_assay_paper_fails_fast_with_bad_service_binding(monkeypatch):
+    # Drive assay_paper far enough to reach validate_capabilities but
+    # no further. Patches happen at assay.pipeline.* (the import alias
+    # in the module under test) so a future import-form refactor would
+    # surface here instead of silently neutering the patch.
     capable = _ToolsCapableStub()
     toolless = _ToollessStub()
 
     services = {"good": capable, "bad": toolless}
-    defaults = {"fast": "good", "default": "good", "tool": "bad"}
+    # assay.md's ## Services section declares fast/default/tool/frontier;
+    # all four slots must resolve or resolve_slots raises KeyError.
+    defaults = {
+        "fast": "good", "default": "good", "tool": "bad", "frontier": "good",
+    }
     # Empty api_key_envs opts out of resolve_slots's env-var validation;
     # the stubs do not represent real authenticated services.
     registry = ServiceRegistry(
@@ -217,42 +246,9 @@ def test_dissect_paper_fails_fast_with_bad_service_binding(monkeypatch, tmp_path
     )
 
     monkeypatch.setattr(
-        dissect_pipeline_mod,
+        assay_pipeline_mod,
         "load_services",
         lambda: registry,
-    )
-
-    # The transformer/classifier path runs before build_dissect_pipeline;
-    # neutralize it so the test does not need real models. These names
-    # are imported lazily inside dissect_paper from `pipeline`, so the
-    # patch site is the `pipeline` module itself.
-    import pipeline as pipeline_pkg
-
-    class _StubProvider:
-        name = "stub"
-        device = "cpu"
-        dtype = "fp32"
-        batch_size = 1
-
-    monkeypatch.setattr(
-        pipeline_pkg,
-        "load_transformer_providers",
-        lambda: ({"auto": _StubProvider()}, {}),
-    )
-    monkeypatch.setattr(
-        pipeline_pkg,
-        "resolve_transformer_provider",
-        lambda providers, defaults_, *, override=None: providers["auto"],
-    )
-    monkeypatch.setattr(
-        pipeline_pkg,
-        "load_classifiers",
-        lambda provider=None: ({}, {}),
-    )
-    monkeypatch.setattr(
-        pipeline_pkg,
-        "resolve_classifier_slots",
-        lambda classifiers, defaults_, overrides=None: {},
     )
 
     class _BackendShouldNotBeUsed:
@@ -262,15 +258,24 @@ def test_dissect_paper_fails_fast_with_bad_service_binding(monkeypatch, tmp_path
                 f"fail before any backend access"
             )
 
+    # assay.md's ## Services section pins slots to real backend names
+    # via parse_service_overrides; service_overrides wins (it is
+    # spread last into the merged dict in assay_paper), so we route
+    # the slots onto our stub registry without patching the parser.
     async def _go() -> Any:
-        return await dissect_pipeline_mod.dissect_paper(
-            "P0000R0", _BackendShouldNotBeUsed(),
+        return await assay_pipeline_mod.assay_paper(
+            "P0000R0",
+            _BackendShouldNotBeUsed(),
+            service_overrides={
+                "fast": "good", "default": "good",
+                "tool": "bad", "frontier": "good",
+            },
         )
 
     with pytest.raises(CapabilityMismatchError) as exc_info:
         asyncio.run(_go())
     msg = str(exc_info.value)
-    assert 11 in _step_numbers_in(msg)
+    assert 8 in _step_numbers_in(msg)
     assert "tool" in msg
     assert "bad" in msg
 

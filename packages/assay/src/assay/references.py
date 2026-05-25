@@ -40,7 +40,6 @@ def extract_references(source: str) -> list[RefEntry]:
     Returns one RefEntry per unique paper number, sorted by mention
     count descending.
     """
-    stripped = _LINK_URL_RE.sub("]", source)
     lines = source.splitlines()
 
     paper_lines: dict[str, list[int]] = {}

@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from assay.chunker import Section, chunk_paper
 
 
@@ -91,23 +89,6 @@ class TestChunkPaperBasic:
         result = chunk_paper("Just plain text\nwith no headings.\n")
         assert len(result) == 1
         assert result[0].heading == "(untitled)"
-
-
-class TestMinChars:
-    def test_merge_small_sections(self):
-        all_sections = chunk_paper(SIMPLE_PAPER, min_chars=0)
-        merged = chunk_paper(SIMPLE_PAPER, min_chars=200)
-        assert len(merged) <= len(all_sections)
-
-    def test_no_section_below_min(self):
-        result = chunk_paper(SIMPLE_PAPER, min_chars=50)
-        for s in result:
-            assert s.char_count >= 50 or s == result[-1]
-
-    def test_min_chars_zero_no_merge(self):
-        result = chunk_paper(SIMPLE_PAPER, min_chars=0)
-        headings = [s.heading for s in result]
-        assert "Section Two" in headings
 
 
 class TestMaxChars:

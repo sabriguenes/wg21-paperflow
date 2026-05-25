@@ -35,6 +35,7 @@ import types
 import pytest
 
 from pipeline import transformer_backend as tb
+from pipeline.errors import TransformerConfigError
 from pipeline.transformer_backend import (
     CrossEncoderBackend,
     HFZeroShotBackend,
@@ -161,7 +162,7 @@ def test_from_toml_explicit_uses_declared_values():
 
 
 def test_from_toml_explicit_missing_keys_raises():
-    with pytest.raises(ValueError, match="missing required key"):
+    with pytest.raises(TransformerConfigError, match="missing required key"):
         TransformerProvider.from_toml("bad", {
             "mode": "explicit",
             "device": "cuda",
@@ -170,7 +171,7 @@ def test_from_toml_explicit_missing_keys_raises():
 
 
 def test_from_toml_explicit_bad_device_raises():
-    with pytest.raises(ValueError, match="device must be"):
+    with pytest.raises(TransformerConfigError, match="device must be"):
         TransformerProvider.from_toml("bad", {
             "mode": "explicit",
             "device": "tpu",
@@ -180,7 +181,7 @@ def test_from_toml_explicit_bad_device_raises():
 
 
 def test_from_toml_bad_mode_raises():
-    with pytest.raises(ValueError, match="mode must be"):
+    with pytest.raises(TransformerConfigError, match="mode must be"):
         TransformerProvider.from_toml("bad", {"mode": "magic"})
 
 

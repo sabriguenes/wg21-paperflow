@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from cli.errors import EmptyTargetsError, MixedTargetsError
 from cli.jobs import _validate_targets
 
 
@@ -29,10 +30,10 @@ def test_paper_targets():
 
 
 def test_mixed_raises():
-    with pytest.raises(ValueError, match="mix"):
+    with pytest.raises(MixedTargetsError, match="mix"):
         _validate_targets(["2026", "P3000R5"])
 
 
 def test_empty_raises():
-    with pytest.raises(ValueError):
+    with pytest.raises(EmptyTargetsError):
         _validate_targets([])

@@ -32,6 +32,8 @@ from typing import Any, Callable, ClassVar, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from pipeline.errors import MalformedModelOutputError, ModelBackendConfigError
+
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T", bound=BaseModel)
@@ -91,7 +93,9 @@ def _extract_json(text: str) -> str:
     text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
     start = text.find("{")
     if start < 0:
-        raise ValueError(f"No JSON object found in model response: {text[:200]!r}")
+        raise MalformedModelOutputError(
+            f"No JSON object found in model response: {text[:200]!r}"
+        )
     depth = 0
     for i in range(start, len(text)):
         if text[i] == "{":
@@ -254,7 +258,7 @@ class VllmThinkingBackend(ModelBackend):
                 "Use a tools_capable backend for tool-using steps."
             )
         if request_limit < 1:
-            raise ValueError(
+            raise ModelBackendConfigError(
                 f"request_limit must be >= 1, got {request_limit}"
             )
 
@@ -326,7 +330,11 @@ class VllmThinkingBackend(ModelBackend):
                         f"{json.dumps(result.model_dump(), indent=2, ensure_ascii=False)}\n"
                     )
                 return result
-            except (ValueError, json.JSONDecodeError, ValidationError) as exc:
+            except (
+                MalformedModelOutputError,
+                json.JSONDecodeError,
+                ValidationError,
+            ) as exc:
                 if attempt < max_attempts - 1:
                     logger.warning(
                         "Raw JSON parse failed (attempt %d), retrying: %s",
@@ -341,7 +349,7 @@ class VllmThinkingBackend(ModelBackend):
                         ),
                     })
                     continue
-                raise ValueError(
+                raise MalformedModelOutputError(
                     f"Raw JSON completion failed after {attempt + 1} attempt(s): {exc}\n"
                     f"Content: {content[:500]!r}"
                 ) from exc

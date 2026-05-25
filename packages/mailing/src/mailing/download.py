@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import httpx
 
 from mailing import DEFAULT_USER_AGENT
+from mailing.errors import InvalidSourceUrlError
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def _suffix_from_url(source_url: str) -> str:
     name = Path(urlparse(source_url).path).name.lower()
     suffix = Path(name).suffix
     if suffix not in _ALLOWED_SUFFIXES:
-        raise ValueError(
+        raise InvalidSourceUrlError(
             f"source_url must end with one of {_ALLOWED_SUFFIXES}: {source_url!r}"
         )
     # Normalize .htm to .html so get_source_path finds exactly one entry.

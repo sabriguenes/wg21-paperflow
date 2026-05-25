@@ -51,6 +51,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Literal
 
+from pipeline.errors import TransformerConfigError
+
 logger = logging.getLogger(__name__)
 
 
@@ -129,12 +131,13 @@ class TransformerProvider:
           ``max_length`` / ``executor_workers`` cap the detected
           values.
         - ``"explicit"`` uses the declared ``device`` / ``dtype`` /
-          ``batch_size`` verbatim. Missing keys raise ``ValueError``
-          at load time, not at first inference.
+          ``batch_size`` verbatim. Missing keys raise
+          :class:`pipeline.errors.TransformerConfigError` at load time,
+          not at first inference.
         """
         mode = raw.get("mode", "auto")
         if mode not in ("auto", "explicit"):
-            raise ValueError(
+            raise TransformerConfigError(
                 f"Transformer provider '{name}': mode must be 'auto' "
                 f"or 'explicit', got {mode!r}."
             )
@@ -150,7 +153,7 @@ class TransformerProvider:
         # Explicit mode: validate required keys before constructing.
         missing = [k for k in ("device", "dtype", "batch_size") if k not in raw]
         if missing:
-            raise ValueError(
+            raise TransformerConfigError(
                 f"Transformer provider '{name}' (mode=explicit): "
                 f"missing required key(s) {missing}. Explicit providers "
                 f"must declare device, dtype, and batch_size so cloud "
@@ -159,14 +162,14 @@ class TransformerProvider:
 
         device = str(raw["device"])
         if device not in ("cuda", "mps", "cpu"):
-            raise ValueError(
+            raise TransformerConfigError(
                 f"Transformer provider '{name}': device must be 'cuda', "
                 f"'mps', or 'cpu', got {device!r}."
             )
 
         dtype = str(raw["dtype"])
         if dtype not in ("bf16", "fp16", "fp32"):
-            raise ValueError(
+            raise TransformerConfigError(
                 f"Transformer provider '{name}': dtype must be 'bf16', "
                 f"'fp16', or 'fp32', got {dtype!r}."
             )

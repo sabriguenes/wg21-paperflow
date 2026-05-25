@@ -29,6 +29,7 @@ from pathlib import Path
 
 import httpx
 
+from cli.errors import EmptyTargetsError, MixedTargetsError
 from paperstore import parse_authors_raw
 from paperstore.backend import PaperRow, StorageBackend
 from paperstore.errors import (
@@ -50,11 +51,11 @@ DEFAULT_DOWNLOAD_CONCURRENCY = 8
 def _validate_targets(targets: list[str]) -> str:
     """Return the target type: 'all', 'years', or 'papers'.
 
-    Raises ValueError if targets are empty, mix years and paper IDs, or
-    contain an unrecognized format.
+    Raises :class:`EmptyTargetsError` if targets are empty, or
+    :class:`MixedTargetsError` if years and paper IDs are mixed.
     """
     if not targets:
-        raise ValueError("At least one target is required.")
+        raise EmptyTargetsError("At least one target is required.")
     if targets == ["all"]:
         return "all"
     # Check all are years (4 digits) or all are paper IDs.
@@ -63,7 +64,7 @@ def _validate_targets(targets: list[str]) -> str:
         return "years"
     if not any(are_years):
         return "papers"
-    raise ValueError(
+    raise MixedTargetsError(
         "Cannot mix years and paper IDs in one command. "
         f"Got: {targets!r}"
     )

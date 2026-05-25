@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from paperstore.backend import StorageBackend
+from paperstore.errors import InvalidPaperstoreUriError
 from paperstore.sqlite_backend import SqliteBackend
 
 WORKSPACE_ENV_VAR = "WG21_DATA_DIR"
@@ -45,7 +46,7 @@ def from_uri(
     """
     if uri is None or uri == "":
         if workspace_dir is None:
-            raise ValueError(
+            raise InvalidPaperstoreUriError(
                 "paperstore.from_uri requires workspace_dir when uri is None or empty "
                 f"(got uri={uri!r}, workspace_dir=None)."
             )
@@ -53,7 +54,7 @@ def from_uri(
     parsed = urlparse(uri)
     if parsed.scheme == "file":
         if parsed.netloc and parsed.netloc.lower() != "localhost":
-            raise ValueError(
+            raise InvalidPaperstoreUriError(
                 "paperstore.from_uri: file:// URIs must have an empty or "
                 f"'localhost' authority (uri={uri!r})."
             )
@@ -62,12 +63,12 @@ def from_uri(
         # for unencoded paths.
         path: Path | str | None = url2pathname(parsed.path) if parsed.path else workspace_dir
         if not path:
-            raise ValueError(
+            raise InvalidPaperstoreUriError(
                 f"paperstore.from_uri: file:// URI has no path and no workspace_dir "
                 f"fallback (uri={uri!r})."
             )
         return SqliteBackend(path)
-    raise ValueError(
+    raise InvalidPaperstoreUriError(
         f"paperstore.from_uri: unsupported URI scheme (uri={uri!r}); "
         "only None, '', and file:// are recognized."
     )

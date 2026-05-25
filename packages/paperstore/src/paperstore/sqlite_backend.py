@@ -43,6 +43,7 @@ from paperstore.extract_rows import (
     QuestionRow,
 )
 from paperstore.errors import (
+    InvalidSuffixError,
     MissingAdvocatusError,
     MissingAgoraError,
     MissingMailingIndexError,
@@ -740,7 +741,7 @@ class SqliteBackend(StorageBackend):
     def put_source(self, paper_id: str, content: bytes, *, suffix: str) -> Path:
         """Write source bytes atomically and record the path in the DB."""
         if not suffix.startswith("."):
-            raise ValueError(
+            raise InvalidSuffixError(
                 f"put_source: suffix must start with '.' (got {suffix!r})"
             )
         pid = paper_id.strip().upper()
@@ -1041,15 +1042,21 @@ class SqliteBackend(StorageBackend):
 
         advocatus_present = bool(meta.advocatus_path)
         agora_present = bool(meta.agora_path)
+        assay_present = bool(meta.assay_path)
 
         if advocatus_present:
             self.clear_advocatus(pid)
         if agora_present:
             self.clear_agora(pid)
+        if assay_present:
+            # clear_assay also wipes the 12 assay_* tables, whose loc_line
+            # offsets would otherwise point at stale lines after re-convert.
+            self.clear_assay(pid)
 
         return ClearedSet(
             advocatus=advocatus_present,
             agora=agora_present,
+            assay=assay_present,
         )
 
     # ---- reads ------------------------------------------------------------

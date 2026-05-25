@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from paperstore import (
+    InvalidPaperstoreUriError,
     MissingMailingIndexError,
     MissingMetaError,
     MissingPaperMdError,
@@ -89,7 +90,7 @@ def test_from_uri_file_and_none(tmp_path: Path):
 
 
 def test_from_uri_rejects_unsupported_scheme(tmp_path: Path):
-    with pytest.raises(ValueError, match="unsupported URI scheme"):
+    with pytest.raises(InvalidPaperstoreUriError, match="unsupported URI scheme"):
         from_uri("postgres://localhost/x", workspace_dir=tmp_path)
 
 
@@ -97,7 +98,7 @@ def test_from_uri_file_rejects_non_localhost_authority(tmp_path: Path):
     # Inject an authority into the canonical empty-authority URI so the
     # resulting string is well-formed on both POSIX and Windows.
     bad_uri = tmp_path.as_uri().replace("file://", "file://example.com", 1)
-    with pytest.raises(ValueError, match="empty or 'localhost' authority"):
+    with pytest.raises(InvalidPaperstoreUriError, match="empty or 'localhost' authority"):
         from_uri(bad_uri)
 
 

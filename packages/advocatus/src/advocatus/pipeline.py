@@ -862,7 +862,7 @@ async def advocatus_paper(
     pipeline = build_pipeline(secs, hooks)
 
     try:
-        meta = await asyncio.to_thread(backend.get_meta, pid)
+        await asyncio.to_thread(backend.get_meta, pid)
     except MissingMetaError as exc:
         raise PaperNotFoundError(
             f"Paper '{pid}' not found in paperstore. "

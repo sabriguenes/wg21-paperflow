@@ -17,16 +17,22 @@ from pipeline.classifier_backends import (
     ZeroShotV2Backend,
 )
 from pipeline.errors import (
+    BackendConfigError,
     CapabilityMismatchError,
     HookMismatchError,
+    MalformedModelOutputError,
     MissingMetadataError,
     MissingSystemPromptError,
+    ModelBackendConfigError,
     PaperNotConvertedError,
     PaperNotFoundError,
     PipelineError,
     PromptFileError,
+    ServiceConfigError,
     StepError,
+    TransformerConfigError,
     TransientStepError,
+    UnknownStageError,
     ValidationStepError,
 )
 from pipeline.markdown import extract_code_blocks, sanitize_md, sections
@@ -81,13 +87,20 @@ from pipeline.validate import validate_capabilities
 
 __all__ = [
     "AgentBackend",
+    "BackendConfigError",
     "CapabilityMismatchError",
+    "MalformedModelOutputError",
+    "ModelBackendConfigError",
+    "ServiceConfigError",
+    "TransformerConfigError",
+    "UnknownStageError",
     "CLASSIFIER_BACKEND_REGISTRY",
     "ClassifierBackend",
     "CrossEncoderBackend",
     "default_auto_provider",
     "EmbeddingBackend",
     "ensure_paper_md",
+    "extract_code_blocks",
     "HFZeroShotBackend",
     "load_classifiers",
     "load_transformer_providers",

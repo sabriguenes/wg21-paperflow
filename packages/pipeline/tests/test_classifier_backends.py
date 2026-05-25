@@ -26,6 +26,7 @@ from pipeline.classifier_backends import (
     NliCrossEncoderBackend,
     ZeroShotV2Backend,
 )
+from pipeline.errors import ServiceConfigError
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +345,7 @@ model = "x"
 [classifier_defaults]
 selector = "weird"
 """)
-    with pytest.raises(ValueError, match="no_such_backend"):
+    with pytest.raises(ServiceConfigError, match="no_such_backend"):
         load_classifiers(p)
 
 

@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2026 Dmitriy Chukhin (dmitriy@lincolnloop.com)
+# Copyright (c) 2026 Greg Kaleka (greg@gregkaleka.com)
 #
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,18 +7,26 @@
 # Official repository: https://github.com/cppalliance/wg21-paperflow
 #
 
-"""Tests for the convert batch-confirmation gate and end-of-batch summaries.
+"""Tests for the convert batch-confirmation gate and end-of-batch summaries
+in ``cli._process.run_process_command``.
 
-Plan section 3.1: when a multi-paper convert invocation would
-invalidate downstream artifacts, the CLI prompts the user once
-before doing any work. ``--yes`` skips the prompt; a non-TTY
-invocation skips it (so scripts and CI don't hang); single-paper
-invocations skip it (deliberate user action).
+When a multi-paper convert invocation would invalidate downstream
+artifacts, the CLI prompts the user once before doing any work.
+``--yes`` skips the prompt; a non-TTY invocation skips it (so scripts
+and CI don't hang); single-paper invocations skip it (deliberate user
+action).
 
 The end-of-batch summary block prints two independent reports:
 truncation (papers that hit the 20-image cap) and invalidation
-(papers whose downstream artifacts were wiped because the
-markdown content changed).
+(papers whose downstream artifacts were wiped because the markdown
+content changed).
+
+Driven through ``run_process_command`` with ``through=2`` so the verb
+resolves to ``"convert"`` and the prompt/summary branches activate.
+``cli.convert.command`` itself routes through ``cli.jobs.run_convert``,
+which does not exercise these branches; ``run_process_command``
+remains the home of the convert-stage gate code that this contract
+covers.
 """
 
 from __future__ import annotations
@@ -69,7 +77,7 @@ def _seed(backend: SqliteBackend, pid: str, *,
         backend.write_agora_json(pid, {"x": 1})
 
 
-def _run_convert(
+def _run(
     backend: SqliteBackend,
     args: argparse.Namespace,
     *,
@@ -77,19 +85,20 @@ def _run_convert(
     stdin_isatty: bool = True,
     stdin_answer: str = "n",
 ) -> int:
-    """Invoke the convert command with a stubbed process_paper.
+    """Invoke run_process_command with a stubbed process_paper.
 
     Patches the stdin TTY check and the ``input()`` builtin so the
-    prompt path is exercised hermetically.
+    prompt path is exercised hermetically. Uses ``through=2`` so the
+    verb resolves to ``"convert"``.
     """
-    from cli.convert import command
+    from cli._process import run_process_command
 
     with (
         patch("pipeline.process_paper", new=fake_process_paper),
         patch("sys.stdin.isatty", return_value=stdin_isatty),
         patch("builtins.input", return_value=stdin_answer),
     ):
-        return command(args, backend)
+        return run_process_command(args, backend, through=2)
 
 
 async def _noop_process_paper(pid, backend, **kwargs):
@@ -107,7 +116,7 @@ def test_single_paper_invocation_skips_prompt(
     _seed(backend, "P1234R0",
           with_md=True, with_advocatus=True)
 
-    rc = _run_convert(
+    rc = _run(
         backend, _stub_args(["P1234R0"]),
         fake_process_paper=_noop_process_paper,
         stdin_answer="n",
@@ -127,7 +136,7 @@ def test_batch_with_no_downstream_skips_prompt(
     _seed(backend, "P1", with_md=True)
     _seed(backend, "P2", with_md=True)
 
-    rc = _run_convert(
+    rc = _run(
         backend, _stub_args(["2026"]),
         fake_process_paper=_noop_process_paper,
     )
@@ -144,7 +153,7 @@ def test_batch_with_downstream_prompts(backend: SqliteBackend, capsys):
     _seed(backend, "P2", with_md=True, with_advocatus=True)
     _seed(backend, "P3", with_md=True)   # no downstream
 
-    rc = _run_convert(
+    rc = _run(
         backend, _stub_args(["2026"]),
         fake_process_paper=_noop_process_paper,
         stdin_answer="n",
@@ -162,7 +171,7 @@ def test_prompt_accepts_y_and_proceeds(backend: SqliteBackend, capsys):
     _seed(backend, "P1", with_md=True, with_advocatus=True)
     _seed(backend, "P2", with_md=True, with_advocatus=True)
 
-    rc = _run_convert(
+    rc = _run(
         backend, _stub_args(["2026"]),
         fake_process_paper=_noop_process_paper,
         stdin_answer="y",
@@ -178,7 +187,7 @@ def test_yes_flag_skips_prompt(backend: SqliteBackend, capsys):
     _seed(backend, "P1", with_md=True, with_advocatus=True)
     _seed(backend, "P2", with_md=True, with_advocatus=True)
 
-    rc = _run_convert(
+    rc = _run(
         backend, _stub_args(["2026"], yes=True),
         fake_process_paper=_noop_process_paper,
         stdin_answer="n",   # ignored
@@ -195,7 +204,7 @@ def test_non_tty_skips_prompt(backend: SqliteBackend, capsys):
     _seed(backend, "P1", with_md=True, with_advocatus=True)
     _seed(backend, "P2", with_md=True, with_advocatus=True)
 
-    rc = _run_convert(
+    rc = _run(
         backend, _stub_args(["2026"]),
         fake_process_paper=_noop_process_paper,
         stdin_isatty=False,
@@ -212,7 +221,7 @@ def test_keep_downstream_skips_prompt(backend: SqliteBackend, capsys):
     _seed(backend, "P1", with_md=True, with_advocatus=True)
     _seed(backend, "P2", with_md=True, with_advocatus=True)
 
-    rc = _run_convert(
+    rc = _run(
         backend, _stub_args(["2026"], keep_downstream=True),
         fake_process_paper=_noop_process_paper,
         stdin_answer="n",
@@ -243,7 +252,7 @@ def test_truncation_summary_lists_capped_papers(
             ),
         )
 
-    _run_convert(backend, _stub_args(["2026"]), fake_process_paper=fake)
+    _run(backend, _stub_args(["2026"]), fake_process_paper=fake)
 
     out = capsys.readouterr().out
     assert "convert: 2 paper(s) truncated to the 20-image cap:" in out
@@ -267,7 +276,7 @@ def test_invalidation_summary_lists_cleared_pipelines(
             ),
         )
 
-    _run_convert(
+    _run(
         backend, _stub_args(["2026"], yes=True), fake_process_paper=fake,
     )
 
@@ -293,7 +302,7 @@ def test_no_summary_when_nothing_to_report(
             convert_report=ConvertReport(),  # all zeros
         )
 
-    _run_convert(backend, _stub_args(["2026"]), fake_process_paper=fake)
+    _run(backend, _stub_args(["2026"]), fake_process_paper=fake)
 
     out = capsys.readouterr().out
     assert "truncated to" not in out

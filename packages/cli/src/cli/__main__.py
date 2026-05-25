@@ -26,6 +26,7 @@ import cli.advocatus as _advocatus_mod
 import cli.agora as _agora_mod
 import cli.assay as _assay_mod
 import cli.status as _status_mod
+from cli.errors import CliError, InvalidTargetError
 from cli.logutil import configure_console_logging
 from cli.targets import MONTH_RE
 from paperstore import WORKSPACE_ENV_VAR, SqliteBackend
@@ -182,16 +183,16 @@ def _add_flags(p: argparse.ArgumentParser, verb: str) -> None:
 
 
 def _classify_target(t: str) -> str:
-    """Return 'paper', 'year', 'month', or raise ValueError."""
+    """Return 'paper', 'year', 'month', or raise :class:`InvalidTargetError`."""
     if _PAPER_ID_RE.match(t):
         return "paper"
     if t.isdigit() and len(t) == 4:
         if int(t) >= 2011:
             return "year"
-        raise ValueError(f"No WG21 mailings before 2011 (got {t}).")
+        raise InvalidTargetError(f"No WG21 mailings before 2011 (got {t}).")
     if MONTH_RE.match(t):
         return "month"
-    raise ValueError(
+    raise InvalidTargetError(
         f"Unrecognized target {t!r}. "
         "Expected a paper ID (P4003R2), year (2026), or year-month (2026-01)."
     )
@@ -206,7 +207,7 @@ def _validate_targets(verb: str, targets: list[str]) -> None:
     for t in targets:
         try:
             kinds.add(_classify_target(t))
-        except ValueError as exc:
+        except CliError as exc:
             print(f"paperflow {verb}: {exc}", file=sys.stderr)
             sys.exit(1)
 

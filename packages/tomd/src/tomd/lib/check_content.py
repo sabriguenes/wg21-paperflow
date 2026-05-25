@@ -53,6 +53,7 @@ import mistune
 from paperstore import SqliteBackend
 from paperstore.backend import StorageBackend
 from paperstore.errors import MissingPaperMdError, MissingSourceError
+from tomd.errors import CheckContentArgError
 from tomd.lib.html.extract import detect_generator, strip_boilerplate
 
 __all__ = [
@@ -540,7 +541,8 @@ def check_paper_content(
     Raises:
         paperstore.MissingSourceError: if ``<pid>.pdf|.html`` not staged.
         paperstore.MissingPaperMdError: if ``<pid>.md`` not written.
-        ValueError: if the source suffix is neither ``.pdf`` nor ``.html``.
+        tomd.CheckContentArgError: if the source suffix is neither
+            ``.pdf`` nor ``.html``.
     """
     source_path = backend.get_source_path(pid)
     md_text = backend.get_paper_md(pid)
@@ -551,7 +553,7 @@ def check_paper_content(
     elif suffix == ".html":
         src_stream = _extract_html_stream(source_path)
     else:
-        raise ValueError(
+        raise CheckContentArgError(
             f"Unsupported source suffix {suffix!r} for {pid}; expected .pdf or .html."
         )
 

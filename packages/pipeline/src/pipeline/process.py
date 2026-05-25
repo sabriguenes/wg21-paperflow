@@ -27,6 +27,7 @@ from typing import Any
 from paperstore.backend import StorageBackend
 from paperstore.stages import STAGE_NAMES, STAGES, failed_stage
 
+from pipeline.errors import UnknownStageError
 from pipeline.postconditions import (
     ConvertReport,
     ProcessResult,
@@ -230,7 +231,7 @@ async def _run_stage(
     elif stage == STAGES["herald"]:
         pass
     else:
-        raise ValueError(f"Unknown stage {stage}")
+        raise UnknownStageError(f"Unknown stage {stage}")
 
 
 async def _stage_download(pid: str, backend: StorageBackend, *, on_progress: object = None) -> None:

@@ -284,7 +284,11 @@ def _make_claim(text="claim", section="intro", question="why?", line=1, uid=1):
 def test_cleared_set_truthiness_and_names():
     assert not ClearedSet()
     assert bool(ClearedSet(advocatus=True))
+    assert bool(ClearedSet(assay=True))
     assert ClearedSet(advocatus=True, agora=True).names() == ["advocatus", "agora"]
+    assert ClearedSet(
+        advocatus=True, agora=True, assay=True,
+    ).names() == ["advocatus", "agora", "assay"]
 
 
 def test_clear_downstream_outputs_unknown_paper(store: SqliteBackend):
@@ -300,8 +304,9 @@ def test_clear_downstream_outputs_no_artifacts(store: SqliteBackend):
     assert cleared == ClearedSet()
 
 
-def test_clear_downstream_outputs_full_sweep(store: SqliteBackend):
-    """Seed all three pipelines (files + DB rows); ensure the sweep is complete.
+def test_clear_downstream_outputs_full_sweep(store: SqliteBackend, tmp_path):
+    """Seed advocatus, agora, and assay (file + extract rows); ensure the
+    sweep is complete.
 
     Also asserts: paper.md is preserved, image files are preserved.
     """
@@ -312,46 +317,59 @@ def test_clear_downstream_outputs_full_sweep(store: SqliteBackend):
 
     advocatus_path = store.write_advocatus_md(pid, "# Relatio\n")
     agora_path = store.write_agora_json(pid, {"threads": []})
+    assay_path = store.write_assay_md(pid, "# Assay\n")
 
-    store.store_claims(pid, [_make_claim(text="A", uid=1)])
-    store.store_rhetoric(pid, [
-        SimpleNamespace(
-            uid=1, loc=_make_loc(line=5), text="however", section="intro",
-            marker_type="hedge", target="claim", intensity="low",
-        ),
-    ])
-    store.store_paper_citations(pid, [
-        SimpleNamespace(paper_id="P9999R0", count=2),
-    ])
-    store.store_caput_causae(pid, "the thesis")
+    # Seed a row in each assay_* table via raw SQL to bypass the typed
+    # writers. Mirrors the loc.line staleness path the wipe protects.
+    with store._conn:
+        store._conn.execute(
+            "INSERT INTO assay_claims (paper_id, uid, loc_line, quote) "
+            "VALUES (?, ?, ?, ?)", (pid, 1, 10, "c"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_evidence (paper_id, uid, loc_line, quote) "
+            "VALUES (?, ?, ?, ?)", (pid, 1, 11, "e"),
+        )
+        store._conn.execute(
+            "INSERT INTO assay_synthesis (paper_id, verdict) "
+            "VALUES (?, ?)", (pid, "neutral"),
+        )
 
     # Pre-sweep sanity
     assert advocatus_path.exists()
     assert agora_path.exists()
-    assert len(store.get_claims(pid)) == 1
-    assert len(store.get_rhetoric(pid)) == 1
-    assert len(store.get_paper_citations(pid)) == 1
-    assert store.get_caput_causae(pid) is not None
+    assert assay_path.exists()
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM assay_claims WHERE paper_id = ?", (pid,),
+    ).fetchone()[0] == 1
 
     cleared = store.clear_downstream_outputs(pid)
 
-    assert cleared == ClearedSet(advocatus=True, agora=True)
-    assert cleared.names() == ["advocatus", "agora"]
+    assert cleared == ClearedSet(advocatus=True, agora=True, assay=True)
+    assert cleared.names() == ["advocatus", "agora", "assay"]
 
     # Files gone
     assert not advocatus_path.exists()
     assert not agora_path.exists()
+    assert not assay_path.exists()
 
-    # Extract rows gone
-    assert store.get_claims(pid) == []
-    assert store.get_rhetoric(pid) == []
-    assert store.get_paper_citations(pid) == []
-    assert store.get_caput_causae(pid) is None
+    # Assay rows gone
+    for table in (
+        "assay_claims", "assay_evidence", "assay_concessions",
+        "assay_breadcrumbs", "assay_thesis", "assay_findings",
+        "assay_asks", "assay_references", "assay_strengths",
+        "assay_checklist", "assay_compounds", "assay_synthesis",
+    ):
+        n = store._conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE paper_id = ?", (pid,),
+        ).fetchone()[0]
+        assert n == 0, f"{table} not wiped"
 
     # Meta paths cleared
     meta = store.get_meta(pid)
     assert meta.advocatus_path == ""
     assert meta.agora_path == ""
+    assert meta.assay_path == ""
 
     # paper.md AND image bytes untouched
     assert md_path.exists() and md_path.read_text(encoding="utf-8") == "# Body\n"

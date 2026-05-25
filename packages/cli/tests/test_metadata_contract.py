@@ -9,6 +9,7 @@ These are pure-function tests; no network, no LLM, no filesystem.
 
 import pytest
 
+from cli.errors import EmptyTargetsError, MixedTargetsError
 from cli.jobs import _validate_targets
 from mailing.scrape import _infer_intent
 
@@ -26,11 +27,11 @@ class TestValidateTargets:
         assert _validate_targets(["P3642R4", "P3700R0"]) == "papers"
 
     def test_mixing_raises(self):
-        with pytest.raises(ValueError, match="mix"):
+        with pytest.raises(MixedTargetsError, match="mix"):
             _validate_targets(["2026", "P3642R4"])
 
     def test_empty_raises(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(EmptyTargetsError):
             _validate_targets([])
 
 

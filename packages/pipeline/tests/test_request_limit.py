@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from pipeline import StepContext
 from pipeline.agents import AgentBackend
+from pipeline.errors import MalformedModelOutputError, ModelBackendConfigError
 from pipeline.model_backends import (
     DEFAULT_REQUEST_LIMIT,
     AnthropicBackend,
@@ -178,10 +179,10 @@ def test_zero_and_negative_request_limit_pass_through_dispatch(hook_value):
     "request_limit,responses,expected_calls,expects_raise",
     [
         (2, ["not json", "{}"], 2, None),
-        (2, ["not json", "not json"], 2, ValueError),
-        (1, ["not json"], 1, ValueError),
+        (2, ["not json", "not json"], 2, MalformedModelOutputError),
+        (1, ["not json"], 1, MalformedModelOutputError),
         (DEFAULT_REQUEST_LIMIT, ["{}"], 1, None),
-        (0, [], 0, ValueError),
+        (0, [], 0, ModelBackendConfigError),
     ],
     ids=[
         "retry-recovers",

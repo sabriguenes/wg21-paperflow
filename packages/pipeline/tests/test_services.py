@@ -25,6 +25,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pipeline.errors import ServiceConfigError
 from pipeline.model_backends import BACKEND_REGISTRY, ModelBackend
 from pipeline.services import ServiceRegistry, load_services, resolve_slots
 
@@ -87,7 +88,7 @@ backend = "anthropic"
 api_key_env = "MY_OWN_KEY"
 model = "claude-test"
 """)
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ServiceConfigError) as exc_info:
         load_services(p)
     msg = str(exc_info.value)
     assert "anthropic" in msg
@@ -122,7 +123,7 @@ backend = "synthetic"
 api_key_env = "WRONG_KEY"
 model = "test"
 """)
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ServiceConfigError) as exc_info:
         load_services(p)
     msg = str(exc_info.value)
     assert "SYNTH_KEY" in msg
@@ -181,7 +182,7 @@ model = "test-model"
 fast = "s1"
 """)
     registry = load_services(p)
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ServiceConfigError) as exc_info:
         resolve_slots(registry)
     msg = str(exc_info.value)
     assert "fast" in msg                  # slot name
@@ -206,7 +207,7 @@ model = "test-model"
 fast = "s1"
 """)
     registry = load_services(p)
-    with pytest.raises(ValueError, match="PAPERFLOW_TEST_KEY"):
+    with pytest.raises(ServiceConfigError, match="PAPERFLOW_TEST_KEY"):
         resolve_slots(registry)
 
 
