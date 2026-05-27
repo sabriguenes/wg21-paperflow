@@ -63,6 +63,7 @@ from tomd.lib.pdf.vector_images import (
     REASON_WORDING_COLOR,
     _cluster_drawings,
     _colour_in_wording_band,
+    _merge_close_clusters,
     _synthetic_xref,
     _text_overlap_fraction,
     extract_page_vector_images,
@@ -759,6 +760,112 @@ class TestClusterDrawings:
         assert bbox == (0.0, 0.0, 30.0, 30.0)
 
 
+class TestMergeCloseClusters:
+    """The post-clustering merge pass combines sibling sub-figure
+    clusters the centroid-bucket optimisation missed (canonical case:
+    P3127R1 page 6's vertically-stacked Fig 1a and Fig 1b). Two guards
+    prevent single-linkage chaining on code-block-heavy pages:
+
+    1. Each constituent must be individually substantial
+       (``_MERGE_MIN_ITEMS`` items and ``_MERGE_MIN_AREA_PT2`` area).
+    2. The union area must stay under ``max_merged_area``.
+
+    Boundary tests verify the inequality directions and the chaining
+    guard so a future re-calibration of the thresholds doesn't
+    silently break either invariant.
+    """
+
+    # Substantial: items >= 30 AND area >= 20_000 pt^2.
+    # A 250x100 bbox carries area = 25_000pt^2 (above the area floor)
+    # so the only variable in tests below is items + position.
+    _BIG_AREA_A = (0.0, 0.0, 250.0, 100.0)        # area 25_000
+    _BIG_AREA_B_CLOSE = (0.0, 125.0, 250.0, 225.0)  # 25pt below A
+    _BIG_AREA_B_AT_30 = (0.0, 130.0, 250.0, 230.0)  # exactly 30pt below
+    _BIG_AREA_B_PAST_30 = (0.0, 130.001, 250.0, 230.0)  # just past 30pt
+
+    _UNLIMITED_AREA = 10_000_000.0  # disable the chaining cap
+
+    def test_two_substantial_siblings_within_distance_merge(self):
+        a = (self._BIG_AREA_A, 40)
+        b = (self._BIG_AREA_B_CLOSE, 40)
+        merged = _merge_close_clusters(
+            [a, b], max_merged_area=self._UNLIMITED_AREA,
+        )
+        assert len(merged) == 1
+        assert merged[0][1] == 80, "item counts sum"
+        bbox = merged[0][0]
+        assert bbox == (0.0, 0.0, 250.0, 225.0), "union of constituents"
+
+    def test_two_siblings_at_link_distance_boundary_merge(self):
+        a = (self._BIG_AREA_A, 40)
+        b = (self._BIG_AREA_B_AT_30, 40)
+        merged = _merge_close_clusters(
+            [a, b], max_merged_area=self._UNLIMITED_AREA,
+        )
+        assert len(merged) == 1, (
+            "boundary inclusive: distance == _CLUSTER_LINK_DISTANCE_PT merges"
+        )
+
+    def test_two_siblings_past_link_distance_dont_merge(self):
+        a = (self._BIG_AREA_A, 40)
+        b = (self._BIG_AREA_B_PAST_30, 40)
+        merged = _merge_close_clusters(
+            [a, b], max_merged_area=self._UNLIMITED_AREA,
+        )
+        assert len(merged) == 2
+
+    def test_constituent_below_min_items_blocks_merge(self):
+        # Both bboxes substantial-area, but b has 29 items (below 30 floor).
+        # Without the gate, P4003R1 code-block decoration fragments
+        # (typically 20-30 items each) chain into a false-positive
+        # page-spanning cluster.
+        a = (self._BIG_AREA_A, 40)
+        b = (self._BIG_AREA_B_CLOSE, 29)
+        merged = _merge_close_clusters(
+            [a, b], max_merged_area=self._UNLIMITED_AREA,
+        )
+        assert len(merged) == 2
+
+    def test_constituent_below_min_area_blocks_merge(self):
+        # Both with plenty of items, but b's area is below the floor.
+        # 250x70 = 17_500 < 20_000.
+        a = (self._BIG_AREA_A, 60)
+        small_b = ((0.0, 125.0, 250.0, 195.0), 60)
+        merged = _merge_close_clusters(
+            [a, small_b], max_merged_area=self._UNLIMITED_AREA,
+        )
+        assert len(merged) == 2
+
+    def test_max_merged_area_caps_chaining(self):
+        # Three substantial clusters stacked vertically, each within
+        # link distance of its neighbour. With an unlimited cap all
+        # three would chain into one; with a cap matching the union of
+        # just the first two, the third merge is rejected.
+        a = (self._BIG_AREA_A, 40)
+        b = (self._BIG_AREA_B_CLOSE, 40)             # 25pt below A
+        c = ((0.0, 250.0, 250.0, 350.0), 40)         # 25pt below B
+        ab_union_area = 250.0 * 225.0                # 56_250
+        merged = _merge_close_clusters(
+            [a, b, c], max_merged_area=ab_union_area + 1.0,
+        )
+        assert len(merged) == 2, (
+            "AB merges (under cap); ABC would exceed cap so C stays separate"
+        )
+        # The merged AB cluster carries 80 items; C stays at 40.
+        item_counts = sorted(c[1] for c in merged)
+        assert item_counts == [40, 80]
+
+    def test_empty_input_returns_empty(self):
+        assert _merge_close_clusters([], max_merged_area=self._UNLIMITED_AREA) == []
+
+    def test_single_cluster_returns_unchanged(self):
+        a = (self._BIG_AREA_A, 40)
+        merged = _merge_close_clusters(
+            [a], max_merged_area=self._UNLIMITED_AREA,
+        )
+        assert merged == [a]
+
+
 # ---- vector_images: text-overlap fraction ---------------------------------
 
 
@@ -1092,6 +1199,64 @@ class TestPerClusterFilter:
         text_block = Block(bbox=(100.0, 100.0, 136.0, 200.0))
         cands, _stats = extract_page_vector_images(page, [text_block])
         assert cands == [], "36% overlap fails the < 35% gate"
+
+    # ---- sparse-diagram bypass --------------------------------------------
+    #
+    # A cluster that overlaps text by >= 35% normally drops, but the
+    # sparse-diagram bypass keeps it if it looks like a large, sparse
+    # network/graph diagram: area >= _DIAGRAM_MIN_AREA_PT2 (30_000pt^2)
+    # AND items >= _DIAGRAM_SPARSE_MIN_ITEMS (50) AND overlap <
+    # _DIAGRAM_SPARSE_MAX_OVERLAP (0.50).
+    #
+    # Canonical case: P3127R1 page 6's airline-route + social-network
+    # graphs (after the post-cluster merge combines the two sibling
+    # sub-diagrams into one cluster: items 158, area 78kpt^2, overlap
+    # 0.46). All four tests below use a 250x150 = 37_500pt^2 cluster
+    # with 50 items - sparse-path-shaped, dense-path-failing (50 < 100
+    # dense item floor).
+
+    def test_sparse_bypass_keeps_moderate_overlap_diagram(self, monkeypatch):
+        self._setup(monkeypatch)
+        drawings = [_drawing(100, 100, 350, 250, items=50)]
+        page = _mock_page(drawings)
+        # 250x73.5 strip overlaps cluster by 18_375/37_500 = 0.49 < 0.50.
+        text_block = Block(bbox=(100.0, 100.0, 350.0, 173.5))
+        cands, _stats = extract_page_vector_images(page, [text_block])
+        assert len(cands) == 1, (
+            "sparse path keeps 0.49 overlap when items + area meet the floor"
+        )
+
+    def test_sparse_bypass_drops_below_min_items(self, monkeypatch):
+        self._setup(monkeypatch)
+        # Same cluster shape, one item below the sparse item floor.
+        drawings = [_drawing(100, 100, 350, 250, items=49)]
+        page = _mock_page(drawings)
+        text_block = Block(bbox=(100.0, 100.0, 350.0, 173.5))
+        cands, stats = extract_page_vector_images(page, [text_block])
+        assert cands == []
+        assert stats.reasons.get(REASON_TEXT_OVERLAP) == 1
+
+    def test_sparse_bypass_drops_below_min_area(self, monkeypatch):
+        self._setup(monkeypatch)
+        # 200x149 = 29_800pt^2, one pt^2 shy of the 30_000 floor.
+        # Overlap 200x73 / 29_800 = 0.49 (block fully inside).
+        drawings = [_drawing(100, 100, 300, 249, items=50)]
+        page = _mock_page(drawings)
+        text_block = Block(bbox=(100.0, 100.0, 300.0, 173.0))
+        cands, stats = extract_page_vector_images(page, [text_block])
+        assert cands == []
+        assert stats.reasons.get(REASON_TEXT_OVERLAP) == 1
+
+    def test_sparse_bypass_drops_at_overlap_cap(self, monkeypatch):
+        self._setup(monkeypatch)
+        # 250x75 strip overlaps cluster by 18_750/37_500 = 0.50.
+        # Sparse cap uses strict <, so 0.50 fails.
+        drawings = [_drawing(100, 100, 350, 250, items=50)]
+        page = _mock_page(drawings)
+        text_block = Block(bbox=(100.0, 100.0, 350.0, 175.0))
+        cands, stats = extract_page_vector_images(page, [text_block])
+        assert cands == [], "sparse path uses strict < for the 0.50 cap"
+        assert stats.reasons.get(REASON_TEXT_OVERLAP) == 1
 
 
 class TestBboxTooLargeFilter:

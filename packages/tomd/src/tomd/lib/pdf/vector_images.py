@@ -105,39 +105,59 @@ _MIN_CLUSTER_DIM_PT = 60.0
 # text and would otherwise survive every other filter. 0.35 keeps
 # diagrams whose caption label happens to bleed slightly into the
 # cluster's bottom edge but rejects clusters that are mostly
-# coincident with a text region. Dense clusters (real diagrams with
-# many drawing items packed into the bbox) bypass this check; see
-# :data:`_DENSE_DIAGRAM_DRAWING_DENSITY`.
+# coincident with a text region. Clusters that look like real
+# diagrams - either dense-with-internal-labels or large-and-sparse -
+# bypass this check via the diagram thresholds below.
 _MAX_TEXT_OVERLAP_FRACTION = 0.35
 
-# Density-based bypass for the text-overlap check. The bypass exists
-# because the spatial extraction path bundles scattered diagram
-# labels into a single tall bbox; that bbox overlaps the vector
-# cluster and inflates the text-overlap measure beyond
-# _MAX_TEXT_OVERLAP_FRACTION even when the cluster is a real
-# flowchart whose own boxes enclose the labels (canonical example:
-# P3556R0 page 3's Figure 2, spatial overlap 0.56, mupdf overlap 0.17).
+# Diagram-bypass for the text-overlap check. The bypass exists because
+# the spatial extraction path bundles scattered diagram labels into a
+# single tall bbox; that bbox overlaps the vector cluster and inflates
+# the text-overlap measure beyond _MAX_TEXT_OVERLAP_FRACTION even when
+# the cluster is a real diagram whose own boxes/nodes enclose the
+# labels.
 #
-# The bypass deliberately admits only the narrow window real
-# flowcharts inhabit. All four conditions must hold:
-#   - drawing density >= _DENSE_DIAGRAM_DRAWING_DENSITY (rules out
-#     code-block backgrounds: ~24 items in a 479x154 bbox = 0.00033);
-#   - cluster area >= _DENSE_DIAGRAM_MIN_AREA_PT2 (rules out small
-#     annotation boxes, code-line callouts ~7000pt^2);
-#   - item count >= _DENSE_DIAGRAM_MIN_ITEMS (rules out medium
-#     clusters with a few path strokes);
-#   - text overlap < _DENSE_DIAGRAM_MAX_OVERLAP (rules out clusters
-#     whose bbox is almost entirely behind body text; real diagrams
-#     with internal labels max out around the P3556R0 figure 2 value
-#     of 0.56).
+# Two paths, both requiring _DIAGRAM_MIN_AREA_PT2 to rule out small
+# annotation boxes:
 #
-# Loosen any threshold only after re-validating against the
-# calibration corpus (see notes/preview-tool-abstract-images-
-# vector-images-plan.md section 7.1).
-_DENSE_DIAGRAM_DRAWING_DENSITY = 0.0015
-_DENSE_DIAGRAM_MIN_AREA_PT2 = 30_000.0
-_DENSE_DIAGRAM_MIN_ITEMS = 100
-_DENSE_DIAGRAM_MAX_OVERLAP = 0.65
+# 1. Dense path (P3556R0 page 3 "Process" flowchart style, where a
+#    flowchart packs many strokes into its bbox and labels inside the
+#    boxes drive overlap into the 0.5-0.65 band):
+#      items >= _DIAGRAM_DENSE_MIN_ITEMS
+#      AND density >= _DIAGRAM_DENSE_MIN_DENSITY
+#      AND overlap < _DIAGRAM_DENSE_MAX_OVERLAP
+#
+# 2. Sparse path (P3127R1 page 6 network-graph style: an adjacency
+#    or node-and-link diagram with few strokes per area, where set-
+#    description text near the diagram inflates overlap into the
+#    0.35-0.50 band):
+#      items >= _DIAGRAM_SPARSE_MIN_ITEMS
+#      AND overlap < _DIAGRAM_SPARSE_MAX_OVERLAP
+#
+# Calibration: against the full P4003R1 + P3556R0 + P3127R1 corpus,
+# the dense path admits P3556R0 Fig 2 (114 items / 39kpt^2 / d=0.0029
+# / ov=0.56) and the sparse path admits P3127R1 Fig 1 (58 items /
+# 78kpt^2 / d=0.00074 / ov=0.46) while neither admits the P4003R1
+# code-block-background false positives (typically items < 50 once
+# area >= 30kpt^2, or overlap > 0.8). Loosen any threshold only
+# after re-validating against the calibration corpus (see
+# notes/preview-tool-abstract-images-vector-images-plan.md §7.1).
+_DIAGRAM_MIN_AREA_PT2 = 30_000.0
+_DIAGRAM_DENSE_MIN_DENSITY = 0.0010
+_DIAGRAM_DENSE_MIN_ITEMS = 100
+_DIAGRAM_DENSE_MAX_OVERLAP = 0.70
+_DIAGRAM_SPARSE_MIN_ITEMS = 50
+_DIAGRAM_SPARSE_MAX_OVERLAP = 0.50
+
+# Per-constituent thresholds for the post-clustering merge pass
+# (:func:`_merge_close_clusters`). Both clusters being merged must
+# individually carry at least this many items and area; otherwise the
+# pair is skipped. Calibrated against P3127R1 Fig 1's two sibling
+# sub-diagrams (Fig 1a: 58 items / 78kpt^2; Fig 1b: 100 items /
+# 39kpt^2 - both well above the gate) vs. P4003R1's code-block
+# decoration fragments (typically 20-40 items / <10kpt^2 each).
+_MERGE_MIN_ITEMS = 30
+_MERGE_MIN_AREA_PT2 = 20_000.0
 
 # Minimum number of drawing items inside a surviving cluster. Single
 # items are almost always rules or one-stroke decorations. Real
@@ -761,7 +781,75 @@ def _cluster_drawings(
             cluster_bbox = _bbox_union(cluster_bbox, bboxes[m])
             total_items += item_counts[m]
         clusters.append((cluster_bbox, total_items))
+
     return clusters
+
+
+def _merge_close_clusters(
+    clusters: list[tuple[tuple[float, float, float, float], int]],
+    *,
+    max_merged_area: float,
+) -> list[tuple[tuple[float, float, float, float], int]]:
+    """Merge cluster pairs whose bboxes lie within
+    ``_CLUSTER_LINK_DISTANCE_PT`` of each other AND where both
+    constituents are individually substantial.
+
+    The centroid-bucket optimisation in :func:`_cluster_drawings` can
+    miss a valid merge when two clusters have large bboxes whose
+    centroids land more than one bucket apart while their nearest
+    edges are within ``_CLUSTER_LINK_DISTANCE_PT``. Canonical case:
+    P3127R1 page 6, where Fig 1a (y=-39..155, centroid y~58) and Fig
+    1b (y=185..284, centroid y~234) sit 29.5pt apart but their
+    centroid buckets are 6 rows apart, so they're never compared
+    during the bucket pass.
+
+    The substantiality gate (``items >= _MERGE_MIN_ITEMS`` AND
+    ``area >= _MERGE_MIN_AREA_PT2`` for each constituent) prevents
+    single-linkage chaining on code-block-heavy pages, where dozens
+    of small decoration / table-cell clusters would otherwise chain
+    into one page-spanning false-positive cluster (P4003R1 pages 36,
+    44, 52, 56 each have 5-20 such fragments stacked vertically
+    along the body column). Real sibling figures (P3127R1 Fig 1's
+    two sub-diagrams) sit comfortably above the gate; chrome-sized
+    fragments sit below.
+
+    ``max_merged_area`` caps the resulting union area; merges that
+    would produce a bbox covering most of the page are silently
+    skipped so the per-cluster ``_MAX_CLUSTER_AREA_FRACTION`` check
+    downstream doesn't fire on a false-positive page-spanning cluster.
+
+    O(k^2) over the typically <50 surviving clusters per page.
+    """
+    if len(clusters) < 2:
+        return clusters
+    work = list(clusters)
+    changed = True
+    while changed:
+        changed = False
+        i = 0
+        while i < len(work):
+            j = i + 1
+            bb_i, ic_i = work[i]
+            area_i = (bb_i[2] - bb_i[0]) * (bb_i[3] - bb_i[1])
+            i_substantial = ic_i >= _MERGE_MIN_ITEMS and area_i >= _MERGE_MIN_AREA_PT2
+            while j < len(work):
+                bb_j, ic_j = work[j]
+                area_j = (bb_j[2] - bb_j[0]) * (bb_j[3] - bb_j[1])
+                j_substantial = ic_j >= _MERGE_MIN_ITEMS and area_j >= _MERGE_MIN_AREA_PT2
+                if (i_substantial and j_substantial
+                        and _rect_distance(bb_i, bb_j) <= _CLUSTER_LINK_DISTANCE_PT):
+                    new_bbox = _bbox_union(bb_i, bb_j)
+                    new_area = (new_bbox[2] - new_bbox[0]) * (new_bbox[3] - new_bbox[1])
+                    if new_area <= max_merged_area:
+                        work[i] = (new_bbox, ic_i + ic_j)
+                        work.pop(j)
+                        bb_i, ic_i = work[i]
+                        area_i = new_area
+                        changed = True
+                        continue
+                j += 1
+            i += 1
+    return work
 
 
 # ---- Rasterisation + whiteout helpers --------------------------------------
@@ -929,14 +1017,21 @@ def extract_page_vector_images(
             continue
         after_edge.append(d)
 
+    page_area = page_rect.width * page_rect.height
     clusters = _cluster_drawings(after_edge)
+    # Repair the centroid-bucket miss for tall-bbox neighbours (see
+    # _merge_close_clusters docstring for the canonical P3127R1 page-6
+    # case). The max-area cap prevents single-linkage chaining on
+    # code-block-heavy pages.
+    clusters = _merge_close_clusters(
+        clusters, max_merged_area=_MAX_CLUSTER_AREA_FRACTION * page_area,
+    )
 
     # Container detection: identify thin frame drawings that enclose
     # smaller clusters (canonical horizontal-flow-diagram shape) and
     # merge their enclosed clusters into "virtual" clusters with the
     # union bbox and summed item count. Virtual clusters get relaxed
     # thresholds in the filter loop below.
-    page_area = page_rect.width * page_rect.height
     frames = _detect_frame_drawings(after_edge, page_area)
     annotated = _merge_clusters_into_frames(frames, clusters)
     candidates_count = len(annotated)
@@ -976,13 +1071,18 @@ def extract_page_vector_images(
             continue
         cluster_area = width * height
         overlap = _text_overlap_fraction(cluster_bbox, page_blocks)
-        is_dense_diagram = (
-            cluster_area >= _DENSE_DIAGRAM_MIN_AREA_PT2
-            and item_count >= _DENSE_DIAGRAM_MIN_ITEMS
-            and item_count / cluster_area >= _DENSE_DIAGRAM_DRAWING_DENSITY
-            and overlap < _DENSE_DIAGRAM_MAX_OVERLAP
+        is_diagram = cluster_area >= _DIAGRAM_MIN_AREA_PT2 and (
+            (
+                item_count >= _DIAGRAM_DENSE_MIN_ITEMS
+                and item_count / cluster_area >= _DIAGRAM_DENSE_MIN_DENSITY
+                and overlap < _DIAGRAM_DENSE_MAX_OVERLAP
+            )
+            or (
+                item_count >= _DIAGRAM_SPARSE_MIN_ITEMS
+                and overlap < _DIAGRAM_SPARSE_MAX_OVERLAP
+            )
         )
-        if not is_dense_diagram and overlap >= _MAX_TEXT_OVERLAP_FRACTION:
+        if not is_diagram and overlap >= _MAX_TEXT_OVERLAP_FRACTION:
             reasons[REASON_TEXT_OVERLAP] = reasons.get(REASON_TEXT_OVERLAP, 0) + 1
             continue
         surviving_clusters.append((cluster_bbox, item_count))
