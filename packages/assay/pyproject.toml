@@ -1,6 +1,6 @@
 [project]
 name = "assay"
-version = "0.1.0"
+version = "0.4.0"
 description = "WG21 paper assay pipeline (two-pass structural analysis)"
 requires-python = ">=3.12"
 license = {text = "BSL-1.0"}

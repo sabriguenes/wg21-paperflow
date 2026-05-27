@@ -14,4 +14,4 @@ from preview.render import render_markdown
 from preview.watcher import MarkdownWatcher
 
 __all__ = ["create_app", "render_markdown", "MarkdownWatcher"]
-__version__ = "0.3.0"
+__version__ = "0.4.0"
