@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from pipeline.tools import inject_untrusted, escape_guard_delimiters, _random_tag
+from pipeline.tools import inject_untrusted, _random_tag
 
 
 def test_inject_untrusted_wraps_content():

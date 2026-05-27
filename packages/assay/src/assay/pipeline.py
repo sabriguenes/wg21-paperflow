@@ -65,7 +65,6 @@ from assay.models import (
     ResearchLensOutput,
     StrengthOutput,
     SynthesisOutput,
-    VerifyContradiction,
     VerifyOutput,
 )
 from assay.references import extract_references, extract_urls, verify_references
@@ -73,7 +72,7 @@ from assay.blanking import blank_paper
 from assay.chunker import chunk_paper
 from assay.rag import (
     build_cited_paper_index, build_single_paper_index,
-    query_index, format_evidence,
+    query_index,
     query_for_research, query_for_challenge, IndexStats,
 )
 from assay.triage import should_analyze

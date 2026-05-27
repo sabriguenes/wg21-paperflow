@@ -12,7 +12,6 @@ import pytest
 from pipeline import MissingMetadataError, MissingSystemPromptError
 from pipeline.errors import ServiceConfigError
 from pipeline.prompt import (
-    PipelinePrompt,
     StepHooks,
     _parse_prompt,
     build_pipeline,

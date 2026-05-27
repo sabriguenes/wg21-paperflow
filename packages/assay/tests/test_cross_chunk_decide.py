@@ -16,8 +16,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import pytest
-
 from assay.models import (
     ChunkDecideOutput,
     ChunkEntry,
