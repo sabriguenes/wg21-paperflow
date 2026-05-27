@@ -44,12 +44,21 @@ class ConvertReport:
     is the names list from :class:`paperstore.ClearedSet` for papers
     whose markdown content changed and where ``--keep-downstream`` was
     not set.
+
+    ``source_raster_count`` and ``source_vector_count`` split the
+    ``source_image_count`` total by extraction source. Both are zero
+    for HTML papers (no raster/vector distinction) and for PDF
+    invocations that did not pass ``--extract-vector-images``. The
+    CLI uses them to format the per-paper truncation line as
+    ``kept M of N: R raster + V vector`` when both are non-zero.
     """
 
     images_kept: int = 0
     source_image_count: int = 0
     images_truncated: bool = False
     downstream_cleared: tuple[str, ...] = ()
+    source_raster_count: int = 0
+    source_vector_count: int = 0
 
 
 @dataclass

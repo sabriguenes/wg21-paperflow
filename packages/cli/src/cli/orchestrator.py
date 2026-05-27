@@ -15,21 +15,30 @@ Provides per-paper conversion via ``convert_one_paper``.
 from pathlib import Path
 
 from cli.models import ConvertResult, Paper
-from tomd.api import convert_paper as tomd_convert_paper
+from tomd.api import convert_paper_full
 
 __all__ = [
     "convert_one_paper",
 ]
 
 
-def convert_one_paper(paper: "Paper") -> "ConvertResult":
+def convert_one_paper(
+    paper: "Paper",
+    *,
+    extract_vector: bool = False,
+    whiteout_text: bool = False,
+) -> "ConvertResult":
     """Convert a staged paper source to markdown. No LLM, no I/O beyond
     reading the source file.
 
     Takes a :class:`Paper` object with ``source_file`` populated. Returns
-    a :class:`ConvertResult` carrying the markdown and any tomd prompts;
-    the caller (``jobs.run_convert``) is responsible for persisting the
-    result through the storage backend.
+    a :class:`ConvertResult` carrying the markdown, any tomd prompts,
+    and the list of extracted images; the caller (``jobs.run_convert``)
+    is responsible for persisting both markdown and image bytes through
+    the storage backend.
+
+    ``extract_vector`` and ``whiteout_text`` are forwarded to the tomd
+    PDF pipeline. They default to False; HTML sources ignore them.
 
     Raises:
         RuntimeError: source_file is empty - run ``paperflow download`` first.
@@ -58,18 +67,26 @@ def convert_one_paper(paper: "Paper") -> "ConvertResult":
         "url": paper.url,
     }
 
-    markdown, prompts, extracted_intent = tomd_convert_paper(
-        paper_id, source_path, meta
+    converted = convert_paper_full(
+        paper_id, source_path, meta,
+        extract_vector=extract_vector,
+        whiteout_text=whiteout_text,
     )
+    if converted.skipped:
+        raise RuntimeError(
+            f"tomd produced empty markdown for {paper_id} "
+            f"({converted.skip_reason or 'slide deck, standards draft, or unreadable source'})."
+        )
 
     # tomd front-matter intent wins over scraper-derived intent
-    intent = extracted_intent if extracted_intent else paper.intent
+    intent = converted.intent if converted.intent else paper.intent
 
     return ConvertResult(
         paper_id=paper_id,
-        markdown=markdown,
-        prompts=prompts,
+        markdown=converted.markdown,
+        prompts=converted.prompts,
         intent=intent,
         title=paper.title,
         status="ok",
+        images=list(converted.images),
     )

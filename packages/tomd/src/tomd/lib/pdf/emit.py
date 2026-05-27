@@ -6,8 +6,9 @@ import re
 from .. import format_front_matter, dedup_paragraphs, strip_redundant_body_meta, strip_leading_h1, DEFAULT_FENCE_LANG
 from ..shared import _find_front_matter_end
 from .cleanup import normalize_whitespace
-from .images import TRUNCATION_MARKER_TEMPLATE
+from .images import TRUNCATION_MARKER_TEMPLATE, VectorUncertaintyStats
 from .types import Line, Span, Section, SectionKind, BULLET_CHARS
+from .vector_images import format_uncertainty_marker, should_emit_marker
 
 _log = logging.getLogger(__name__)
 
@@ -349,6 +350,7 @@ def emit_markdown(
     *,
     images_truncated: bool = False,
     source_image_count: int = 0,
+    vector_uncertainty: VectorUncertaintyStats | None = None,
 ) -> str:
     """Generate the output Markdown from structured sections.
 
@@ -359,6 +361,13 @@ def emit_markdown(
     end-of-body recording how many images were kept versus how many
     the source contained. The comment is invisible in rendered HTML
     but visible to anyone grepping the raw markdown for "truncated".
+
+    When ``vector_uncertainty`` is non-None and
+    :func:`should_emit_marker` returns True, a second HTML comment is
+    appended with the per-paper vector-extraction accounting (pages
+    scanned / skipped, candidates, kept, rejected, reasons dict). The
+    marker exists so a reader can see why diagrams might be missing
+    or surprisingly present.
     """
     parts: list[str] = []
 
@@ -396,6 +405,9 @@ def emit_markdown(
                 total=source_image_count,
                 dropped=dropped,
             ))
+
+    if vector_uncertainty is not None and should_emit_marker(vector_uncertainty):
+        parts.append(format_uncertainty_marker(vector_uncertainty))
 
     md = "\n\n".join(parts)
     md = dedup_paragraphs(md)

@@ -56,7 +56,7 @@ def _patch_stage_bodies(monkeypatch, backend: SqliteBackend):
             return
         be.put_source(pid, b"PDF", suffix=".pdf")
 
-    async def fake_convert(pid, be, *, keep_downstream=False):
+    async def fake_convert(pid, be, **kwargs):
         from pipeline.postconditions import postcondition_satisfied
         if postcondition_satisfied(be, pid, STAGES["convert"]):
             return

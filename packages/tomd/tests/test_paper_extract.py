@@ -51,7 +51,7 @@ def _patch_pdf(monkeypatch, md: str, prompts: list[str] | None = None):
     """
     from tomd.lib.pdf import PipelineResult
 
-    def _fake(_p):
+    def _fake(_p, **kwargs):
         return PipelineResult(md=md, prompts=prompts)
 
     monkeypatch.setattr(api, "run_pipeline", _fake)

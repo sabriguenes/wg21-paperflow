@@ -29,6 +29,15 @@ _log = logging.getLogger(__name__)
 _COLUMN_GAP_THRESHOLD = 50.0
 _MIN_TABLE_ROWS = 2
 _COLUMN_X_TOLERANCE = 10.0
+# A strict right-edge tolerance used as a secondary signal in
+# :func:`_columns_match` for right-aligned columns whose x-start
+# varies row to row with cell text length but whose x-end is exactly
+# fixed by the layout engine. Calibrated against P4003R1 page 8 col 4
+# (max row-to-row x-end drift 0.004pt) and p0533r9 page 1 TOC col 1
+# (min consecutive-row x-end drift 1.32pt - the latter is variable
+# section-name text endings, NOT a stable right-aligned column).
+# 1.0pt sits comfortably between the two populations.
+_COLUMN_X_END_TOLERANCE = 1.0
 _TABLE_Y_OVERLAP_MARGIN = 5.0
 
 _COLUMN_X_BUCKET = 5.0    # bucket size for x-position clustering
@@ -81,34 +90,67 @@ def _is_column_aligned_orphan(block: Block, column_xs: frozenset[float]) -> bool
     return any(abs(x0 - cx) <= _COLUMN_X_BUCKET for cx in column_xs)
 
 
-def _block_column_positions(block: Block) -> list[float] | None:
-    """Return the x-start positions of columns in a block, or None.
+def _block_column_positions(block: Block) -> tuple[list[float], list[float]] | None:
+    """Return ``(x_starts, x_ends)`` for a columnar block, or None.
 
     A block is columnar if it has 2+ lines where every line after
     the first starts significantly to the right of the first line's
-    x-start position.
+    x-start position. The x_ends are returned alongside x_starts so
+    :func:`_columns_match` can fall back to right-edge alignment for
+    right-aligned columns (numeric data, status indicators) whose
+    x-start varies row to row with cell text length while their
+    x-end stays fixed.
     """
     if len(block.lines) < 2:
         return None
 
-    x_starts = []
+    x_starts: list[float] = []
+    x_ends: list[float] = []
     for line in block.lines:
         if not line.spans:
             return None
         x_starts.append(line.bbox[0])
+        x_ends.append(line.bbox[2])
 
     for i in range(1, len(x_starts)):
         if x_starts[i] - x_starts[0] < _COLUMN_GAP_THRESHOLD:
             return None
 
-    return x_starts
+    return x_starts, x_ends
 
 
-def _columns_match(cols_a: list[float], cols_b: list[float]) -> bool:
-    """Check if two column position lists represent the same table structure."""
-    if len(cols_a) != len(cols_b):
+def _columns_match(
+    cols_a: tuple[list[float], list[float]],
+    cols_b: tuple[list[float], list[float]],
+) -> bool:
+    """Check if two column position records represent the same table structure.
+
+    Each input is ``(x_starts, x_ends)`` from
+    :func:`_block_column_positions`. A column matches when EITHER:
+
+    - its x-start aligns within :data:`_COLUMN_X_TOLERANCE` (the
+      ordinary left-aligned-column case), OR
+    - its x-end aligns within :data:`_COLUMN_X_END_TOLERANCE` (a much
+      tighter threshold that only fires when the right edges are
+      essentially exact, the characteristic shape of a right-aligned
+      numeric column: x-start varies row to row with cell text length
+      but x-end is fixed by the layout engine).
+
+    The strict x-end threshold prevents spurious matches in
+    table-of-contents-style layouts where section-name text endings
+    happen to fall near each other by coincidence (drift ~1-2pt) but
+    are not actually a right-aligned column.
+    """
+    starts_a, ends_a = cols_a
+    starts_b, ends_b = cols_b
+    if len(starts_a) != len(starts_b):
         return False
-    return all(abs(a - b) < _COLUMN_X_TOLERANCE for a, b in zip(cols_a, cols_b))
+    for sa, sb, ea, eb in zip(starts_a, starts_b, ends_a, ends_b):
+        start_aligned = abs(sa - sb) < _COLUMN_X_TOLERANCE
+        end_aligned = abs(ea - eb) < _COLUMN_X_END_TOLERANCE
+        if not (start_aligned or end_aligned):
+            return False
+    return True
 
 
 def detect_tables(blocks: list[Block]) -> tuple[list[Section], list[Block]]:
@@ -158,7 +200,8 @@ def detect_tables(blocks: list[Block]) -> tuple[list[Section], list[Block]]:
                 break
 
         if len(table_blocks) >= _MIN_TABLE_ROWS:
-            num_cols = len(cols)
+            col_starts, _col_ends = cols
+            num_cols = len(col_starts)
             rows: list[list[list]] = []
             all_lines = []
 
@@ -174,7 +217,7 @@ def detect_tables(blocks: list[Block]) -> tuple[list[Section], list[Block]]:
                     line_x = line.bbox[0]
                     best_col = min(
                         range(num_cols),
-                        key=lambda ci: abs(line_x - cols[ci]),
+                        key=lambda ci: abs(line_x - col_starts[ci]),
                     )
                     row[best_col].extend(line.spans)
                 rows.append(row)

@@ -31,6 +31,8 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
     targets = args.targets
     force = getattr(args, "force", False)
     concurrency = getattr(args, "concurrency", None) or 4
+    extract_vector = getattr(args, "extract_vector_images", False)
+    whiteout_text = getattr(args, "vector_whiteout_text", False)
 
     progress_ctx, on_progress = make_progress_handler("Convert")
 
@@ -40,6 +42,8 @@ def command(args: argparse.Namespace, backend: StorageBackend) -> int:
                 targets, backend,
                 force=force,
                 concurrency=concurrency,
+                extract_vector=extract_vector,
+                whiteout_text=whiteout_text,
                 on_progress=on_progress,
             )
         )

@@ -13,7 +13,11 @@
 table. ``ConvertResult`` is the output of a single tomd conversion pass.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tomd.lib.pdf import ExtractedImage
 
 __all__ = [
     "Paper",
@@ -61,8 +65,8 @@ class ConvertResult:
 
     Returned by :func:`cli.orchestrator.convert_one_paper`. The
     worker performs no I/O beyond reading the source file; the main
-    coroutine persists ``markdown`` and ``prompts`` through the storage
-    backend.
+    coroutine persists ``markdown``, ``prompts``, and image bytes
+    through the storage backend.
     """
     paper_id: str
     markdown: str
@@ -71,3 +75,4 @@ class ConvertResult:
     title: str
     status: str         # "ok" | "error"
     error: str = ""
+    images: list["ExtractedImage"] = field(default_factory=list)

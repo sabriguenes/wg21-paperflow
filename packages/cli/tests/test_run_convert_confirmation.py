@@ -52,6 +52,8 @@ def _stub_args(
     *,
     yes: bool = False,
     keep_downstream: bool = False,
+    extract_vector_images: bool = False,
+    vector_whiteout_text: bool = False,
 ) -> argparse.Namespace:
     return SimpleNamespace(
         targets=targets,
@@ -60,6 +62,8 @@ def _stub_args(
         force=True,
         yes=yes,
         keep_downstream=keep_downstream,
+        extract_vector_images=extract_vector_images,
+        vector_whiteout_text=vector_whiteout_text,
     )
 
 
@@ -305,3 +309,137 @@ def test_no_summary_when_nothing_to_report(
     assert "truncated to" not in out
     assert "invalidated by re-convert" not in out
     assert "2 succeeded" in out
+
+
+# ---- v2.0 opt-in vector flags ---------------------------------------------
+
+
+def test_extract_vector_flag_forwards_to_process_paper(backend: SqliteBackend):
+    """--extract-vector-images must reach process_paper as extract_vector=True."""
+    _seed(backend, "P1", with_md=True)
+    captured: dict = {}
+
+    async def fake(pid, be, **kwargs):
+        captured.update(kwargs)
+        return ProcessResult(final_status=2, stages_run=[1])
+
+    _run(
+        backend,
+        _stub_args(["2026"], extract_vector_images=True),
+        fake_process_paper=fake,
+    )
+    assert captured.get("extract_vector") is True
+    assert captured.get("whiteout_text") is False, (
+        "whiteout_text is a separate flag and must NOT be set just because "
+        "extract_vector is set"
+    )
+
+
+def test_whiteout_flag_forwards_to_process_paper(backend: SqliteBackend):
+    """--vector-whiteout-text is an independent flag; --extract-vector-images
+    does not imply it (the plan §3.1a contract)."""
+    _seed(backend, "P1", with_md=True)
+    captured: dict = {}
+
+    async def fake(pid, be, **kwargs):
+        captured.update(kwargs)
+        return ProcessResult(final_status=2, stages_run=[1])
+
+    _run(
+        backend,
+        _stub_args(
+            ["2026"],
+            extract_vector_images=True,
+            vector_whiteout_text=True,
+        ),
+        fake_process_paper=fake,
+    )
+    assert captured.get("extract_vector") is True
+    assert captured.get("whiteout_text") is True
+
+
+def test_default_forwards_both_flags_false(backend: SqliteBackend):
+    """v2.0 default: bare ``paperflow convert`` is byte-identical to v1.
+    Both vector kwargs must reach process_paper as False."""
+    _seed(backend, "P1", with_md=True)
+    captured: dict = {}
+
+    async def fake(pid, be, **kwargs):
+        captured.update(kwargs)
+        return ProcessResult(final_status=2, stages_run=[1])
+
+    _run(backend, _stub_args(["2026"]), fake_process_paper=fake)
+    assert captured.get("extract_vector") is False
+    assert captured.get("whiteout_text") is False
+
+
+# ---- truncation summary: mixed format -------------------------------------
+
+
+def test_truncation_summary_mixed_format_when_both_kinds_present(
+    backend: SqliteBackend, capsys,
+):
+    """When a paper's truncation count includes both raster and vector,
+    the per-paper line discloses the split. Pure-raster papers in the
+    same batch retain the simple format."""
+    _seed(backend, "P1", with_md=True)
+    _seed(backend, "P2", with_md=True)
+
+    async def fake(pid, be, **kwargs):
+        if pid == "P1":
+            report = ConvertReport(
+                images_kept=20,
+                source_image_count=49,
+                images_truncated=True,
+                source_raster_count=12,
+                source_vector_count=8,
+            )
+        else:
+            # Pure raster (or pure vector); no mix to disclose.
+            report = ConvertReport(
+                images_kept=20,
+                source_image_count=64,
+                images_truncated=True,
+                source_raster_count=20,
+                source_vector_count=0,
+            )
+        return ProcessResult(
+            final_status=2, stages_run=[1], convert_report=report,
+        )
+
+    _run(backend, _stub_args(["2026"]), fake_process_paper=fake)
+
+    out = capsys.readouterr().out
+    assert "P1 (kept 20 of 49: 12 raster + 8 vector)" in out
+    assert "P2 (kept 20 of 64)" in out, (
+        "pure-raster paper uses the simple format"
+    )
+
+
+def test_truncation_hint_drops_vector_diagrams_from_non_goals(
+    backend: SqliteBackend, capsys,
+):
+    """v2.0 ships vector extraction behind --extract-vector-images, so
+    the truncation hint no longer claims vector diagrams are unhandled."""
+    _seed(backend, "P1", with_md=True)
+
+    async def fake(pid, be, **kwargs):
+        return ProcessResult(
+            final_status=2, stages_run=[1],
+            convert_report=ConvertReport(
+                images_kept=20, source_image_count=49,
+                images_truncated=True,
+                source_raster_count=20, source_vector_count=0,
+            ),
+        )
+
+    _run(backend, _stub_args(["2026"]), fake_process_paper=fake)
+
+    out = capsys.readouterr().out
+    # The new hint still names scanned-page PDFs but no longer
+    # claims vector diagrams are unhandled.
+    assert "scanned-page PDFs are not handled" in out
+    assert "vector diagrams" not in out, (
+        "the hint must not list vector diagrams as a non-goal now "
+        "that --extract-vector-images is available"
+    )

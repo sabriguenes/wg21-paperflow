@@ -95,7 +95,7 @@ _COMMANDS = {
 _VERB_FLAGS: dict[str, set[str]] = {
     "mailing":   set(),
     "download":  {"force", "concurrency"},
-    "convert":   {"force", "concurrency", "check_content", "check_content_json", "keep_downstream", "yes"},
+    "convert":   {"force", "concurrency", "check_content", "check_content_json", "keep_downstream", "yes", "extract_vector_images", "vector_whiteout_text"},
     "agora":     {"debug", "trace", "step", "provider", "force"},
     "assay":     {"debug", "trace", "step", "force", "rerender"},
     "status":    set(),
@@ -144,6 +144,18 @@ _FLAG_DEFS: list[dict] = [
          default=False,
          help="Regenerate report from stored data without re-running "
               "the pipeline. Applies the current template to DB artifacts."),
+    dict(name="extract_vector_images", flags=["--extract-vector-images"],
+         action="store_true", default=False,
+         help="On convert: extract vector figures (path-operator clusters) "
+              "as PNGs alongside raster images. Heuristic and opt-in for "
+              "v2.0; the produced paper.md carries an HTML uncertainty "
+              "marker disclosing per-paper rejection counts."),
+    dict(name="vector_whiteout_text", flags=["--vector-whiteout-text"],
+         action="store_true", default=False,
+         help="On convert: paint over text glyphs inside vector-cluster "
+              "bboxes. Default off; labels inside diagrams render as "
+              "pixels alongside body text. Set this only if a downstream "
+              "consumer of paper.md is confused by the duplication."),
 ]
 
 _PAPER_ID_RE = re.compile(r"^[PND]\d{3,5}(R\d+)?$", re.IGNORECASE)

@@ -1,0 +1,4 @@
+pid,expected_vector_count,allowed_min,allowed_max,expect_captioned,produced_by,produced_at,notes
+SYNTH_VECTOR_ONE_DIAGRAM,1,1,1,1,test,2026-05-21,SYNTH: shipped fixture; one canonical figure with caption; zero-tolerance band
+SYNTH_NOISE_NO_DIAGRAM,0,0,0,0,test,2026-05-21,SYNTH: shipped fixture; pure noise (table borders + rules); pins the false-positive floor
+SYNTH_TABLE_WITH_CELLS,0,0,0,0,test,2026-05-21,SYNTH: shipped fixture; per-cell background rectangles + right-aligned numeric column; pins zero phantom column-images

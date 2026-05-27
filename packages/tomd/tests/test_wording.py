@@ -1,9 +1,19 @@
 """Tests for lib.pdf.wording."""
 
 from unittest.mock import MagicMock
+
+import pytest
+
 from conftest import make_block
 from tomd.lib.pdf.types import Span, Line, Block
-from tomd.lib.pdf.wording import classify_wording, collect_line_drawings
+from tomd.lib.pdf.wording import (
+    _is_wording_color,
+    classify_wording,
+    collect_line_drawings,
+    is_green_ins,
+    is_red_del,
+    is_wording_rgb,
+)
 
 
 def _color(r, g, b):
@@ -259,3 +269,74 @@ class TestTwoPassDeletion:
                 "red without strikethrough should NOT be classified "
                 "when no ins context exists"
             )
+
+
+def _hsv_grid(step: int = 4):
+    """Yield packed-int colors sampling the HSV cube at the requested grid resolution."""
+    samples = []
+    levels = [int(255 * i / (step - 1)) for i in range(step)]
+    for r in levels:
+        for g in levels:
+            for b in levels:
+                samples.append((r << 16) | (g << 8) | b)
+    return samples
+
+
+class TestWordingPredicateEquivalence:
+    """is_wording_color (packed int) and is_wording_rgb (float tuple) agree
+    everywhere, and both equal the disjunction of is_green_ins / is_red_del.
+
+    Pins the shared-helper refactor: the band logic lives in
+    _in_green_band / _in_red_band, and all four predicates delegate to
+    them. A drift between the packed-int and float-tuple paths would
+    silently break vector_images.py's pre-clustering exclusion (which
+    consumes pymupdf's float-tuple color output).
+    """
+
+    @pytest.mark.parametrize("packed", [
+        0x000000,  # black
+        0x006e28,  # mpark/wg21 ins green
+        0xbf0303,  # mpark/wg21 del red
+        0x008019,  # tcbrindle ins green
+        0xff0000,  # tcbrindle del / cplusplus draft del
+        0x009999,  # cplusplus draft ins (teal at H=180)
+        0x17752d,  # schultke ins
+        0xbe1621,  # schultke del (H=355, red-wrap)
+        0x808080,  # achromatic gray
+        0x800080,  # purple (code-syntax)
+        0x00ff00,  # pure green
+        0xff8000,  # orange
+        0x0000ff,  # pure blue (link)
+        *_hsv_grid(step=4),
+    ])
+    def test_predicates_agree_across_int_and_rgb_paths(self, packed: int):
+        r = ((packed >> 16) & 0xFF) / 255.0
+        g = ((packed >> 8) & 0xFF) / 255.0
+        b = (packed & 0xFF) / 255.0
+        int_result = _is_wording_color(packed)
+        rgb_result = is_wording_rgb(r, g, b)
+        component_result = is_green_ins(packed) or is_red_del(packed)
+        assert int_result == rgb_result == component_result
+
+
+class TestIsWordingRgb:
+    """Direct float-tuple coverage so the float path is exercised even
+    if a future refactor changes how the packed-int path computes HSV."""
+
+    def test_mpark_ins_green_is_wording(self):
+        # #006e28 -> (0.0, 0.43, 0.16) (rounded to two decimals)
+        assert is_wording_rgb(0.0, 110.0 / 255.0, 40.0 / 255.0) is True
+
+    def test_mpark_del_red_is_wording(self):
+        # #bf0303 -> (0.75, 0.01, 0.01)
+        assert is_wording_rgb(191.0 / 255.0, 3.0 / 255.0, 3.0 / 255.0) is True
+
+    def test_code_syntax_purple_is_not_wording(self):
+        # (0.5, 0.0, 0.5) - outside both hue bands
+        assert is_wording_rgb(0.5, 0.0, 0.5) is False
+
+    def test_black_is_not_wording(self):
+        assert is_wording_rgb(0.0, 0.0, 0.0) is False
+
+    def test_pure_blue_link_is_not_wording(self):
+        assert is_wording_rgb(0.0, 0.0, 1.0) is False

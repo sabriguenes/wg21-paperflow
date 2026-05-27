@@ -38,14 +38,17 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import pymupdf
 
     from .types import Block
+
+
+ImageSource = Literal["raster", "vector"]
 
 _log = logging.getLogger(__name__)
 
@@ -153,6 +156,82 @@ class ExtractedImage:
     suggested_alt: str
     stored_filename: str                            # "<pid>-fig{page}-{index}.{ext}"
     xref: int                                       # PDF xref; 0 for HTML
+    source: ImageSource = "raster"                  # "raster" (embedded XObject) | "vector" (rasterised clusters)
+
+
+@dataclass(frozen=True)
+class VectorUncertaintyStats:
+    """Per-paper accounting of the vector-extraction filter pipeline.
+
+    Surfaced as the trailing ``tomd:vector-extraction-uncertain`` marker
+    appended to ``paper.md`` when extraction was attempted and at least
+    one cluster was rejected or at least one page was skipped. Field
+    semantics are documented in the vector-extraction plan's section
+    1.6a; the closed key set for ``reasons`` is enforced by tests.
+
+    All counts are non-negative integers. ``reasons`` is a frozen
+    mapping ``reason -> count`` where reason is one of:
+    ``clusters_overflow``, ``edge_band``, ``text_overlap``,
+    ``too_few_items``, ``too_small``, ``wording_color``.
+    """
+
+    pages_scanned: int
+    candidates: int
+    kept: int
+    rejected: int
+    reasons: Mapping[str, int]
+    pages_skipped: int
+
+
+@dataclass(frozen=True)
+class _VectorExtractionStats:
+    """Per-page or run-level accumulator for vector-extraction accounting.
+
+    Frozen by design - the per-page loop sums each :func:`combine`
+    call into a fresh dataclass rather than mutating in-place. Lifts
+    cleanly to a final :class:`VectorUncertaintyStats` via
+    :func:`to_uncertainty`.
+
+    ``reasons`` may be empty (the page scanned but rejected nothing) or
+    carry any subset of the closed key set documented above. Missing
+    keys are absent, not zero - the formatter sorts the keys before
+    emission per D7.
+    """
+
+    pages_scanned: int = 0
+    candidates: int = 0
+    kept: int = 0
+    rejected: int = 0
+    pages_skipped: int = 0
+    reasons: Mapping[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def combine(
+        cls,
+        a: "_VectorExtractionStats",
+        b: "_VectorExtractionStats",
+    ) -> "_VectorExtractionStats":
+        merged_reasons: dict[str, int] = dict(a.reasons)
+        for key, count in b.reasons.items():
+            merged_reasons[key] = merged_reasons.get(key, 0) + count
+        return cls(
+            pages_scanned=a.pages_scanned + b.pages_scanned,
+            candidates=a.candidates + b.candidates,
+            kept=a.kept + b.kept,
+            rejected=a.rejected + b.rejected,
+            pages_skipped=a.pages_skipped + b.pages_skipped,
+            reasons=merged_reasons,
+        )
+
+    def to_uncertainty(self) -> VectorUncertaintyStats:
+        return VectorUncertaintyStats(
+            pages_scanned=self.pages_scanned,
+            candidates=self.candidates,
+            kept=self.kept,
+            rejected=self.rejected,
+            reasons=dict(self.reasons),
+            pages_skipped=self.pages_skipped,
+        )
 
 
 @dataclass(frozen=True)
@@ -166,11 +245,15 @@ class ExtractionResult:
       regardless of cap. The CLI logs ``kept M of N`` from this field.
     - ``images_truncated``: True iff ``source_image_count`` exceeded
       the cap.
+    - ``vector_uncertainty``: per-paper vector-extraction accounting,
+      or ``None`` for raster-only or HTML papers. The emit step
+      reads it to decide whether to append the uncertainty marker.
     """
 
     images: list[ExtractedImage]
     source_image_count: int
     images_truncated: bool
+    vector_uncertainty: VectorUncertaintyStats | None = None
 
 
 @dataclass(frozen=True)
@@ -190,6 +273,7 @@ class _PageImageCandidate:
     ext: str
     bytes: bytes
     suggested_alt: str
+    source: ImageSource = "raster"
 
 
 def _bbox_to_tuple(rect) -> tuple[float, float, float, float]:
@@ -320,6 +404,8 @@ def extract_page_images(
 def finalize_extraction(
     per_page: Iterable[Iterable[_PageImageCandidate]],
     pid: str,
+    *,
+    vector_stats: "_VectorExtractionStats | None" = None,
 ) -> ExtractionResult:
     """Dedupe by xref, apply the cap, assign stable filenames.
 
@@ -393,12 +479,31 @@ def finalize_extraction(
                 suggested_alt=cand.suggested_alt,
                 stored_filename=f"{pid_lower}-fig{cand.page}-{idx}.{cand.ext}",
                 xref=cand.xref,
+                source=cand.source,
             ))
 
     final.sort(key=lambda im: (im.page, im.bbox[1], im.bbox[0]))
+
+    vector_uncertainty: VectorUncertaintyStats | None = None
+    if vector_stats is not None and (
+        vector_stats.pages_scanned > 0 or vector_stats.pages_skipped > 0
+    ):
+        # kept is the count of vector entries in the markdown - after the
+        # global cap and dedup. The plan invariant: marker kept always
+        # equals the count of vector image refs in paper.md.
+        kept_vector = sum(1 for im in final if im.source == "vector")
+        vector_uncertainty = VectorUncertaintyStats(
+            pages_scanned=vector_stats.pages_scanned,
+            candidates=vector_stats.candidates,
+            kept=kept_vector,
+            rejected=vector_stats.rejected,
+            reasons=dict(vector_stats.reasons),
+            pages_skipped=vector_stats.pages_skipped,
+        )
 
     return ExtractionResult(
         images=final,
         source_image_count=source_image_count,
         images_truncated=images_truncated,
+        vector_uncertainty=vector_uncertainty,
     )

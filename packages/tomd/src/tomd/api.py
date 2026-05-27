@@ -73,6 +73,8 @@ class ConvertedPaper:
     images_truncated: bool = False
     skipped: bool = False
     skip_reason: str = ""
+    source_raster_count: int = 0
+    source_vector_count: int = 0
 
 logger = logging.getLogger(__name__)
 
@@ -347,12 +349,16 @@ class _RawConversion:
     images_truncated: bool
     skipped: bool
     skip_reason: str
+    source_raster_count: int = 0
+    source_vector_count: int = 0
 
 
 def _convert_with_tomd_full(
     path: Path,
     *,
     html_images_manifest=None,
+    extract_vector: bool = False,
+    whiteout_text: bool = False,
 ) -> _RawConversion:
     """Dispatch by file suffix, returning the full pipeline output.
 
@@ -362,10 +368,21 @@ def _convert_with_tomd_full(
     manifest-driven ``<img>`` rewriting and surfaces the ExtractedImage
     list (bytes already on disk from mailing - they aren't re-persisted
     by the convert stage).
+
+    ``extract_vector`` and ``whiteout_text`` are PDF-only and forwarded
+    to :func:`tomd.lib.pdf.run_pipeline`. They are accepted in the HTML
+    branch but ignored, so a CLI flag does not have to know the source
+    format up front.
     """
     suffix = path.suffix.lower()
     if suffix == ".pdf":
-        r = run_pipeline(path)
+        r = run_pipeline(
+            path,
+            extract_vector=extract_vector,
+            whiteout_text=whiteout_text,
+        )
+        raster = sum(1 for im in r.images if im.source == "raster")
+        vector = sum(1 for im in r.images if im.source == "vector")
         return _RawConversion(
             md=r.md,
             prompts=r.prompts,
@@ -374,6 +391,8 @@ def _convert_with_tomd_full(
             images_truncated=r.images_truncated,
             skipped=r.skipped,
             skip_reason=r.skip_reason,
+            source_raster_count=raster,
+            source_vector_count=vector,
         )
     if suffix in (".html", ".htm"):
         html_result = None
@@ -422,6 +441,8 @@ def convert_paper_full(
     meta: dict,
     *,
     html_images_manifest=None,
+    extract_vector: bool = False,
+    whiteout_text: bool = False,
 ) -> ConvertedPaper:
     """Convert a staged source file, returning markdown AND image data.
 
@@ -448,7 +469,10 @@ def convert_paper_full(
     audience, reply-to``.
     """
     raw = _convert_with_tomd_full(
-        source_path, html_images_manifest=html_images_manifest,
+        source_path,
+        html_images_manifest=html_images_manifest,
+        extract_vector=extract_vector,
+        whiteout_text=whiteout_text,
     )
 
     if raw.prompts:
@@ -504,6 +528,8 @@ def convert_paper_full(
         images_truncated=raw.images_truncated,
         skipped=False,
         skip_reason="",
+        source_raster_count=raw.source_raster_count,
+        source_vector_count=raw.source_vector_count,
     )
 
 

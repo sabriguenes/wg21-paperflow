@@ -283,3 +283,84 @@ class TestExcludeTableRegions:
         ]
         result = exclude_table_regions(blocks, [])
         assert len(result) == 2
+
+
+# ---- Right-aligned-column matching (Fix B for P4003R1 page 8) -------------
+
+
+def _right_aligned_line(text, x_end, y_start, line_width, page_num=0):
+    """Create a Line whose right edge sits at x_end (variable x_start by width)."""
+    x_start = x_end - line_width
+    span = make_span(text)
+    return Line(
+        spans=[span],
+        bbox=(x_start, y_start, x_end, y_start + 12),
+        page_num=page_num,
+    )
+
+
+def _right_aligned_row_block(col1_text, col1_xstart, col4_text, col4_xend,
+                              col4_width, y_start, page_num=0):
+    """A 4-line block with col 1 left-aligned at col1_xstart and col 4
+    right-aligned at col4_xend. Cols 2, 3 use placeholder positions."""
+    line1 = _col_line(col1_text, col1_xstart, y_start, page_num)
+    line2 = _col_line("col2", 200, y_start, page_num)
+    line3 = _col_line("col3", 350, y_start, page_num)
+    line4 = _right_aligned_line(col4_text, col4_xend, y_start, col4_width, page_num)
+    return Block(
+        lines=[line1, line2, line3, line4],
+        bbox=(col1_xstart, y_start, col4_xend, y_start + 12),
+        page_num=page_num,
+    )
+
+
+class TestRightAlignedColumnMatch:
+    """Fix B (calibrated against P4003R1 page 8): a column whose x-start
+    varies row-to-row by more than _COLUMN_X_TOLERANCE (10pt) but whose
+    x-end is essentially exact across all rows should still detect as
+    the same table column. The bug class: numeric columns where short
+    values like "-" sit at higher x-start than longer values like
+    "3.10x", but all right-align to the same x-end."""
+
+    def test_right_aligned_column_with_variable_xstart_detects_table(self):
+        # 3 rows; col 4 right-aligned to x_end=500. Cell widths vary:
+        # row 1 width 30 -> x_start 470; row 2 width 50 -> 450; row 3
+        # width 10 -> 490. Variance of x_start is 40pt - well beyond
+        # _COLUMN_X_TOLERANCE. Without Fix B, the x-end signal carries
+        # the column match.
+        blocks = [
+            _right_aligned_row_block("Platform", 50, "3.10x", 500.0, 30, 100),
+            _right_aligned_row_block("MSVC",     50, "1.55x", 500.0, 50, 120),
+            _right_aligned_row_block("Apple",    50, "-",     500.0, 10, 140),
+        ]
+        tables, _remaining = detect_tables(blocks)
+        assert len(tables) == 1
+        assert tables[0].kind == SectionKind.TABLE
+        # All three rows captured.
+        assert tables[0].text.count("\n") + 1 == 3
+
+    def test_xend_drift_outside_strict_tolerance_does_not_match(self):
+        """The right-aligned shortcut is gated by a strict <1.0pt
+        tolerance on x-end. Variable-text columns (e.g. TOC section
+        names) drift by 1+ pt at the right edge, which doesn't
+        trigger the fallback. Without this guard the TOC of
+        p0533r9 would be over-merged into one table absorbing all
+        section names; the regression manifested before the strict
+        threshold landed."""
+        # Three blocks with very different x-starts AND x-ends that
+        # drift more than 1pt apart. The strict end tolerance bars
+        # the fallback; the loose start tolerance is already
+        # blown -> no match.
+        line1 = _col_line("section name A", 60.0, 100)
+        line1 = Line(spans=line1.spans, bbox=(60.0, 100, 152.0, 112), page_num=0)
+        line2 = _col_line("page", 290.0, 100)
+        b1 = Block(lines=[line1, line2], bbox=(60, 100, 390, 112), page_num=0)
+
+        line1 = _col_line("section name B", 80.0, 120)
+        line1 = Line(spans=line1.spans, bbox=(80.0, 120, 158.0, 132), page_num=0)
+        line2 = _col_line("page", 290.0, 120)
+        b2 = Block(lines=[line1, line2], bbox=(80, 120, 390, 132), page_num=0)
+        # Col 1 starts diff = 20 > tolerance, ends diff = 6 >> 1.0 strict.
+        # No match expected.
+        tables, _remaining = detect_tables([b1, b2])
+        assert len(tables) == 0

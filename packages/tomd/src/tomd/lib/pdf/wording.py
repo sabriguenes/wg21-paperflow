@@ -64,16 +64,41 @@ def _hsv(color_int: int) -> tuple[float, float, float]:
     return h * 360.0, s, v
 
 
+def _in_green_band(h: float, s: float) -> bool:
+    """True if (hue 0-360, saturation 0-1) sits in the ins green band."""
+    return s >= _SATURATION_THRESHOLD and _GREEN_HUE_MIN <= h <= _GREEN_HUE_MAX
+
+
+def _in_red_band(h: float, s: float) -> bool:
+    """True if (hue 0-360, saturation 0-1) sits in the del red band."""
+    return s >= _SATURATION_THRESHOLD and (h <= _RED_HUE_WRAP or h >= 360 - _RED_HUE_WRAP)
+
+
 def is_green_ins(color_int: int) -> bool:
     """True if color is in the green hue range with sufficient saturation."""
     h, s, _ = _hsv(color_int)
-    return s >= _SATURATION_THRESHOLD and _GREEN_HUE_MIN <= h <= _GREEN_HUE_MAX
+    return _in_green_band(h, s)
 
 
 def is_red_del(color_int: int) -> bool:
     """True if color is in the red hue range with sufficient saturation."""
     h, s, _ = _hsv(color_int)
-    return s >= _SATURATION_THRESHOLD and (h <= _RED_HUE_WRAP or h >= 360 - _RED_HUE_WRAP)
+    return _in_red_band(h, s)
+
+
+def is_wording_rgb(r: float, g: float, b: float) -> bool:
+    """True if (r, g, b) floats in [0, 1] sit in the ins (green) or del (red) hue band.
+
+    Mirrors :func:`_is_wording_color` for callers that already have RGB
+    floats, such as ``pymupdf.Page.get_drawings()``, which yields
+    ``color`` and ``fill`` as float tuples rather than the packed-int
+    format ``wording.py`` originally consumed. Both predicates delegate
+    to :func:`_in_green_band` / :func:`_in_red_band`, so the hue-band
+    rule lives in one place.
+    """
+    h, s, _v = colorsys.rgb_to_hsv(r, g, b)
+    h *= 360.0
+    return _in_green_band(h, s) or _in_red_band(h, s)
 
 
 def _is_blue_link(color_int: int) -> bool:
@@ -97,7 +122,8 @@ def _is_black(color_int: int) -> bool:
 
 def _is_wording_color(color_int: int) -> bool:
     """True if color is green (ins) or red (del)."""
-    return is_green_ins(color_int) or is_red_del(color_int)
+    h, s, _ = _hsv(color_int)
+    return _in_green_band(h, s) or _in_red_band(h, s)
 
 
 def _is_foreign_chromatic(color_int: int) -> bool:

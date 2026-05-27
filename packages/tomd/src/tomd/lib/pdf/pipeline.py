@@ -1,5 +1,6 @@
 """PDF to Markdown converter - pipeline entry point."""
 
+import fitz
 import logging
 import re
 from collections import Counter
@@ -11,9 +12,12 @@ from .cleanup import (get_edge_items, detect_repeating, strip_repeating,
 from .extract import extract_mupdf, extract_spatial, collect_links, attach_links
 from .images import (
     ExtractedImage,
+    VectorUncertaintyStats,
+    _VectorExtractionStats,
     extract_page_images,
     finalize_extraction,
 )
+from .vector_images import extract_page_vector_images
 from .mono import propagate_monospace
 from .wording import classify_wording, collect_line_drawings
 from .spans import normalize_spans
@@ -155,14 +159,364 @@ def _make_image_section(img: ExtractedImage) -> Section:
     consumers like ``qa.compute_metrics`` whose word counts would be
     inflated by alt text. The canonical alt-text source is
     ``image_ref.suggested_alt``, read by the emit step.
+
+    Confidence keys off ``img.source``: raster XObjects carry HIGH
+    (the bytes are unambiguously a figure), vector clusters carry
+    MEDIUM (the heuristic that grouped path operators into a figure
+    is single-signal and uncertain - see the vector-extraction plan
+    section 1.2).
     """
+    confidence = Confidence.MEDIUM if img.source == "vector" else Confidence.HIGH
     return Section(
         kind=SectionKind.IMAGE,
         text="",
-        confidence=Confidence.HIGH,
+        confidence=confidence,
         page_num=img.page - 1,    # Section.page_num is 0-based
         image_ref=img,
     )
+
+
+# Threshold for the structural-overlap filter (see
+# :func:`_filter_vector_images_against_structural`). A vector
+# ExtractedImage whose bbox overlaps a TABLE or CODE section by at
+# least this fraction of the image area is treated as a duplicate of
+# the structural representation and dropped. 0.5 is conservative
+# enough that a real figure with a stray code line at one edge stays
+# kept, while catching the calibrated false-positive cases:
+#
+# - P4003R1 page 8 comparison table (4 per-column vector PNGs
+#   each ~100% overlapping the detected TABLE bbox).
+# - P4003R1 pages 67 and 69 code-block backgrounds (vector PNGs
+#   ~100% overlapping the CODE section the text path produces).
+_STRUCTURAL_OVERLAP_THRESHOLD = 0.5
+
+# Thresholds for the vector-image dedup filter (see
+# :func:`_filter_overlapping_vector_images`). A small vector image
+# whose bbox overlaps a larger vector image's bbox by at least this
+# fraction of the small image's area AND whose area is at most
+# :data:`_OVERLAPPING_VECTOR_AREA_RATIO` of the larger image's area
+# is treated as a detail crop of content already in the larger
+# image and dropped. Calibrated against P4003R1 page 13's fig13-2
+# (87x90pt small image, 40% inside fig13-1 at 481x256pt, area
+# ratio 6.3% - clearly a redundant detail crop).
+#
+# The area-ratio guard prevents two genuinely adjacent figures of
+# similar size (e.g. side-by-side panels) from being deduped just
+# because their bboxes happen to overlap.
+_OVERLAPPING_VECTOR_THRESHOLD = 0.30
+_OVERLAPPING_VECTOR_AREA_RATIO = 0.20
+
+# Threshold for the text-inside-vector dedup filter (see
+# :func:`_filter_sections_inside_vector_images`). A non-structural
+# section whose bbox is at least this fraction inside a surviving
+# vector image's bbox is treated as duplicate content (the same
+# text is already rasterised into the PNG) and dropped from the
+# section list. TABLE, CODE, and IMAGE sections are never filtered
+# - they are structural representations that stay regardless.
+_SECTION_INSIDE_VECTOR_THRESHOLD = 0.5
+
+
+def _section_bbox(
+    sec: Section,
+) -> tuple[float, float, float, float] | None:
+    """Return the union bbox of a section's lines, or None if it has none."""
+    if not sec.lines:
+        return None
+    bbox = sec.lines[0].bbox
+    for line in sec.lines[1:]:
+        bbox = (
+            min(bbox[0], line.bbox[0]),
+            min(bbox[1], line.bbox[1]),
+            max(bbox[2], line.bbox[2]),
+            max(bbox[3], line.bbox[3]),
+        )
+    return bbox
+
+
+def _bbox_overlap_fraction(
+    image_bbox: tuple[float, float, float, float],
+    section_bbox: tuple[float, float, float, float],
+) -> float:
+    """Intersection area divided by ``image_bbox`` area.
+
+    Returns 0.0 when image_bbox has non-positive area. Used to decide
+    whether a vector image is "mostly inside" a structural section.
+    """
+    ix0, iy0, ix1, iy1 = image_bbox
+    sx0, sy0, sx1, sy1 = section_bbox
+    overlap_w = max(0.0, min(ix1, sx1) - max(ix0, sx0))
+    overlap_h = max(0.0, min(iy1, sy1) - max(iy0, sy0))
+    image_area = (ix1 - ix0) * (iy1 - iy0)
+    if image_area <= 0:
+        return 0.0
+    return (overlap_w * overlap_h) / image_area
+
+
+def _filter_vector_images_against_structural(
+    images: list[ExtractedImage],
+    sections: list[Section],
+    *,
+    threshold: float = _STRUCTURAL_OVERLAP_THRESHOLD,
+) -> tuple[list[ExtractedImage], list[Section], int]:
+    """Drop vector ExtractedImage records (and their IMAGE sections)
+    that overlap a TABLE or CODE section by more than ``threshold``.
+
+    A vector PNG that lands on top of a structural section (TABLE or
+    CODE) duplicates content the markdown already renders structurally
+    (as a markdown table or fenced code block). Removing the vector
+    duplicate keeps the output clean and resolves the calibrated
+    false-positive classes documented in:
+
+    - bug-p4003r1-pg8-table-extraction.md (per-column vector PNGs of
+      a comparison table).
+    - improvements.md section 4.7 (vector PNGs duplicating code-block
+      content on P4003R1 pages 67 and 69).
+
+    Raster images are not filtered; an embedded raster image that
+    overlaps a code block or table is presumed intentional (annotated
+    diagram, embedded screenshot).
+
+    Returns ``(filtered_images, filtered_sections, dropped_count)``.
+    The dropped count is used to adjust the per-paper vector
+    uncertainty marker's ``kept`` value so its disclosure matches the
+    actual markdown content.
+    """
+    # Per-page body x-range from non-table, non-image content. Used to
+    # inflate TABLE bboxes for the overlap test: table Section bboxes are
+    # the union of cell-text bboxes, which are tight to glyphs and ignore
+    # column padding. A vector cluster sitting in a table's column-padding
+    # whitespace (canonical case: P4003R1 page 72 right column, vector at
+    # x=326-538 vs table text x_end=409) would otherwise overlap below
+    # the 0.5 threshold and survive. Stretching to the body x-range
+    # restores the full visual column extent.
+    body_x_by_page: dict[int, tuple[float, float]] = {}
+    for sec in sections:
+        if sec.kind in (SectionKind.TABLE, SectionKind.IMAGE):
+            continue
+        page = sec.page_num + 1
+        for line in sec.lines:
+            bx0, bx1 = line.bbox[0], line.bbox[2]
+            prev = body_x_by_page.get(page)
+            if prev is None:
+                body_x_by_page[page] = (bx0, bx1)
+            else:
+                body_x_by_page[page] = (min(prev[0], bx0), max(prev[1], bx1))
+
+    structural_bboxes_by_page: dict[int, list[tuple[float, float, float, float]]] = {}
+    for sec in sections:
+        if sec.kind not in (SectionKind.TABLE, SectionKind.CODE):
+            continue
+        bbox = _section_bbox(sec)
+        if bbox is None:
+            continue
+        # ExtractedImage.page is 1-based; Section.page_num is 0-based.
+        page = sec.page_num + 1
+        if sec.kind == SectionKind.TABLE:
+            body_x = body_x_by_page.get(page)
+            if body_x is not None:
+                bbox = (min(bbox[0], body_x[0]), bbox[1],
+                        max(bbox[2], body_x[1]), bbox[3])
+        structural_bboxes_by_page.setdefault(page, []).append(bbox)
+
+    if not structural_bboxes_by_page:
+        return images, sections, 0
+
+    dropped_ids: set[int] = set()
+    kept_images: list[ExtractedImage] = []
+    for im in images:
+        if im.source != "vector":
+            kept_images.append(im)
+            continue
+        page_bboxes = structural_bboxes_by_page.get(im.page, ())
+        if any(
+            _bbox_overlap_fraction(im.bbox, b) >= threshold
+            for b in page_bboxes
+        ):
+            dropped_ids.add(id(im))
+            continue
+        kept_images.append(im)
+
+    if not dropped_ids:
+        return images, sections, 0
+
+    kept_sections = [
+        s for s in sections
+        if not (
+            s.kind == SectionKind.IMAGE
+            and s.image_ref is not None
+            and id(s.image_ref) in dropped_ids
+        )
+    ]
+    return kept_images, kept_sections, len(dropped_ids)
+
+
+def _filter_overlapping_vector_images(
+    images: list[ExtractedImage],
+    sections: list[Section],
+    *,
+    overlap_threshold: float = _OVERLAPPING_VECTOR_THRESHOLD,
+    area_ratio: float = _OVERLAPPING_VECTOR_AREA_RATIO,
+) -> tuple[list[ExtractedImage], list[Section], int]:
+    """Drop vector images that are detail crops of larger vector images.
+
+    A vector image A is treated as a redundant detail crop of a
+    larger vector image B when:
+
+    - A and B are on the same page,
+    - A's bbox overlaps B's bbox by at least ``overlap_threshold``
+      of A's area, AND
+    - A's area is at most ``area_ratio`` of B's area (i.e. A is
+      MUCH smaller than B - the area-ratio guard distinguishes a
+      detail crop from a genuinely adjacent similar-sized figure).
+
+    Resolves the calibrated false-positive case where a small
+    cluster ends up adjacent to a much larger merged figure on the
+    same page and shows duplicate content (P4003R1 page 13's
+    fig13-2 "run_async legend" box overlapping fig13-1 main diagram
+    at ~40% of fig13-2's area, area ratio 6.3%).
+
+    The corresponding IMAGE section in ``sections`` (placed by
+    :func:`_insert_image_sections`) is also removed so the markdown
+    doesn't reference a dropped image.
+
+    Returns ``(filtered_images, filtered_sections, dropped_count)``.
+    """
+    # Group vector images by page; sort each page's list by area
+    # descending so we test smaller-vs-larger pairs.
+    vectors_by_page: dict[int, list[int]] = {}
+    for i, im in enumerate(images):
+        if im.source != "vector":
+            continue
+        vectors_by_page.setdefault(im.page, []).append(i)
+
+    def _area(im: ExtractedImage) -> float:
+        return (im.bbox[2] - im.bbox[0]) * (im.bbox[3] - im.bbox[1])
+
+    dropped_ids: set[int] = set()
+    for page_indices in vectors_by_page.values():
+        # Sort descending by area so the largest is considered first.
+        sorted_idx = sorted(
+            page_indices, key=lambda i: _area(images[i]), reverse=True,
+        )
+        # Larger images are "potential containers"; smaller images may
+        # be detail crops. Compare each smaller against each kept
+        # larger one. ``kept_local`` is the surviving subset on this
+        # page that smaller images get tested against.
+        kept_local: list[int] = []
+        for i in sorted_idx:
+            im = images[i]
+            im_area = _area(im)
+            is_dup = False
+            for j in kept_local:
+                larger = images[j]
+                larger_area = _area(larger)
+                if im_area > area_ratio * larger_area:
+                    # Not "much smaller" than larger - keep both.
+                    continue
+                if _bbox_overlap_fraction(im.bbox, larger.bbox) >= overlap_threshold:
+                    is_dup = True
+                    break
+            if is_dup:
+                dropped_ids.add(id(im))
+            else:
+                kept_local.append(i)
+
+    if not dropped_ids:
+        return images, sections, 0
+
+    kept_images = [im for im in images if id(im) not in dropped_ids]
+    kept_sections = [
+        s for s in sections
+        if not (
+            s.kind == SectionKind.IMAGE
+            and s.image_ref is not None
+            and id(s.image_ref) in dropped_ids
+        )
+    ]
+    return kept_images, kept_sections, len(dropped_ids)
+
+
+def _filter_sections_inside_vector_images(
+    images: list[ExtractedImage],
+    sections: list[Section],
+    *,
+    threshold: float = _SECTION_INSIDE_VECTOR_THRESHOLD,
+) -> list[Section]:
+    """Drop lines inside surviving vector image bboxes from non-structural sections.
+
+    The vector image already shows the line's text content as
+    rasterised pixels (a label rendered inside a diagram is baked
+    into the PNG by ``page.get_pixmap``), so re-emitting the same
+    line as body markdown produces visible duplication. P4003R1
+    page 13's diagram labels ("I/O operation child task parent task
+    run_async / handle() / set_environment(env) / ...") are the
+    calibrated case.
+
+    Operates line-by-line rather than section-by-section because the
+    structure pipeline often joins a diagram's leaked labels with
+    surrounding prose into one PARAGRAPH section. A whole-section
+    filter would over-drop the prose too. Per-line filtering keeps
+    bullet text adjacent to a figure while dropping the figure's own
+    labels.
+
+    Sections whose lines are ALL filtered out are removed entirely.
+    Sections that lose SOME lines get a rebuilt ``text`` (simple
+    newline-join of surviving lines' text); if every line in the
+    section survives, the section is returned unchanged.
+
+    TABLE, CODE, and IMAGE sections are always kept verbatim - they
+    are structural representations that should stay regardless of
+    overlap (and the structural-overlap filter at
+    :func:`_filter_vector_images_against_structural` has already
+    handled the reverse case of dropping vectors that duplicate
+    structural sections).
+    """
+    image_bboxes_by_page: dict[int, list[tuple[float, float, float, float]]] = {}
+    for im in images:
+        if im.source != "vector":
+            continue
+        image_bboxes_by_page.setdefault(im.page, []).append(im.bbox)
+    if not image_bboxes_by_page:
+        return sections
+
+    from dataclasses import replace
+    structural_kinds = {SectionKind.TABLE, SectionKind.CODE, SectionKind.IMAGE}
+    kept: list[Section] = []
+    for sec in sections:
+        if sec.kind in structural_kinds:
+            kept.append(sec)
+            continue
+        if not sec.lines:
+            kept.append(sec)
+            continue
+        page = sec.page_num + 1  # 1-based to match ExtractedImage.page
+        page_bboxes = image_bboxes_by_page.get(page, ())
+        if not page_bboxes:
+            kept.append(sec)
+            continue
+
+        kept_lines = []
+        for line in sec.lines:
+            line_bbox = line.bbox
+            if line_bbox == (0, 0, 0, 0):
+                # No bbox info - can't decide, keep.
+                kept_lines.append(line)
+                continue
+            if any(
+                _bbox_overlap_fraction(line_bbox, ib) >= threshold
+                for ib in page_bboxes
+            ):
+                continue
+            kept_lines.append(line)
+
+        if len(kept_lines) == len(sec.lines):
+            kept.append(sec)
+            continue
+        if not kept_lines:
+            continue  # all lines dropped - section gone
+        new_text = "\n".join(line.text for line in kept_lines)
+        kept.append(replace(sec, lines=kept_lines, text=new_text))
+    return kept
 
 
 def _insert_image_sections(
@@ -225,6 +579,7 @@ class PipelineResult:
     images: list[ExtractedImage] = field(default_factory=list)
     source_image_count: int = 0
     images_truncated: bool = False
+    vector_uncertainty: VectorUncertaintyStats | None = None
 
 
 def _parse_pdf_info_date(raw: str) -> str:
@@ -313,13 +668,29 @@ def _enrich_pdf_reply_to(
     metadata["reply-to"] = existing
 
 
-def run_pipeline(path: Path) -> PipelineResult:
-    """Run the full PDF conversion pipeline, returning all intermediate data."""
-    import fitz
+def run_pipeline(
+    path: Path,
+    *,
+    extract_vector: bool = False,
+    whiteout_text: bool = False,
+) -> PipelineResult:
+    """Run the full PDF conversion pipeline, returning all intermediate data.
 
+    ``extract_vector`` opts in to vector-figure extraction (v2.0 default
+    off; see :mod:`tomd.lib.pdf.vector_images` for the heuristic and
+    :mod:`packages.tomd.improvements` for the layout-aware successor).
+    When False, the per-page driver is not called and per-page candidate
+    lists carry only the raster path's output - byte-identical to the
+    pre-v2 behaviour.
+
+    ``whiteout_text`` is forwarded to the vector driver and has no
+    effect when ``extract_vector`` is False.
+    labels inside vector figures render as pixels alongside body text.
+    """
     path = Path(path)
     result = PipelineResult()
     doc = None
+    vector_stats = _VectorExtractionStats() if extract_vector else None
     try:
         doc = fitz.open(str(path))
         result.page_count = doc.page_count
@@ -370,9 +741,19 @@ def run_pipeline(path: Path) -> PipelineResult:
             attach_links(mupdf_blocks, links)
             attach_links(spatial_blocks, links)
 
-            per_page_image_candidates.append(
-                extract_page_images(page, spatial_blocks)
-            )
+            raster_candidates = extract_page_images(page, spatial_blocks)
+            if extract_vector:
+                vector_candidates, page_vector_stats = extract_page_vector_images(
+                    page, spatial_blocks, whiteout_text=whiteout_text,
+                )
+                vector_stats = _VectorExtractionStats.combine(
+                    vector_stats, page_vector_stats,
+                )
+                per_page_image_candidates.append(
+                    raster_candidates + vector_candidates
+                )
+            else:
+                per_page_image_candidates.append(raster_candidates)
 
             all_mupdf_blocks.extend(mupdf_blocks)
             all_spatial_blocks.extend(spatial_blocks)
@@ -417,11 +798,13 @@ def run_pipeline(path: Path) -> PipelineResult:
         return result
 
     extraction_result = finalize_extraction(
-        per_page_image_candidates, path.stem.lower()
+        per_page_image_candidates, path.stem.lower(),
+        vector_stats=vector_stats,
     )
     result.images = extraction_result.images
     result.source_image_count = extraction_result.source_image_count
     result.images_truncated = extraction_result.images_truncated
+    result.vector_uncertainty = extraction_result.vector_uncertainty
 
     repeating = detect_repeating(all_edge_items, result.page_count)
     if repeating:
@@ -481,6 +864,42 @@ def run_pipeline(path: Path) -> PipelineResult:
     structure_metadata, sections, nesting_corrections = structure_sections(
         sections, has_title=has_title)
     metadata = {**structure_metadata, **wg21_metadata}
+
+    # Vector-image post-processing, in three passes:
+    #   1. Defer to structural sections: drop vector PNGs that
+    #      duplicate a TABLE or CODE region the structure pass
+    #      already produced (the structural representation is
+    #      canonical).
+    #   2. Dedup overlapping vectors: drop small vector PNGs that
+    #      are detail crops of larger surviving ones (the larger
+    #      image already shows the content).
+    #   3. Drop body-text sections that fall mostly inside a
+    #      surviving vector PNG (the same text is already
+    #      rasterised into the image; emitting it as prose creates
+    #      duplicated content).
+    # All three are skipped when result.images is empty. The
+    # vector_uncertainty marker's ``kept`` count is recomputed once
+    # at the end so its disclosure matches what actually lands in
+    # the markdown.
+    if result.images:
+        total_dropped = 0
+        result.images, sections, dropped_a = (
+            _filter_vector_images_against_structural(result.images, sections)
+        )
+        total_dropped += dropped_a
+        result.images, sections, dropped_b = (
+            _filter_overlapping_vector_images(result.images, sections)
+        )
+        total_dropped += dropped_b
+        sections = _filter_sections_inside_vector_images(
+            result.images, sections,
+        )
+        if total_dropped and result.vector_uncertainty is not None:
+            from dataclasses import replace
+            new_kept = sum(1 for im in result.images if im.source == "vector")
+            result.vector_uncertainty = replace(
+                result.vector_uncertainty, kept=new_kept,
+            )
 
     if "document" not in metadata:
         from .. import DOC_NUM_RE
@@ -558,6 +977,7 @@ def run_pipeline(path: Path) -> PipelineResult:
         sections,
         images_truncated=result.images_truncated,
         source_image_count=result.source_image_count,
+        vector_uncertainty=result.vector_uncertainty,
     )
     prompts = emit_prompts(sections)
 
@@ -581,7 +1001,12 @@ def run_pipeline(path: Path) -> PipelineResult:
     return result
 
 
-def convert_pdf(path: Path) -> tuple[str, list[str] | None]:
+def convert_pdf(
+    path: Path,
+    *,
+    extract_vector: bool = False,
+    whiteout_text: bool = False,
+) -> tuple[str, list[str] | None]:
     """Convert a PDF file to Markdown.
 
     Returns ``(markdown_text, prompts_or_none)`` where ``prompts_or_none``
@@ -590,6 +1015,9 @@ def convert_pdf(path: Path) -> tuple[str, list[str] | None]:
     converter is fully confident. Returns ``("", None)`` for empty or
     unreadable PDFs. Raises fitz exceptions for corrupt or inaccessible
     files.
+
+    ``extract_vector`` opts in to vector-figure extraction. See
+    :func:`run_pipeline` for the contract.
     """
-    r = run_pipeline(path)
+    r = run_pipeline(path, extract_vector=extract_vector, whiteout_text=whiteout_text)
     return r.md, r.prompts

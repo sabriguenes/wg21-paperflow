@@ -298,6 +298,8 @@ async def run_convert(
     force: bool = False,
     concurrency: int = 4,
     write_prompts: bool = True,
+    extract_vector: bool = False,
+    whiteout_text: bool = False,
     on_progress: ProgressCallback | None = None,
 ) -> dict:
     """Convert staged source files to markdown. Workers run in threads.
@@ -305,6 +307,11 @@ async def run_convert(
     ``write_prompts`` controls whether the ``<pid>.prompts.json``
     intermediate is persisted (default True). Set False from CLI flows
     that explicitly opt out via ``--no-prompts``.
+
+    ``extract_vector`` and ``whiteout_text`` are forwarded to the tomd
+    PDF pipeline via :func:`convert_one_paper`. Default off; opting
+    in extracts vector figures (path-operator clusters) as PNGs
+    alongside raster images.
 
     ``on_progress`` is invoked after each task completion with a
     :class:`~paperstore.progress.ProgressEvent`.
@@ -352,7 +359,11 @@ async def run_convert(
                 # Worker reads the source but does no backend writes;
                 # the main coroutine persists through the backend below.
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(convert_one_paper, paper),
+                    asyncio.to_thread(
+                        convert_one_paper, paper,
+                        extract_vector=extract_vector,
+                        whiteout_text=whiteout_text,
+                    ),
                     timeout=120,
                 )
                 return {
@@ -361,6 +372,7 @@ async def run_convert(
                     "prompts": result.prompts,
                     "intent": result.intent,
                     "title": result.title,
+                    "images": result.images,
                     "status": "ok",
                 }
             except RuntimeError as exc:
@@ -391,6 +403,16 @@ async def run_convert(
         result = await coro
         if result["status"] == "ok":
             pid = result["paper_id"]
+            # Persist extracted images first so the markdown's image
+            # references resolve when a reader opens the file. Mirrors
+            # the delete-then-write rebuild in pipeline._stage_convert.
+            pdf_images = [img for img in result.get("images", []) if img.bytes]
+            if pdf_images:
+                backend.delete_paper_images(pid)
+                for img in pdf_images:
+                    backend.write_paper_image(
+                        pid, img.page, img.index_on_page, img.ext, img.bytes,
+                    )
             md_path = backend.write_paper_md(pid, result["markdown"])
             if write_prompts and result["prompts"]:
                 backend.write_intermediate(pid, "prompts", result["prompts"])

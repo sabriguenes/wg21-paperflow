@@ -60,6 +60,8 @@ def run_process_command(
     force = getattr(args, "force", False)
     keep_downstream = getattr(args, "keep_downstream", False)
     skip_prompt = getattr(args, "yes", False)
+    extract_vector = getattr(args, "extract_vector_images", False)
+    whiteout_text = getattr(args, "vector_whiteout_text", False)
     classifier_overrides = _parse_classifier_overrides(getattr(args, "classifier", None))
     provider_override = getattr(args, "provider", None)
 
@@ -150,6 +152,8 @@ def run_process_command(
                         provider_override=provider_override,
                         force=force,
                         keep_downstream=keep_downstream,
+                        extract_vector=extract_vector,
+                        whiteout_text=whiteout_text,
                         on_progress=None if show_outer else on_progress,
                     )
                 )
@@ -187,10 +191,22 @@ def run_process_command(
             f"{truncated[0][1].images_kept}-image cap:"
         )
         for pid, r in truncated:
-            print(f"  {pid} (kept {r.images_kept} of {r.source_image_count})")
+            # Mixed format only when both kinds contributed at least one
+            # image. A pure-raster paper (or a vector run with zero
+            # raster) gets the simple format so noise stays out.
+            if r.source_raster_count > 0 and r.source_vector_count > 0:
+                print(
+                    f"  {pid} (kept {r.images_kept} of {r.source_image_count}: "
+                    f"{r.source_raster_count} raster + "
+                    f"{r.source_vector_count} vector)"
+                )
+            else:
+                print(
+                    f"  {pid} (kept {r.images_kept} of {r.source_image_count})"
+                )
         print(
-            "  hint: vector diagrams and scanned-page PDFs are not handled "
-            "in v1 - see `improvements.md` section 4.\n"
+            "  hint: scanned-page PDFs are not handled - see "
+            "`improvements.md` section 4.\n"
             "  The dropped images are noted in each paper.md as an HTML comment."
         )
     invalidated = [(pid, r) for pid, r in convert_reports if r.downstream_cleared]

@@ -120,19 +120,25 @@ Run two or three layout-only detectors per page in parallel and require quorum. 
 
 **What the layout model does NOT do:** produce text. Keep text extraction strictly with MuPDF (born-digital PDFs give exact glyph data). The third path contributes geometry + typed labels + reading order, not characters. Hallucination risk stays low.
 
-**Forward integration with the embedded-raster extractor.** The Resource-Dictionary path in [`tomd/lib/pdf/images.py`](src/tomd/lib/pdf/images.py) (shipped as v1) is independent of Paths 1-3 and produces `SectionKind.IMAGE` sections with regex-derived alt text. When the layout-aware path lands, three integration points open up:
+**Forward integration with the figure extractors.** Two figure-extraction paths ship today, both producing `SectionKind.IMAGE` sections with regex-derived alt text:
+
+- The Resource-Dictionary raster path in [`tomd/lib/pdf/images.py`](src/tomd/lib/pdf/images.py) (v1) reads embedded raster XObjects.
+- The vector-clustering path in [`tomd/lib/pdf/vector_images.py`](src/tomd/lib/pdf/vector_images.py) (v2, opt-in via `--extract-vector-images`) groups page drawing operators into figure candidates, filters decoration, and rasterises survivors. Heuristic by design; surfaces a per-paper `tomd:vector-extraction-uncertain` HTML marker disclosing what got rejected.
+
+When the layout-aware path lands, four integration points open up:
 
 - **a.** IoU each `picture` bbox from the layout model against `ExtractedImage.bbox` records. A match raises figure confidence and contributes the `picture` signal to the N-way agreement vector.
-- **b.** Treat `picture` bboxes with **no** embedded-raster match as vector-diagram candidates and rasterise that region of the rendered page. This is the current v1 non-goal (`pymupdf.get_images()` does not expose vector drawings); the layout model is the trigger that unlocks it.
-- **c.** Replace the v1 caption-proximity regex with structural `caption` labels from the layout model when present, falling back to the regex when absent. The regex stays a useful fallback because layout models occasionally miss the `caption` label on tightly-spaced figures.
+- **b.** Treat `picture` bboxes with **no** embedded-raster match as vector-diagram candidates. Today the v2 heuristic in `vector_images.py` handles this from drawing geometry alone; with a `picture` bbox in hand, the heuristic can be replaced by a single rasterise-the-region call (no clustering, no filter, no rejection-reason accounting), which removes the false-positive uncertainty that justifies v2's opt-in default. The promotion path from v2's opt-in to default-on is precisely this: once a layout `picture` label is available, the heuristic's rejection band collapses to "trust the structural signal."
+- **c.** Replace the caption-proximity regex with structural `caption` labels from the layout model when present, falling back to the regex when absent. The regex stays a useful fallback because layout models occasionally miss the `caption` label on tightly-spaced figures.
+- **d.** Retire `vector_images.py`'s heuristic constants (`_MIN_CLUSTER_DIM_PT`, `_MAX_TEXT_OVERLAP_FRACTION`, `_MIN_CLUSTER_ITEM_COUNT`, etc.) once the layout model's `picture` label is the load-bearing signal. The module can shrink to its bbox-clamp + rasterise + caption-reuse essentials.
 
 The N-way agreement vector documented above extends from `(mupdf_block_id, spatial_block_id, layout_label, layout_bbox)` to include a fifth element:
 
 ```
-(mupdf_block_id, spatial_block_id, layout_label, layout_bbox, embedded_raster_xref)
+(mupdf_block_id, spatial_block_id, layout_label, layout_bbox, image_source)
 ```
 
-`embedded_raster_xref` is the xref from `ExtractedImage` when the layout `picture` bbox IoU-matched an embedded image, or null when it didn't (the vector-diagram case). The stability commitment in `tomd/CLAUDE.md` already documents which parts of `SectionKind.IMAGE` are pinned vs. swap-points for this integration, so the layout path can plug in without breaking emit or downstream consumers.
+`image_source` is the `ExtractedImage.source` field (`"raster"` / `"vector"`) plus its `xref` when the layout `picture` bbox IoU-matched an extracted image, or null when no match exists. The stability commitment in `tomd/CLAUDE.md` already documents which parts of `SectionKind.IMAGE` are pinned vs. swap-points for this integration, so the layout path can plug in without breaking emit or downstream consumers.
 
 ### 4.4 A La Carte Opportunities
 
@@ -154,6 +160,40 @@ The N-way agreement vector documented above extends from `(mupdf_block_id, spati
 - olmOCR-Bench: https://huggingface.co/datasets/allenai/olmOCR-bench
 - MinerU vs Docling layout mAP: https://www.codesota.com/ocr/docling-vs-mineru
 - DocLayout-YOLO paper: https://huggingface.co/papers/2410.12628
+
+### 4.7 Known v2.0 vector-extraction limitations (calibrated against P4003R1)
+
+The v2.0 vector-extraction heuristic in `tomd/lib/pdf/vector_images.py` has known false-positive classes pending the layout-aware path above (§4.3) which would replace the heuristic with structural `picture` bboxes.
+
+**Horizontal flow diagrams with thin outer containers: handled via container detection.**
+
+P4003R1 page 8 has an "IoAwaitable → IoRunnable → io_task<T>" flow diagram drawn as one row of labeled boxes connected by arrows. Its bbox is 381 × 35 pt — well under the strict `_MIN_CLUSTER_DIM_PT = 60` floor. The pattern is a thin outer container (2-item rectangle) enclosing smaller per-label clusters; centroid-based clustering doesn't merge them, so naively the outer cluster has only 2 items and the inner clusters are individually too small.
+
+Resolved via `_detect_frame_drawings` + `_merge_clusters_into_frames` in `vector_images.py`: a frame-shaped drawing (low item count, extreme aspect, area < 30% of page) explicitly merges with the clusters it encloses into a "virtual cluster" with combined item count and union bbox. Virtual clusters get a relaxed min-dim floor (`_VIRTUAL_MIN_CLUSTER_DIM_PT = 30`) and bypass the `aspect_extreme` filter when their item count clears `_VIRTUAL_MIN_ITEM_COUNT = 50`. Targeted enough not to over-merge unrelated nearby content; constraints documented inline.
+
+**Vector clusters duplicating structural content: handled via structural-overlap filter.**
+
+P4003R1 pages 67 and 69 have code blocks rendered with substantial syntax-highlight vector decoration; P4003R1 page 8 has a comparison table where each cell has its own background rectangle. These cluster as vector figures despite the text path already producing structural representations (markdown code blocks, markdown tables).
+
+Resolved via `_filter_vector_images_against_structural` in `pipeline.py`: after `structure_sections` completes, any vector `ExtractedImage` whose bbox overlaps a `SectionKind.TABLE` or `SectionKind.CODE` section by more than `_STRUCTURAL_OVERLAP_THRESHOLD` (50%) is dropped, and its corresponding IMAGE section removed from the section list. Raster images are not filtered (embedded screenshots co-located with code blocks are intentional content). The per-paper uncertainty marker's `kept` count is recomputed after filtering so its disclosure matches the actual markdown.
+
+The fix relies on the structure pipeline correctly identifying TABLE and CODE sections. For the P4003R1 page 8 comparison table specifically, `tomd/lib/pdf/table.py`'s `_columns_match` was also extended with a right-edge-fallback signal so right-aligned numeric columns whose x-start varies row-to-row by cell-text length but whose x-end is exact (the canonical "1265.2" vs "-" both right-aligning to the same edge) detect as the same column. The fallback uses a strict `_COLUMN_X_END_TOLERANCE = 1.0pt` so it doesn't false-positive on table-of-contents-style layouts where section-name endings drift 1-2pt by coincidence.
+
+### 4.8 Known text-pipeline bug: code-block reordering (independent of vector extraction)
+
+Surfaced during P4003R1 calibration but not caused by vector extraction. P4003R1 page 34 has the layout:
+
+```
+y= 61-118  prose: "The window... TLS remains valid between await_suspend and await_resume:"
+y=155-397  code:  auto initial_suspend() noexcept { ... }
+y=434-462  prose: "Every time the coroutine resumes... The flow:"
+```
+
+PDF y-order is prose → code → prose. The converted markdown emits them as prose → prose → code, suggesting the structure pipeline (`structure.py`'s paragraph-merge pass, most likely) merges the two prose paragraphs across the interleaving code section.
+
+The v1 IMAGE-survival pass guards against this for `SectionKind.IMAGE`. The equivalent guard for `SectionKind.CODE` may be missing or the merge predicate is firing because the first prose lacks terminal punctuation. Affects pure-raster runs too on any paper with prose-code-prose layout; the vector-extraction flag only made this paper visible during review.
+
+Fix location: `tomd/lib/pdf/structure.py`'s paragraph-merge / section-ordering passes. Add a CODE-respecting guard symmetric to the IMAGE one. Separate ticket; medium-to-high complexity (requires tracing how `compare_extractions` builds the section order and where merging happens).
 
 ---
 

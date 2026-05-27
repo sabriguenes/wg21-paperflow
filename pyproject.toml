@@ -17,7 +17,12 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest~=8.0", "ruff~=0.6", "pyright>=1.1"]
+# Pillow is test-only: tomd's vector-fixture aHash test uses PIL.Image
+# for 8x8 perceptual comparison. Not loaded at runtime - whiteout uses
+# pymupdf.Pixmap.set_rect directly. Keeping Pillow out of any package's
+# [project.dependencies] avoids cross-codec linkage (zlib/libjpeg/libpng)
+# drift between pymupdf and Pillow at install time.
+dev = ["pytest~=8.0", "ruff~=0.6", "pyright>=1.1", "pillow>=11.0"]
 
 [tool.uv]
 package = false

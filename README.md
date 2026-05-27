@@ -29,6 +29,8 @@ paperflow convert all           # converts only what's not yet converted
 | `--force` / `-f` | mailing, download, convert, full | Redo stage even if already complete |
 | `--verify` | download, full | HEAD-check staged files against Content-Length |
 | `--concurrency N` | download, convert, full | Parallel workers (defaults vary) |
+| `--extract-vector-images` | convert, full | Opt in to vector-figure extraction (heuristic; see Images below) |
+| `--vector-whiteout-text` | convert, full | When extracting vector figures, paint over text inside each cluster |
 | `--workspace-dir DIR` | all | Backend root (default: `$WG21_DATA_DIR`) |
 
 All commands and flags are shown by running `paperflow` with no arguments.
@@ -60,12 +62,11 @@ uv run pytest
 
 PDFs and HTML papers with embedded raster images get those images extracted to `paperstore/<pid>-fig{page}-{n}.{ext}` and referenced in the converted markdown as `![caption](file)`. PDF captions come from "Figure N: ..."-style labels near the image; HTML captions come from `<figcaption>` or the `alt` attribute. HTML papers also get a `<pid>.html-images.json` sidecar manifest that records the mailing-to-tomd handoff.
 
-**Out of scope for v1:**
+**Vector diagrams** drawn with PDF path/line operators (flowcharts, graph diagrams) can be extracted under the opt-in `--extract-vector-images` flag. The extractor clusters spatially adjacent path operators per page, rejects clusters that look like decoration (table borders, running-header rules, ins/del-coloured strokes, regions overlapping text blocks), and rasterises survivors to PNG via `page.get_pixmap`. The output is heuristic by design: each converted paper carries a trailing `<!-- tomd:vector-extraction-uncertain: ... -->` HTML comment disclosing per-paper rejection counts so a reader can see why a diagram might be missed. The opt-in default is deliberate; flip when a fresh corpus re-survey or the layout-aware path (see `packages/tomd/improvements.md` §4) justifies it.
 
-- **Vector diagrams** drawn with PDF path/line operators (flowcharts, graph diagrams) are not extracted - `pymupdf` does not expose them as images and a page-region rasteriser has not yet been added.
-- **Scanned-page PDFs** whose body is one image per page are similarly out of scope.
+**Out of scope:**
 
-See `packages/tomd/improvements.md` §4 for the layout-aware extraction path that would unlock both cases.
+- **Scanned-page PDFs** whose body is one image per page. See `packages/tomd/improvements.md` §4.
 
 Papers with more than 20 unique embedded images keep the first 20 in source order and append a `<!-- tomd:images-truncated: ... -->` HTML comment at end-of-body recording the cap.
 

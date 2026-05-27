@@ -51,6 +51,8 @@ async def process_paper(
     provider_override: str | None = None,
     force: bool = False,
     keep_downstream: bool = False,
+    extract_vector: bool = False,
+    whiteout_text: bool = False,
     on_progress: object = None,
 ) -> ProcessResult:
     """Advance a paper through pipeline stages up to ``through``.
@@ -132,6 +134,8 @@ async def process_paper(
                 classifier_overrides=classifier_overrides,
                 provider_override=provider_override,
                 keep_downstream=keep_downstream,
+                extract_vector=extract_vector,
+                whiteout_text=whiteout_text,
                 on_progress=on_progress,
             )
         except Exception as exc:
@@ -208,13 +212,20 @@ async def _run_stage(
     classifier_overrides: dict[str, str] | None = None,
     provider_override: str | None = None,
     keep_downstream: bool = False,
+    extract_vector: bool = False,
+    whiteout_text: bool = False,
     on_progress: object = None,
 ) -> Any:
     """Execute a single pipeline stage for one paper."""
     if stage == STAGES["download"]:
         await _stage_download(pid, backend, on_progress=on_progress)
     elif stage == STAGES["convert"]:
-        return await _stage_convert(pid, backend, keep_downstream=keep_downstream)
+        return await _stage_convert(
+            pid, backend,
+            keep_downstream=keep_downstream,
+            extract_vector=extract_vector,
+            whiteout_text=whiteout_text,
+        )
     elif stage == STAGES["agora"]:
         await _stage_agora(pid, backend, debug=debug, trace=trace,
                            provider_override=provider_override,
@@ -347,6 +358,8 @@ async def _stage_convert(
     backend: StorageBackend,
     *,
     keep_downstream: bool = False,
+    extract_vector: bool = False,
+    whiteout_text: bool = False,
 ) -> ConvertReport:
     """Convert source file to markdown, persist extracted images, and
     conditionally invalidate downstream pipelines.
@@ -417,6 +430,8 @@ async def _stage_convert(
     result = await asyncio.to_thread(
         convert_paper_full, pid, Path(source_path), meta,
         html_images_manifest=html_images_manifest,
+        extract_vector=extract_vector,
+        whiteout_text=whiteout_text,
     )
 
     if result.skipped:
@@ -472,6 +487,8 @@ async def _stage_convert(
         source_image_count=result.source_image_count,
         images_truncated=result.images_truncated,
         downstream_cleared=downstream_cleared,
+        source_raster_count=result.source_raster_count,
+        source_vector_count=result.source_vector_count,
     )
 
 

@@ -32,7 +32,7 @@ def _seed_paper_with_source(backend) -> str:
     return pid
 
 
-def _stub_convert(_paper):
+def _stub_convert(_paper, **_kwargs):
     return ConvertResult(
         paper_id="P1234R0",
         markdown="# Sample\n\nbody.\n",
