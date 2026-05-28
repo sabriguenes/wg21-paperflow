@@ -114,7 +114,7 @@ class StandardBackend(abc.ABC):
 
     @abc.abstractmethod
     def default_draft_tag(self) -> str | None:
-        """Return the most recently ingested draft tag, or ``None``."""
+        """Return the most recently published draft tag, or ``None``."""
 
     @abc.abstractmethod
     def close(self) -> None:

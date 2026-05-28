@@ -286,8 +286,15 @@ class SqliteStandardBackend(StandardBackend):
         )
 
     def default_draft_tag(self) -> str | None:
+        """Return the most recently *published* draft tag.
+
+        Tags like ``n5046`` sort lexicographically in publication order,
+        so the highest tag value is the newest standard. This ensures
+        that ingesting an older standard (e.g. n4950 after n5046) does
+        not change the default.
+        """
         row = self.conn.execute(
-            "SELECT draft_tag FROM drafts ORDER BY ingested_at DESC LIMIT 1"
+            "SELECT draft_tag FROM drafts ORDER BY draft_tag DESC LIMIT 1"
         ).fetchone()
         return row["draft_tag"] if row else None
 

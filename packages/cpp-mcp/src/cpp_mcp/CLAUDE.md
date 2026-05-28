@@ -19,8 +19,8 @@ MCP server for the C++ standard (ISO/IEC 14882). Parses the LaTeX source from cp
 - **Raw LaTeX is verbatim.** Never expand macros in `raw_latex`. Macro expansion only applies to `cleaned_text`.
 - **Multi-version by design.** The `draft_tag` column scopes everything. Operations on one draft never touch another.
 - **`itemdecl`/`itemdescr` pairs are atomic.** The parser must not split these across sections.
-- **Local-first.** `cpp-mcp serve` works with zero config. No Postgres, no Docker, no API keys required locally.
-- **No auth locally.** Bearer token auth activates only when a keys file is configured.
+- **Local-first.** `cpp-mcp serve --no-auth` works with zero config. No Postgres, no Docker, no API keys required locally.
+- **Auth is explicit.** The server requires either `--keys-file` (production) or `--no-auth` (local dev). Omitting both is an error.
 
 ## Database
 
@@ -32,7 +32,7 @@ Tables: `standard_sections` (content), `drafts` (version metadata), `sections_ft
 
 ```bash
 cpp-mcp ingest --tag n5008       # ingest a draft
-cpp-mcp serve                    # HTTP on localhost:8001
+cpp-mcp serve --no-auth          # HTTP on localhost:8001 (local dev)
 cpp-mcp serve --port 9090        # custom port
 cpp-mcp serve --transport stdio  # stdio mode
 ```

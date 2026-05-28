@@ -64,7 +64,7 @@ As the `cppmcp` user:
 ```bash
 cd ~
 git clone git@github.com:cppalliance/wg21-paperflow.git
-cd cppa-wg21-paperflow
+cd wg21-paperflow
 uv venv
 uv pip install -e packages/cpp-mcp
 ```
@@ -72,8 +72,23 @@ uv pip install -e packages/cpp-mcp
 Verify:
 
 ```bash
-~/.venv/bin/cpp-mcp --help
+~/wg21-paperflow/.venv/bin/cpp-mcp --help
 ```
+
+## Draft tags
+
+The C++ standard source at [cplusplus/draft](https://github.com/cplusplus/draft) uses numbered tags for each published working draft. The key tags:
+
+| Standard | Tag | Date |
+|----------|-----|------|
+| C++26 (latest working draft) | `n5046` | 2026-05-12 |
+| C++23 (final working draft) | `n4950` | 2023-05-10 |
+| C++20 (final working draft) | `n4861` | 2020-04-01 |
+| C++17 (final working draft) | `n4659` | 2017-03-21 |
+| C++14 (final working draft) | `n4140` | 2014-10-07 |
+| C++11 (first post-publication draft) | `n3337` | 2012-01-16 |
+
+Use `main` for the bleeding-edge HEAD of the draft (may contain incomplete edits).
 
 ## 3. Ingest the standard
 
@@ -81,17 +96,17 @@ Verify:
 export CPP_MCP_DATA_DIR=/home/cppmcp/data
 mkdir -p $CPP_MCP_DATA_DIR
 
-~/.venv/bin/cpp-mcp --data-dir $CPP_MCP_DATA_DIR ingest --tag n5008
+~/wg21-paperflow/.venv/bin/cpp-mcp --data-dir $CPP_MCP_DATA_DIR ingest --tag n5046
 ```
 
 To ingest multiple versions:
 
 ```bash
-~/.venv/bin/cpp-mcp --data-dir $CPP_MCP_DATA_DIR ingest --tag n4950
-~/.venv/bin/cpp-mcp --data-dir $CPP_MCP_DATA_DIR ingest --tag n5008
+~/wg21-paperflow/.venv/bin/cpp-mcp --data-dir $CPP_MCP_DATA_DIR ingest --tag n4950
+~/wg21-paperflow/.venv/bin/cpp-mcp --data-dir $CPP_MCP_DATA_DIR ingest --tag n5046
 ```
 
-The most recently ingested version becomes the default. Override with `--default-draft` when starting the server.
+The default is always the highest-numbered tag (most recently published standard), regardless of ingestion order. Override with `--default-draft` when starting the server.
 
 ## 4. Create API keys
 
@@ -128,7 +143,23 @@ To add or revoke a key later: edit this file, then reload the service (step 5 be
 
 ## 5. Systemd service
 
-Create `/etc/systemd/system/cpp-mcp.service`:
+Create `/etc/systemd/system/cpp-mcp.service`.
+
+Authentication is required on a server. The `--keys-file` flag points to the keys file created in step 4. Without it (or without `--no-auth`), the server will refuse to start. Never use `--no-auth` on a public-facing server.
+
+If you have a domain name and will use Caddy for HTTPS (section 7), bind to localhost:
+
+```ini
+ExecStart=/home/cppmcp/wg21-paperflow/.venv/bin/cpp-mcp serve --host 127.0.0.1 --port 8001 --keys-file /etc/cpp-mcp/keys
+```
+
+If you do **not** have a domain name yet, bind to all interfaces so clients can reach the server directly over HTTP:
+
+```ini
+ExecStart=/home/cppmcp/wg21-paperflow/.venv/bin/cpp-mcp serve --host 0.0.0.0 --port 8001 --keys-file /etc/cpp-mcp/keys
+```
+
+Full unit file:
 
 ```ini
 [Unit]
@@ -141,7 +172,7 @@ User=cppmcp
 Group=cppmcp
 WorkingDirectory=/home/cppmcp
 Environment=CPP_MCP_DATA_DIR=/home/cppmcp/data
-ExecStart=/home/cppmcp/.venv/bin/cpp-mcp serve --host 127.0.0.1 --port 8001 --keys-file /etc/cpp-mcp/keys
+ExecStart=/home/cppmcp/wg21-paperflow/.venv/bin/cpp-mcp serve --host 0.0.0.0 --port 8001 --keys-file /etc/cpp-mcp/keys
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
@@ -171,25 +202,43 @@ To reload API keys without restarting:
 sudo systemctl reload cpp-mcp
 ```
 
-## 6. Caddy reverse proxy
+## 6. Firewall
 
-Edit `/etc/caddy/Caddyfile`:
-
-```
-mcpserver1.cpp.al {
-    reverse_proxy 127.0.0.1:8001
-}
-```
-
-Replace `mcpserver1.cpp.al` with your actual domain. Caddy will automatically obtain and renew a Let's Encrypt certificate (same CA as wg21.org).
-
-Restart Caddy:
+Install ufw if not already present:
 
 ```bash
-sudo systemctl restart caddy
+sudo apt install ufw
 ```
 
-## 7. Firewall
+### Without a domain (HTTP only)
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 8001/tcp
+sudo ufw enable
+```
+
+### Google Cloud: VPC firewall
+
+If the server runs on Google Cloud (GCE), the VPC firewall is separate from ufw and blocks ports by default. You must also allow the port at the GCP level:
+
+```bash
+# For HTTP-only (port 8001 direct access)
+gcloud compute firewall-rules create allow-mcp-8001 \
+    --allow tcp:8001 \
+    --source-ranges 0.0.0.0/0 \
+    --description "Allow MCP server access"
+
+# For HTTPS via Caddy (ports 80 and 443)
+gcloud compute firewall-rules create allow-mcp-https \
+    --allow tcp:80,tcp:443 \
+    --source-ranges 0.0.0.0/0 \
+    --description "Allow HTTP/HTTPS for Caddy"
+```
+
+Alternatively, create these rules in the GCP Console under **VPC network > Firewall**. These rules persist across reboots and VM stops/starts.
+
+### With a domain (HTTPS via Caddy)
 
 ```bash
 sudo ufw allow OpenSSH
@@ -198,17 +247,87 @@ sudo ufw allow 443
 sudo ufw enable
 ```
 
-Nothing else needs to be exposed. Port 8001 is localhost-only.
+Port 8001 does not need to be exposed when Caddy is proxying -- it stays on localhost.
+
+## 7. Caddy reverse proxy (requires a domain name)
+
+Skip this section if you do not have a domain name. The server works fine over plain HTTP without Caddy. Come back and add Caddy when DNS is ready.
+
+### DNS prerequisites
+
+Before Caddy can obtain a Let's Encrypt certificate, the domain must resolve to the server's IP address. You need a DNS **A record** (IPv4) and optionally an **AAAA record** (IPv6):
+
+| Type | Name | Value |
+|------|------|-------|
+| A | `mcpserver1.cpp.al` | `<server-ipv4-address>` |
+| AAAA | `mcpserver1.cpp.al` | `<server-ipv6-address>` (optional) |
+
+Set these in your DNS provider's control panel (whoever manages `cpp.al`). The record typically propagates within a few minutes but can take up to an hour.
+
+Verify the record is live before proceeding:
+
+```bash
+dig +short mcpserver1.cpp.al
+# Should return the server's IP address
+```
+
+If `dig` is not installed: `sudo apt install dnsutils`.
+
+### Firewall
+
+Caddy needs ports 80 and 443 open. Port 80 is required even though you only serve HTTPS -- Let's Encrypt uses it for the HTTP-01 challenge during certificate issuance and renewal.
+
+```bash
+sudo ufw allow 80
+sudo ufw allow 443
+```
+
+### Caddyfile
+
+Install Caddy if not already installed (see section 1). Edit `/etc/caddy/Caddyfile`:
+
+```
+mcpserver1.cpp.al {
+    reverse_proxy 127.0.0.1:8001
+}
+```
+
+Replace `mcpserver1.cpp.al` with your actual domain. Caddy will automatically obtain and renew a Let's Encrypt certificate. Certificate renewal happens in the background with no downtime.
+
+Restart Caddy:
+
+```bash
+sudo systemctl restart caddy
+```
+
+Then update the systemd unit to bind to localhost instead of all interfaces:
+
+```bash
+# Edit /etc/systemd/system/cpp-mcp.service
+# Change --host 0.0.0.0 to --host 127.0.0.1
+sudo systemctl daemon-reload
+sudo systemctl restart cpp-mcp
+```
+
+And update the firewall to close port 8001 and open 80/443:
+
+```bash
+sudo ufw delete allow 8001/tcp
+sudo ufw allow 80
+sudo ufw allow 443
+```
 
 ## 8. Verify
 
-From your local machine:
+### Without a domain (HTTP)
+
+From your local machine (replace `<server-ip>` with the server's IP address):
 
 ```bash
-curl https://mcpserver1.cpp.al/mcp
+curl -H "Authorization: Bearer YOUR_API_KEY" http://<server-ip>:8001/mcp
 ```
 
-Test with authentication (replace `YOUR_API_KEY`):
+### With a domain (HTTPS)
 
 ```bash
 curl -H "Authorization: Bearer YOUR_API_KEY" https://mcpserver1.cpp.al/mcp
@@ -217,6 +336,23 @@ curl -H "Authorization: Bearer YOUR_API_KEY" https://mcpserver1.cpp.al/mcp
 ## 9. Connect from Cursor
 
 Users add this to their `.cursor/mcp.json`:
+
+### Without a domain (HTTP)
+
+```json
+{
+  "mcpServers": {
+    "cpp-standard": {
+      "url": "http://<server-ip>:8001/mcp",
+      "headers": {
+        "Authorization": "Bearer <api-key>"
+      }
+    }
+  }
+}
+```
+
+### With a domain (HTTPS)
 
 ```json
 {
@@ -231,7 +367,7 @@ Users add this to their `.cursor/mcp.json`:
 }
 ```
 
-That's all they need. No SSH keys, no tunnels, no client-side setup.
+Cursor accepts both HTTP and HTTPS for MCP server URLs. No SSH keys, no tunnels, no client-side setup beyond this config.
 
 ## Managing API keys
 
@@ -258,7 +394,7 @@ When a new draft is published:
 
 ```bash
 sudo -u cppmcp CPP_MCP_DATA_DIR=/home/cppmcp/data \
-    /home/cppmcp/.venv/bin/cpp-mcp ingest --tag n5025
+    /home/cppmcp/wg21-paperflow/.venv/bin/cpp-mcp ingest --tag n5025
 sudo systemctl restart cpp-mcp
 ```
 
@@ -292,12 +428,12 @@ The database can always be regenerated from scratch by re-running `ingest`.
 
 ## Setting a default draft
 
-If you want a specific version to be the default (instead of the most recently ingested):
+If you want a specific version to be the default (instead of the highest-numbered tag):
 
 Edit the systemd unit to add `--default-draft`:
 
 ```ini
-ExecStart=/home/cppmcp/.venv/bin/cpp-mcp serve --host 127.0.0.1 --port 8001 --keys-file /etc/cpp-mcp/keys --default-draft n5008
+ExecStart=/home/cppmcp/wg21-paperflow/.venv/bin/cpp-mcp serve --host 127.0.0.1 --port 8001 --keys-file /etc/cpp-mcp/keys --default-draft n5046
 ```
 
 Then:

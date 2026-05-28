@@ -42,25 +42,40 @@ To use a different location:
 
 ```bash
 # Via command-line flag (takes precedence)
-cpp-mcp --data-dir /path/to/dir ingest --tag n5008
+cpp-mcp --data-dir /path/to/dir ingest --tag n5046
 
 # Via environment variable
 export CPP_MCP_DATA_DIR=/path/to/dir
-cpp-mcp ingest --tag n5008
+cpp-mcp ingest --tag n5046
 ```
 
 The `--data-dir` flag takes precedence over the environment variable.
+
+## Draft tags
+
+The C++ standard source at [cplusplus/draft](https://github.com/cplusplus/draft) uses numbered tags for each published working draft. The key tags:
+
+| Standard | Tag | Date |
+|----------|-----|------|
+| C++26 (latest working draft) | `n5046` | 2026-05-12 |
+| C++23 (final working draft) | `n4950` | 2023-05-10 |
+| C++20 (final working draft) | `n4861` | 2020-04-01 |
+| C++17 (final working draft) | `n4659` | 2017-03-21 |
+| C++14 (final working draft) | `n4140` | 2014-10-07 |
+| C++11 (first post-publication draft) | `n3337` | 2012-01-16 |
+
+Use `main` for the bleeding-edge HEAD of the draft (may contain incomplete edits).
 
 ## Ingest the standard
 
 Download and parse the C++ standard at a specific draft tag:
 
 ```bash
-cpp-mcp ingest --tag n5008
+cpp-mcp ingest --tag n5046
 ```
 
 This will:
-1. Clone the [cplusplus/draft](https://github.com/cplusplus/draft) repository at tag `n5008` into a temporary directory
+1. Clone the [cplusplus/draft](https://github.com/cplusplus/draft) repository at tag `n5046` into a temporary directory
 2. Parse all `.tex` files, extracting sections, hierarchy, and paragraph structure
 3. Expand LaTeX macros into searchable plain text
 4. Store everything in `~/.cpp-mcp/standard.db`
@@ -74,15 +89,17 @@ You can ingest multiple versions of the standard side by side:
 
 ```bash
 cpp-mcp ingest --tag n4950    # C++23 final draft
-cpp-mcp ingest --tag n5008    # C++26 working draft
+cpp-mcp ingest --tag n5046    # C++26 working draft
 ```
 
 Versions coexist in the same database and do not interfere with each other. Use the `list_drafts` tool (see below) to see what's available.
 
 ## Run the server
 
+For local development, use `--no-auth` to skip authentication:
+
 ```bash
-cpp-mcp serve
+cpp-mcp serve --no-auth
 ```
 
 This starts an HTTP server at `http://localhost:8001`. You should see output like:
@@ -94,10 +111,12 @@ This starts an HTTP server at `http://localhost:8001`. You should see output lik
 Use `--port` if 8001 is already taken:
 
 ```bash
-cpp-mcp serve --port 9090
+cpp-mcp serve --no-auth --port 9090
 ```
 
 Leave this terminal running while you use the tools.
+
+On a production server, authentication is required. See [server-setup.md](server-setup.md) for how to configure API keys with `--keys-file`.
 
 ## Connect from Cursor
 
@@ -128,18 +147,18 @@ With the server running and Cursor connected, try these queries in chat:
 - **Full-text search**: "Search the standard for 'lifetime extension'"
 - **Browse chapters**: "List the chapters of the standard"
 - **Version management**: "What versions of the standard are available?"
-- **Cross-version comparison**: "Compare [basic.life] between n4950 and n5008"
+- **Cross-version comparison**: "Compare [basic.life] between n4950 and n5046"
 
 ## Default draft
 
-When a query does not specify a version, the server uses the most recently ingested draft. To override:
+When a query does not specify a version, the server uses the highest-numbered tag (most recently published standard), regardless of ingestion order. To override:
 
 ```bash
 # Via command-line flag
-cpp-mcp serve --default-draft n5008
+cpp-mcp serve --default-draft n5046
 
 # Via environment variable
-export CPP_MCP_DEFAULT_DRAFT=n5008
+export CPP_MCP_DEFAULT_DRAFT=n5046
 cpp-mcp serve
 ```
 
@@ -151,7 +170,7 @@ When a new draft of the standard is published:
 cpp-mcp ingest --tag n5025    # or whatever the new tag is
 ```
 
-Old versions remain in the database. The new version becomes the default (most recently ingested). Restart the server to pick up the new data:
+Old versions remain in the database. The default is always the highest-numbered tag. Restart the server to pick up the new data:
 
 ```bash
 # Stop the running server (Ctrl+C), then:
@@ -164,7 +183,7 @@ cpp-mcp serve
 Make sure you installed the package (`uv pip install -e packages/cpp-mcp`) and that your Python scripts directory is on your PATH.
 
 **"No drafts ingested"**
-Run `cpp-mcp ingest --tag n5008` before starting the server.
+Run `cpp-mcp ingest --tag n5046` before starting the server.
 
 **Port already in use**
 Use `--port` to pick a different port: `cpp-mcp serve --port 9090`. Update your `.cursor/mcp.json` URL to match.

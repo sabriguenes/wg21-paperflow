@@ -17,6 +17,7 @@ import threading
 from pathlib import Path
 
 from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware
 
 from cpp_mcp.backend import StandardBackend
 from cpp_mcp.sqlite_backend import SqliteStandardBackend
@@ -74,12 +75,66 @@ def _format_section_brief(row: object) -> dict:
     }
 
 
+class _BearerKeyMiddleware(Middleware):
+    """Reject requests without a valid bearer token."""
+
+    def __init__(self, keys: set[str], keys_lock: threading.Lock) -> None:
+        self._keys = keys
+        self._keys_lock = keys_lock
+
+    @property
+    def keys(self) -> set[str]:
+        with self._keys_lock:
+            return set(self._keys)
+
+    def update_keys(self, new_keys: set[str]) -> None:
+        with self._keys_lock:
+            self._keys = new_keys
+
+    async def on_request(self, context, call_next):
+        try:
+            from fastmcp.server.dependencies import get_http_request
+            request = get_http_request()
+            auth_header = request.headers.get("authorization", "")
+        except Exception:
+            return await call_next(context)
+
+        if not auth_header.lower().startswith("bearer "):
+            raise Exception("Unauthorized: missing or invalid Authorization header")
+
+        token = auth_header[7:]
+        if token not in self.keys:
+            raise Exception("Unauthorized: invalid API key")
+
+        return await call_next(context)
+
+
 def create_server(
     backend: StandardBackend,
     default_draft: str | None = None,
     keys_file: str | Path | None = None,
+    no_auth: bool = False,
 ) -> FastMCP:
-    """Build the FastMCP server with all tools registered."""
+    """Build the FastMCP server with all tools registered.
+
+    Authentication is required unless *no_auth* is ``True``. When
+    *no_auth* is ``False``, a *keys_file* containing at least one key
+    must be provided or a ``ValueError`` is raised.
+    """
+
+    _keys_lock = threading.Lock()
+    _auth_middleware: _BearerKeyMiddleware | None = None
+
+    if no_auth:
+        log.warning("Authentication disabled (--no-auth). Do not use in production.")
+    else:
+        _keys = _load_keys(keys_file)
+        if not _keys:
+            raise ValueError(
+                "No API keys loaded. Provide a --keys-file with at least one key, "
+                "or pass --no-auth to explicitly disable authentication."
+            )
+        _auth_middleware = _BearerKeyMiddleware(_keys, _keys_lock)
 
     mcp = FastMCP(
         "C++ Standard",
@@ -91,14 +146,14 @@ def create_server(
         ),
     )
 
-    _keys_lock = threading.Lock()
-    _keys = _load_keys(keys_file)
+    if _auth_middleware is not None:
+        mcp.add_middleware(_auth_middleware)
 
     def _reload_keys(signum: int, frame: object) -> None:
-        nonlocal _keys
+        if _auth_middleware is None:
+            return
         new_keys = _load_keys(keys_file)
-        with _keys_lock:
-            _keys = new_keys
+        _auth_middleware.update_keys(new_keys)
         log.info("Reloaded API keys on signal %d", signum)
 
     if keys_file and os.name != "nt":
@@ -237,6 +292,7 @@ def build_default_server(
     data_dir: str | None = None,
     default_draft: str | None = None,
     keys_file: str | None = None,
+    no_auth: bool = False,
 ) -> tuple[FastMCP, SqliteStandardBackend]:
     """Construct a server with the default SQLite backend."""
     resolved_dir = resolve_data_dir(data_dir)
@@ -252,5 +308,10 @@ def build_default_server(
     if keys_file is None:
         keys_file = os.environ.get(KEYS_FILE_ENV, "").strip() or None
 
-    mcp = create_server(backend, default_draft=default_draft, keys_file=keys_file)
+    mcp = create_server(
+        backend,
+        default_draft=default_draft,
+        keys_file=keys_file,
+        no_auth=no_auth,
+    )
     return mcp, backend

@@ -48,7 +48,7 @@ def _make_row(
 def backend(tmp_path):
     b = SqliteStandardBackend(tmp_path / "test.db")
     b.create_schema()
-    # n4950 first so n5008 becomes the default (most recently ingested)
+    # n5008 is the default because it has the higher tag number (most recently published)
     b.upsert_draft("n4950", [
         _make_row("n4950", "basic.life", "Object lifetime", 1, "basic", "basic.tex",
                   r"\pnum Old", "Old lifetime text from C++23"),
@@ -67,7 +67,7 @@ def backend(tmp_path):
 
 @pytest.fixture
 def mcp(backend):
-    return create_server(backend)
+    return create_server(backend, no_auth=True)
 
 
 def _call(mcp, name: str, **kwargs) -> object:
@@ -179,3 +179,57 @@ def test_load_keys_missing_file():
 def test_load_keys_none():
     keys = _load_keys(None)
     assert keys == set()
+
+
+def test_create_server_requires_auth_or_no_auth(backend):
+    """Server refuses to start without --keys-file or --no-auth."""
+    with pytest.raises(ValueError, match="No API keys loaded"):
+        create_server(backend)
+
+
+def test_create_server_rejects_empty_keys_file(backend, tmp_path):
+    """A keys file with only comments is treated as empty."""
+    keys_file = tmp_path / "keys"
+    keys_file.write_text("# No real keys\n\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="No API keys loaded"):
+        create_server(backend, keys_file=keys_file)
+
+
+def test_create_server_no_auth_flag(backend):
+    """--no-auth allows starting without a keys file."""
+    mcp = create_server(backend, no_auth=True)
+    assert mcp is not None
+
+
+def test_create_server_with_valid_keys_file(backend, tmp_path):
+    """A keys file with at least one key enables auth."""
+    keys_file = tmp_path / "keys"
+    keys_file.write_text("secret-key-123\n", encoding="utf-8")
+    mcp = create_server(backend, keys_file=keys_file)
+    assert mcp is not None
+
+
+def test_auth_rejects_missing_token(backend, tmp_path):
+    """Requests without Authorization header are rejected when auth is enabled."""
+    keys_file = tmp_path / "keys"
+    keys_file.write_text("valid-key\n", encoding="utf-8")
+    mcp = create_server(backend, keys_file=keys_file)
+    try:
+        result = asyncio.run(mcp.call_tool("list_drafts", {}))
+        text = result.content[0].text if hasattr(result.content[0], "text") else str(result.content[0])
+        assert "Unauthorized" in text or "error" in text.lower()
+    except Exception as exc:
+        assert "Unauthorized" in str(exc) or "error" in str(exc).lower()
+
+
+def test_auth_rejects_invalid_token(backend, tmp_path):
+    """Requests with a wrong bearer token are rejected."""
+    keys_file = tmp_path / "keys"
+    keys_file.write_text("valid-key\n", encoding="utf-8")
+    mcp = create_server(backend, keys_file=keys_file)
+    try:
+        result = asyncio.run(mcp.call_tool("list_drafts", {}))
+        text = result.content[0].text if hasattr(result.content[0], "text") else str(result.content[0])
+        assert "Unauthorized" in text or "error" in text.lower()
+    except Exception as exc:
+        assert "Unauthorized" in str(exc) or "error" in str(exc).lower()

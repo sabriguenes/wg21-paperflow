@@ -39,6 +39,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         data_dir=args.data_dir,
         default_draft=args.default_draft,
         keys_file=args.keys_file,
+        no_auth=args.no_auth,
     )
     try:
         if args.transport == "stdio":
@@ -96,6 +97,10 @@ def main(argv: list[str] | None = None) -> int:
     serve_p.add_argument(
         "--keys-file", default=None,
         help="Path to API keys file for bearer token auth.",
+    )
+    serve_p.add_argument(
+        "--no-auth", action="store_true", default=False,
+        help="Disable authentication. Required when no --keys-file is provided.",
     )
 
     args = parser.parse_args(argv)
