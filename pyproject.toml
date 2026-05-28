@@ -51,6 +51,7 @@ testpaths = [
     "packages/assay/tests",
     "packages/cli/tests",
     "packages/preview/tests",
+    "packages/cpp-mcp/tests",
     "tests",
 ]
 
