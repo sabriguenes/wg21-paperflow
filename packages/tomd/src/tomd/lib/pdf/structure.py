@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import replace
 
 from .. import DATE_RE, DEFAULT_FENCE_LANG, strip_format_chars
+from .glyphs import GLYPH_FONT_SENTINEL, UNKNOWN_GLYPH
 from .types import (
     Block, Line, Span, Section, SectionKind, Confidence,
     SIMILARITY_THRESHOLD, TERMINAL_PUNCTUATION, FALLBACK_BODY_SIZE,
@@ -94,11 +95,20 @@ def _make_paragraph_section(block: Block) -> Section:
 
 
 def _block_words(blocks: list[Block]) -> list[str]:
-    """Flatten blocks to a list of words for comparison."""
+    """Flatten blocks to a list of words for comparison.
+
+    Glyph-placeholder characters (U+FFFD) are stripped before
+    tokenising: they are injected identically into both extraction
+    paths, so leaving them in cannot change the relative similarity, but
+    a placeholder that joins a word in one path and stands alone in the
+    other would. Stripping keeps the page word-multiset comparison
+    unaffected by the glyph pass.
+    """
     words = []
     for block in blocks:
         for line in block.lines:
-            words.extend(line.text.split())
+            text = line.text.replace(UNKNOWN_GLYPH, " ")
+            words.extend(text.split())
     return words
 
 
@@ -517,7 +527,40 @@ def structure_sections(sections: list[Section],
         is_bold = bool(sec.lines) and sec.lines[0].is_bold
         is_known = first_line.lower().rstrip(":") in KNOWN_SECTIONS
 
-        if has_number or font_level is not None or is_known:
+        # Sections whose FIRST LINE is just a bullet character plus an
+        # injected glyph placeholder ("●" + "�") are list-item prefixes
+        # from PDFs that decorate each bullet with an emoji raster. The
+        # synthetic sentinel span's bbox-derived font_size can trip
+        # heading_confidence's font-rank branch, which would mis-promote
+        # the bullet line to a heading and orphan its following paper-
+        # title body (canonical case: N5007 page 11's Profiles list).
+        # Skip heading classification here; the section then drops to
+        # the list-detection branch below or the position-based detector
+        # downstream, both of which know how to merge bullet + body.
+        #
+        # Strip zero-width invisibles (U+200B / U+200C / U+200D /
+        # U+FEFF) before the emptiness check: some PDFs follow each
+        # bullet glyph with a zero-width joiner, which standard
+        # ``str.strip()`` does NOT remove. Also strip the placeholder
+        # character itself, since a freshly-injected sentinel may have
+        # been merged into the bullet line's text representation.
+        _BULLET_STRIP_FIRST_LINE = {ord(c): None for c in BULLET_CHARS}
+        _BULLET_STRIP_FIRST_LINE.update({
+            0x200B: None, 0x200C: None, 0x200D: None, 0xFEFF: None,
+            ord(UNKNOWN_GLYPH): None,
+        })
+        _first_line_stripped = first_line.translate(
+            _BULLET_STRIP_FIRST_LINE
+        ).strip()
+        first_line_is_bullet_marker = (
+            not _first_line_stripped
+            and any(
+                s.font_name == GLYPH_FONT_SENTINEL
+                for ln in sec.lines for s in ln.spans
+            )
+        )
+
+        if (has_number or font_level is not None or is_known) and not first_line_is_bullet_marker:
             number_level = _heading_level_from_number(section_num) if has_number else 0
             level, conf = heading_confidence(
                 has_number, number_level, font_level, is_bold, is_known)
@@ -608,6 +651,14 @@ def _detect_lists_by_position(sections: list[Section]) -> list[Section]:
     result = []
     for sec in sections:
         if sec.kind != SectionKind.PARAGRAPH:
+            result.append(sec)
+            continue
+
+        # A free-standing glyph placeholder block (only U+FFFD spans) must
+        # not be read as a list item by the x-coordinate heuristic.
+        sec_spans = [s for ln in sec.lines for s in ln.spans if s.text.strip()]
+        if sec_spans and all(s.font_name == GLYPH_FONT_SENTINEL
+                             for s in sec_spans):
             result.append(sec)
             continue
 

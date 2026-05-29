@@ -8,6 +8,7 @@ because code boundaries are intentional.
 
 from dataclasses import replace
 
+from .glyphs import GLYPH_FONT_SENTINEL
 from .types import Block, Line, Span
 
 
@@ -54,6 +55,12 @@ def _try_left_merge(result: list[Span], i: int) -> bool:
 
     if prev.monospace or cur.monospace:
         return False
+    if (prev.font_name == GLYPH_FONT_SENTINEL
+            or cur.font_name == GLYPH_FONT_SENTINEL):
+        # A glyph placeholder is inert: never restyled, never a style
+        # boundary anchor, so an adjacent styled run is not extended
+        # across it. The span stays in place.
+        return False
     if _is_style_span(prev) == _is_style_span(cur):
         return False
     if not _spans_touch(prev, cur):
@@ -82,6 +89,9 @@ def _try_right_merge(result: list[Span], i: int) -> bool:
     nxt = result[i + 1]
 
     if cur.monospace or nxt.monospace:
+        return False
+    if (cur.font_name == GLYPH_FONT_SENTINEL
+            or nxt.font_name == GLYPH_FONT_SENTINEL):
         return False
     if _is_style_span(cur) == _is_style_span(nxt):
         return False

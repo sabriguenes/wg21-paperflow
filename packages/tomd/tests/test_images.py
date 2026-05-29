@@ -429,7 +429,7 @@ def test_finalize_drops_inline_emoji_sized_rasters():
 
 def test_finalize_keeps_image_at_filter_boundary():
     """A 20x20 bbox is exactly at the threshold and must be kept
-    (the filter uses ``>= _MIN_IMAGE_DIM_PT``). Smaller-than-threshold
+    (the filter uses ``>= MIN_IMAGE_DIM_PT``). Smaller-than-threshold
     is the dropped band.
     """
     per_page = [[

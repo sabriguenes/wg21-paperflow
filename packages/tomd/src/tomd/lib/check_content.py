@@ -173,6 +173,14 @@ _WHITESPACE_RE = re.compile(r"\s+")
 _PUNCT_RE = re.compile(r"[^\w\s]+", re.UNICODE)
 _TOKEN_RE = re.compile(r"\S+")
 
+# U+FFFD REPLACEMENT CHARACTER is the tomd glyph-placeholder (a raster
+# emoji the PDF text layer never carried). It is markdown-only, so it
+# must be neutral to the source-vs-markdown coverage comparison.
+# `_PUNCT_RE` already strips it as a symbol; this explicit removal locks
+# that behavior so a future regex change cannot let placeholders leak
+# into the coverage tokens. Applied to both streams in `_normalize`.
+_UNKNOWN_GLYPH = "�"
+
 # Compound prefixes that should retain the hyphen across a line break.
 _KEEP_HYPHEN_PREFIXES = ("self", "non", "well", "cross")
 
@@ -191,6 +199,7 @@ def _dehyphenate(text: str) -> str:
 def _normalize(text: str) -> str:
     """Shared normalization pipeline applied to both source and Markdown."""
     text = unicodedata.normalize("NFKC", text)
+    text = text.replace(_UNKNOWN_GLYPH, " ")
     text = text.translate(_SMART_QUOTE_TABLE)
     text = _dehyphenate(text)
     text = text.lower()

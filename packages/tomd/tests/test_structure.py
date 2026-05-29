@@ -381,6 +381,81 @@ class TestHeadingProseLengthRejection:
         )
 
 
+class TestGlyphBulletPrefixLine:
+    """Sections whose first line is a bullet character plus an injected
+    glyph placeholder (canonical N5007 page 11 Profiles case) must stay
+    candidates for list-item merging, not become headings, even when
+    the synthetic sentinel span's bbox-derived font_size triggers
+    ``heading_confidence``'s font-rank branch.
+    """
+
+    @staticmethod
+    def _bullet_then_body_section(*, body_size=10.5, sentinel_size=12.75):
+        """Two-line section: line 1 is "●" + sentinel "�", line 2 is body text.
+
+        Mirrors N5007 page 11's Profiles bullets, where the PDF
+        renders ``●`` as text and overlays a small raster emoji that
+        the glyph pass replaces with ``UNKNOWN_GLYPH``. The sentinel
+        carries a slightly larger ``font_size`` than body, which is
+        what previously promoted the line to a heading.
+        """
+        from tomd.lib.pdf.glyphs import GLYPH_FONT_SENTINEL, UNKNOWN_GLYPH
+
+        bullet_line = Line(spans=[
+            make_span("●", font_size=body_size),
+            make_span(UNKNOWN_GLYPH, font_size=sentinel_size,
+                      font_name=GLYPH_FONT_SENTINEL),
+        ])
+        body_line = Line(spans=[
+            make_span(" P3589 — C++ Profiles: The Framework",
+                      font_size=body_size),
+        ])
+        text = "●" + UNKNOWN_GLYPH + "\n P3589 — C++ Profiles: The Framework"
+        # font_size on Section is taken from the sentinel-bearing line in
+        # the real pipeline (`_compute_section_font_size` uses span max);
+        # match that here so the heading-detection font_level branch is
+        # exercised.
+        return Section(
+            kind=SectionKind.PARAGRAPH, text=text,
+            confidence=Confidence.HIGH, heading_level=0,
+            lines=[bullet_line, body_line], font_size=sentinel_size,
+        )
+
+    def test_bullet_plus_sentinel_first_line_not_a_heading(self):
+        """A bullet-then-sentinel first line keeps the section as a
+        PARAGRAPH so downstream list detection can merge bullet + body.
+        Without this guard, the synthetic span's larger font_size would
+        trip heading_confidence and promote the section to a heading -
+        the canonical N5007 Profiles regression.
+        """
+        # Body context big enough to compute body size and font ranks.
+        body_fill = [_mk_section("ordinary body " + ("x" * 80), font_size=10.5)
+                     for _ in range(10)]
+        sec = self._bullet_then_body_section()
+        _, result, _ = structure_sections(body_fill + [sec], has_title=True)
+        # Find the section whose text starts with the bullet character.
+        matches = [s for s in result if s.text.startswith("●")
+                   or "P3589" in s.text]
+        assert matches, "expected the bullet+body section in the output"
+        assert all(s.kind != SectionKind.HEADING for s in matches), (
+            "bullet+sentinel first line must not promote section to HEADING"
+        )
+
+    def test_bullet_plus_sentinel_keeps_body_text(self):
+        """The paper-title body line must survive the structural pass,
+        not be orphaned by a mis-classified heading dropping its tail.
+        """
+        body_fill = [_mk_section("ordinary body " + ("x" * 80), font_size=10.5)
+                     for _ in range(10)]
+        sec = self._bullet_then_body_section()
+        _, result, _ = structure_sections(body_fill + [sec], has_title=True)
+        joined = "\n".join(s.text for s in result)
+        assert "P3589" in joined, (
+            "paper-title body line must survive; was lost when bullet "
+            "line was mis-classified as a heading"
+        )
+
+
 class TestDemoteRepeatedLowConfidenceNumbers:
     """Paragraph-number resets collapse to PARAGRAPH; TOC/body pairs do not."""
 

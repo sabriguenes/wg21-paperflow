@@ -6,6 +6,11 @@ import re
 from .. import format_front_matter, dedup_paragraphs, strip_redundant_body_meta, strip_leading_h1, DEFAULT_FENCE_LANG
 from ..shared import _find_front_matter_end
 from .cleanup import normalize_whitespace
+from .glyphs import (
+    GLYPH_PLACEHOLDER_MARKER_TEMPLATE,
+    UNKNOWN_GLYPH,
+    GlyphPassStats,
+)
 from .images import TRUNCATION_MARKER_TEMPLATE, VectorUncertaintyStats
 from .types import Line, Span, Section, SectionKind, BULLET_CHARS
 from .vector_images import format_uncertainty_marker, should_emit_marker
@@ -351,6 +356,7 @@ def emit_markdown(
     images_truncated: bool = False,
     source_image_count: int = 0,
     vector_uncertainty: VectorUncertaintyStats | None = None,
+    glyph_stats: GlyphPassStats | None = None,
 ) -> str:
     """Generate the output Markdown from structured sections.
 
@@ -368,6 +374,12 @@ def emit_markdown(
     scanned / skipped, candidates, kept, rejected, reasons dict). The
     marker exists so a reader can see why diagrams might be missing
     or surprisingly present.
+
+    When ``glyph_stats`` is non-None and the glyph-placeholder pass
+    placed any U+FFFD or skipped any coincident rect, a trailing
+    ``tomd:glyph-placeholders`` comment is appended last - its
+    ``placeholders`` count is taken from the finished body (after
+    duplicate-paragraph collapse) so it matches a grep of the output.
     """
     parts: list[str] = []
 
@@ -432,6 +444,22 @@ def emit_markdown(
                 body = md[line_end + 1:]
                 body = strip_leading_h1(body, title)
                 md = md[:line_end + 1] + body
+
+    # Glyph-placeholder marker, appended last so its ``placeholders``
+    # count reflects the U+FFFD actually present in the finished body
+    # (after duplicate-paragraph collapse), matching what a reader greps.
+    # Fires when any placeholder survived or any coincident rect was
+    # skipped (a pure-coincident paper still emits placeholders=0 for
+    # traceability).
+    if glyph_stats is not None:
+        present = md.count(UNKNOWN_GLYPH)
+        if (present or glyph_stats.skipped_coincident
+                or glyph_stats.skipped_code_section):
+            md = md.rstrip() + "\n\n" + GLYPH_PLACEHOLDER_MARKER_TEMPLATE.format(
+                placeholders=present,
+                skipped_coincident=glyph_stats.skipped_coincident,
+                skipped_code_section=glyph_stats.skipped_code_section,
+            )
 
     md = md.rstrip() + "\n"
     return md

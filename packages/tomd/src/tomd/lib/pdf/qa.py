@@ -197,6 +197,13 @@ _UNICODE_TOPIC_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Presence of the glyph-placeholder marker means tomd intentionally
+# emitted U+FFFD for raster glyphs it could not decode to a codepoint
+# (see lib/pdf/glyphs.py). Those are sanctioned placeholders, not
+# decode-failure mojibake, so U+FFFD counting is suppressed for such
+# papers. ftfy.badness() still flags real encoding corruption.
+_GLYPH_PLACEHOLDER_MARKER_RE = re.compile(r"tomd:glyph-placeholders:")
+
 
 
 def _count_mojibake(md_text: str) -> int:
@@ -222,8 +229,12 @@ def _count_mojibake(md_text: str) -> int:
 
     For papers whose title indicates they discuss Unicode encoding,
     U+FFFD counting is suppressed entirely since the replacement
-    character is the paper's subject matter. ftfy.badness() still
-    provides an independent safety net for real encoding corruption.
+    character is the paper's subject matter. It is likewise suppressed
+    when the glyph-placeholder marker is present, because tomd then
+    emitted U+FFFD itself as a sanctioned placeholder for undecodable
+    raster glyphs (see lib/pdf/glyphs.py) rather than losing bytes.
+    ftfy.badness() still provides an independent safety net for real
+    encoding corruption in both cases.
 
     Decision: ftfy over custom regex. See plans/QA-001-extend-qa-scoring.md,
     Research Finding #1. Custom byte-pattern regex (e.g. [\\xc0-\\xdf][\\x80-\\xbf])
@@ -240,7 +251,8 @@ def _count_mojibake(md_text: str) -> int:
     prose = _INLINE_CODE_RE.sub("", prose)
     front = _parse_front_matter(md_text)
     title = front.get("title", "")
-    if _UNICODE_TOPIC_RE.search(title):
+    if (_UNICODE_TOPIC_RE.search(title)
+            or _GLYPH_PLACEHOLDER_MARKER_RE.search(md_text)):
         count = 0
     else:
         count = prose.count("\ufffd")

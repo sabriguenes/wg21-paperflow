@@ -69,15 +69,19 @@ _MAX_IMAGES_PER_PAPER = 20
 # under 18pt). 20pt is calibrated to survey: smallest genuine figure
 # bbox in the workspace is 24x24, comfortably above the threshold.
 #
+# Public (no underscore) because the glyph-placeholder pass in
+# ``glyphs.py`` shares this threshold as its single source of truth:
+# rasters below it that the figure path drops are treated as
+# font-replacement glyphs and emitted as a U+FFFD placeholder.
+#
 # Trade-off documented: papers where MuPDF's text path *also*
 # extracts the emoji as a Unicode character (the common case)
 # render the emoji correctly inline and the phantom IMAGE goes
-# away. Papers where the emoji exists *only* as the embedded
-# raster (N5007's editor's report) lose the emoji from the output
-# entirely. The current behavior would render 20 of 107 misplaced
-# oversized emoji; the filtered behavior produces clean markdown
-# without that visual noise.
-_MIN_IMAGE_DIM_PT = 20.0
+# away. Papers where the emoji exists *only* as the embedded raster
+# (N5007's editor's report) had the emoji lost from the output
+# entirely before the glyph-placeholder pass; it now emits a
+# ``U+FFFD`` placeholder at the glyph's position (see ``glyphs.py``).
+MIN_IMAGE_DIM_PT = 20.0
 
 # End-of-body HTML comment appended when the cap fires. Shared between
 # the PDF emit path (tomd.lib.pdf.emit) and the HTML emit path
@@ -449,7 +453,7 @@ def finalize_extraction(
     canonicals = [
         c for c in canonicals
         if min(c.bbox[2] - c.bbox[0], c.bbox[3] - c.bbox[1])
-        >= _MIN_IMAGE_DIM_PT
+        >= MIN_IMAGE_DIM_PT
     ]
 
     canonicals.sort(key=lambda c: (c.page, c.bbox[1], c.bbox[0]))

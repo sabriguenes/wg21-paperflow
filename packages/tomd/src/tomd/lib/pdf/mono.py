@@ -19,6 +19,7 @@ spatial glyph-width decisions to MuPDF spans of the same font after extraction.
 import math
 import re
 
+from .glyphs import GLYPH_FONT_SENTINEL
 from .types import Block
 
 _FONT_MODIFIERS = frozenset({
@@ -159,6 +160,11 @@ def classify_monospace(
     to thin advance widths is close to 1.0 for monospace and much larger
     for proportional fonts.
     """
+    if font_name == GLYPH_FONT_SENTINEL:
+        # Synthetic glyph-placeholder span: never monospace, regardless
+        # of the (single-character) glyph metrics.
+        return False
+
     if chars and char_x_origins and len(chars) == len(char_x_origins) and len(chars) >= 2:
         fat_adv: list[float] = []
         thin_adv: list[float] = []
@@ -222,6 +228,8 @@ def propagate_monospace(mupdf_blocks: list[Block], spatial_blocks: list[Block],
             for s in ln.spans:
                 if not s.text.strip():
                     continue
+                if s.font_name == GLYPH_FONT_SENTINEL:
+                    continue
                 key = s.font_name.lower()
                 total_chars[key] += len(s.text)
                 if s.monospace:
@@ -239,5 +247,7 @@ def propagate_monospace(mupdf_blocks: list[Block], spatial_blocks: list[Block],
     for b in mupdf_blocks:
         for ln in b.lines:
             for s in ln.spans:
+                if s.font_name == GLYPH_FONT_SENTINEL:
+                    continue
                 if not s.monospace and s.font_name.lower() in mono_fonts:
                     s.monospace = True
