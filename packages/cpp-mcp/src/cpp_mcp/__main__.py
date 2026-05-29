@@ -27,20 +27,27 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
     with SqliteStandardBackend(db_path) as backend:
         backend.create_schema()
-        count = ingest_from_git(backend, args.tag)
-    print(f"Ingested {count} sections for draft '{args.tag}' into {db_path}")
+        count = ingest_from_git(backend, args.tag, atomic=not args.no_atomic)
+    if count == 0:
+        print(f"Draft '{args.tag}' is already up to date (same git SHA).")
+    else:
+        print(f"Ingested {count} sections for draft '{args.tag}' into {db_path}")
     return 0
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
     from cpp_mcp.server import build_default_server
 
-    mcp, backend = build_default_server(
-        data_dir=args.data_dir,
-        default_draft=args.default_draft,
-        keys_file=args.keys_file,
-        no_auth=args.no_auth,
-    )
+    try:
+        mcp, backend = build_default_server(
+            data_dir=args.data_dir,
+            default_draft=args.default_draft,
+            keys_file=args.keys_file,
+            no_auth=args.no_auth,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     try:
         if args.transport == "stdio":
             log.info("Starting MCP server (stdio)")
@@ -74,7 +81,11 @@ def main(argv: list[str] | None = None) -> int:
     ingest_p = sub.add_parser("ingest", help="Ingest the C++ standard from cplusplus/draft.")
     ingest_p.add_argument(
         "--tag", required=True,
-        help="Git tag or branch to ingest (e.g. n5008, n4950, main).",
+        help="Git tag or branch to ingest (e.g. n5046, n4950, main).",
+    )
+    ingest_p.add_argument(
+        "--no-atomic", action="store_true", default=False,
+        help="Disable atomic ingestion (not recommended for production).",
     )
 
     serve_p = sub.add_parser("serve", help="Start the MCP server.")

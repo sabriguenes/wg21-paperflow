@@ -390,15 +390,113 @@ The reload (SIGHUP) re-reads the keys file without dropping existing connections
 
 ## Re-indexing
 
+Ingestion is atomic -- the server continues serving the old data while new data is being parsed. No restart is needed after ingestion.
+
 When a new draft is published:
 
 ```bash
 sudo -u cppmcp CPP_MCP_DATA_DIR=/home/cppmcp/data \
     /home/cppmcp/wg21-paperflow/.venv/bin/cpp-mcp ingest --tag n5025
+```
+
+The server picks up the new data automatically via SQLite WAL mode. Old versions remain in the database. The default is always the highest-numbered tag.
+
+### Ingesting the trunk
+
+To ingest the bleeding-edge `main` branch:
+
+```bash
+sudo -u cppmcp CPP_MCP_DATA_DIR=/home/cppmcp/data \
+    /home/cppmcp/wg21-paperflow/.venv/bin/cpp-mcp ingest --tag main
+```
+
+Re-ingesting `main` is safe and idempotent -- if the git SHA has not changed since the last ingest, the command skips immediately.
+
+### Daily trunk re-ingestion (optional)
+
+To keep `main` automatically up to date, set up a systemd timer.
+
+Create `/etc/systemd/system/cpp-mcp-ingest-trunk.timer`:
+
+```ini
+[Unit]
+Description=Daily re-ingestion of C++ standard trunk
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Create `/etc/systemd/system/cpp-mcp-ingest-trunk.service`:
+
+```ini
+[Unit]
+Description=Re-ingest C++ standard trunk
+After=network.target
+
+[Service]
+Type=oneshot
+User=cppmcp
+Environment=CPP_MCP_DATA_DIR=/home/cppmcp/data
+ExecStart=/home/cppmcp/wg21-paperflow/.venv/bin/cpp-mcp ingest --tag main
+```
+
+Enable:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable cpp-mcp-ingest-trunk.timer
+sudo systemctl start cpp-mcp-ingest-trunk.timer
+```
+
+## Upgrades
+
+### Code-only changes (no schema change)
+
+```bash
+cd /home/cppmcp/wg21-paperflow
+git pull --ff-only
+uv pip install -e packages/cpp-mcp
 sudo systemctl restart cpp-mcp
 ```
 
-Old versions remain in the database. The new version becomes the default.
+No re-ingestion needed.
+
+### Schema or parser changes
+
+If the update adds new database tables, columns, or changes how LaTeX is parsed:
+
+```bash
+cd /home/cppmcp/wg21-paperflow
+git pull --ff-only
+uv pip install -e packages/cpp-mcp
+
+# Re-ingest all drafts
+CPP_MCP_DATA_DIR=/home/cppmcp/data
+for tag in n3337 n4140 n4659 n4861 n4950 n5046 main; do
+    sudo -u cppmcp CPP_MCP_DATA_DIR=$CPP_MCP_DATA_DIR \
+        /home/cppmcp/wg21-paperflow/.venv/bin/cpp-mcp ingest --tag $tag
+done
+
+sudo systemctl restart cpp-mcp
+```
+
+For backwards-incompatible schema changes (renamed or removed columns), delete the database first:
+
+```bash
+rm /home/cppmcp/data/standard.db
+# Then re-ingest all tags as above
+```
+
+### Verify after upgrade
+
+```bash
+sudo systemctl status cpp-mcp
+# Check tool count via MCP or logs
+```
 
 ## Monitoring
 

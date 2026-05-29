@@ -9,14 +9,30 @@
 
 from __future__ import annotations
 
-from cpp_mcp.backend import DraftInfo, SectionRow, StandardBackend
+from cpp_mcp.backend import (
+    DefinedTermRow,
+    DraftInfo,
+    GrammarRuleRow,
+    IndexTermRow,
+    LibraryDeclRow,
+    MechanismRow,
+    ParagraphRow,
+    SectionRow,
+    StandardBackend,
+)
 from cpp_mcp.sqlite_backend import SqliteStandardBackend
 
 __all__ = [
+    "DefinedTermRow",
     "DraftInfo",
+    "GrammarRuleRow",
+    "IndexTermRow",
+    "LibraryDeclRow",
+    "MechanismRow",
+    "ParagraphRow",
     "SectionRow",
-    "StandardBackend",
     "SqliteStandardBackend",
+    "StandardBackend",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

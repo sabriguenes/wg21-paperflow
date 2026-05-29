@@ -5,7 +5,12 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Ingestion pipeline: clone cplusplus/draft, parse LaTeX, load into backend."""
+"""Ingestion pipeline: clone cplusplus/draft, parse LaTeX, load into backend.
+
+Supports atomic ingestion (stage-then-rename) so the MCP server never
+sees partially ingested data. Skips re-ingestion when the git SHA has
+not changed.
+"""
 
 from __future__ import annotations
 
@@ -13,10 +18,21 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
-from cpp_mcp.backend import SectionRow, StandardBackend
+from cpp_mcp.backend import (
+    DefinedTermRow,
+    GrammarRuleRow,
+    IndexTermRow,
+    LibraryDeclRow,
+    MechanismRow,
+    ParagraphRow,
+    SectionRow,
+    StandardBackend,
+)
 from cpp_mcp.parser import Section, parse_directory
+from cpp_mcp.versions import resolve_version
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +51,8 @@ def _section_to_row(section: Section, draft_tag: str) -> SectionRow:
         raw_latex=section.raw_latex,
         cleaned_text=section.cleaned_text,
         paragraph_count=section.paragraph_count,
+        is_deprecated=section.is_deprecated,
+        is_synopsis=section.is_synopsis,
     )
 
 
@@ -58,22 +76,163 @@ def _clone_draft(tag: str, dest: Path) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def _collect_extracted_data(
+    sections: list[Section],
+    draft_tag: str,
+) -> tuple[
+    list[tuple[str, str]],
+    list[IndexTermRow],
+    list[MechanismRow],
+    list[GrammarRuleRow],
+    list[DefinedTermRow],
+    list[LibraryDeclRow],
+    list[ParagraphRow],
+]:
+    """Collect all extracted metadata from parsed sections."""
+    all_xrefs: list[tuple[str, str]] = []
+    all_index_terms: list[IndexTermRow] = []
+    all_mechanisms: list[MechanismRow] = []
+    all_grammar_rules: list[GrammarRuleRow] = []
+    all_defined_terms: list[DefinedTermRow] = []
+    all_library_decls: list[LibraryDeclRow] = []
+    all_paragraphs: list[ParagraphRow] = []
+
+    seen_grammar: set[str] = set()
+
+    for section in sections:
+        for target in section.xrefs:
+            all_xrefs.append((section.stable_label, target))
+
+        for category, term in section.index_terms:
+            all_index_terms.append(IndexTermRow(
+                draft_tag=draft_tag,
+                stable_label=section.stable_label,
+                category=category,
+                term=term,
+            ))
+
+        for category, name in section.mechanisms:
+            all_mechanisms.append(MechanismRow(
+                draft_tag=draft_tag,
+                name=name,
+                category=category,
+                stable_label=section.stable_label,
+            ))
+
+        for nt, rule in section.grammar_rules:
+            if nt not in seen_grammar:
+                seen_grammar.add(nt)
+                all_grammar_rules.append(GrammarRuleRow(
+                    draft_tag=draft_tag,
+                    nonterminal=nt,
+                    stable_label=section.stable_label,
+                    raw_rule=rule,
+                ))
+
+        for term_name in section.defined_terms:
+            all_defined_terms.append(DefinedTermRow(
+                draft_tag=draft_tag,
+                term=term_name,
+                stable_label=section.stable_label,
+                definition_text=section.cleaned_text[:500],
+            ))
+
+        for decl in section.library_declarations:
+            all_library_decls.append(LibraryDeclRow(
+                draft_tag=draft_tag,
+                stable_label=section.stable_label,
+                declaration=decl.declaration,
+                description=decl.description,
+                preconditions=decl.preconditions,
+                effects=decl.effects,
+                postconditions=decl.postconditions,
+                returns=decl.returns,
+                throws=decl.throws,
+                mandates=decl.mandates,
+                constraints=decl.constraints,
+                complexity=decl.complexity,
+                remarks=decl.remarks,
+            ))
+
+        for para in section.paragraphs:
+            all_paragraphs.append(ParagraphRow(
+                draft_tag=draft_tag,
+                stable_label=section.stable_label,
+                paragraph_number=para.number,
+                raw_latex=para.raw_latex,
+                cleaned_text=para.cleaned_text,
+                normative_force=para.normative_force,
+            ))
+
+    return (
+        all_xrefs,
+        all_index_terms,
+        all_mechanisms,
+        all_grammar_rules,
+        all_defined_terms,
+        all_library_decls,
+        all_paragraphs,
+    )
+
+
 def ingest_from_directory(
     backend: StandardBackend,
     source_dir: Path,
     draft_tag: str,
     git_sha: str | None = None,
+    *,
+    atomic: bool = True,
 ) -> int:
     """Parse a local source directory and load sections into the backend.
 
-    Returns the number of sections ingested.
+    When *atomic* is True (default), ingests into a staging tag then
+    atomically renames to the real tag. Returns the number of sections.
     """
     log.info("Parsing LaTeX from %s", source_dir)
+    t0 = time.monotonic()
     sections = parse_directory(source_dir)
-    log.info("Parsed %d sections", len(sections))
+    parse_time = time.monotonic() - t0
+    log.info("Parsed %d sections in %.1fs", len(sections), parse_time)
 
-    rows = [_section_to_row(s, draft_tag) for s in sections]
-    backend.upsert_draft(draft_tag, rows, git_sha=git_sha)
+    version, note = resolve_version(draft_tag)
+
+    if atomic:
+        staging_tag = f"_staging_{draft_tag}_{int(time.time())}"
+    else:
+        staging_tag = draft_tag
+
+    rows = [_section_to_row(s, staging_tag) for s in sections]
+    backend.upsert_draft(
+        staging_tag, rows,
+        git_sha=git_sha,
+        standard_version=version,
+        version_note=note,
+    )
+
+    (xrefs, index_terms, mechanisms, grammar_rules,
+     defined_terms, library_decls, paragraphs) = _collect_extracted_data(
+        sections, staging_tag,
+    )
+
+    log.info(
+        "Extracted: %d xrefs, %d index terms, %d mechanisms, %d grammar rules, "
+        "%d defined terms, %d library decls, %d paragraphs",
+        len(xrefs), len(index_terms), len(mechanisms), len(grammar_rules),
+        len(defined_terms), len(library_decls), len(paragraphs),
+    )
+
+    backend.upsert_xrefs(staging_tag, xrefs)
+    backend.upsert_index_terms(staging_tag, index_terms)
+    backend.upsert_mechanisms(staging_tag, mechanisms)
+    backend.upsert_grammar_rules(staging_tag, grammar_rules)
+    backend.upsert_defined_terms(staging_tag, defined_terms)
+    backend.upsert_library_declarations(staging_tag, library_decls)
+    backend.upsert_paragraphs(staging_tag, paragraphs)
+
+    if atomic and staging_tag != draft_tag:
+        backend.atomic_replace_draft(staging_tag, draft_tag)
+        log.info("Atomic swap: %s -> %s", staging_tag, draft_tag)
+
     log.info("Ingested %d sections for draft '%s'", len(rows), draft_tag)
     return len(rows)
 
@@ -81,21 +240,34 @@ def ingest_from_directory(
 def ingest_from_git(
     backend: StandardBackend,
     tag: str,
+    *,
+    atomic: bool = True,
 ) -> int:
     """Clone cplusplus/draft at *tag*, parse, and load into backend.
 
-    The clone is done into a temporary directory that is cleaned up
-    after ingestion completes.
+    Skips ingestion if the git SHA has not changed since the last ingest.
     """
     tmp_dir = tempfile.mkdtemp(prefix="cpp-mcp-")
     try:
         clone_dir = Path(tmp_dir) / "draft"
         git_sha = _clone_draft(tag, clone_dir)
+
+        existing_drafts = backend.list_drafts()
+        for d in existing_drafts:
+            if d.draft_tag == tag and d.git_sha and d.git_sha == git_sha:
+                log.info(
+                    "Draft '%s' already at SHA %s, skipping re-ingestion",
+                    tag, git_sha[:12],
+                )
+                return 0
+
         source_dir = clone_dir / "source"
         if not source_dir.is_dir():
             raise FileNotFoundError(
                 f"No source/ directory found in cloned repo at {clone_dir}"
             )
-        return ingest_from_directory(backend, source_dir, tag, git_sha=git_sha)
+        return ingest_from_directory(
+            backend, source_dir, tag, git_sha=git_sha, atomic=atomic,
+        )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

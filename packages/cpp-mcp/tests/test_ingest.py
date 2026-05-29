@@ -141,3 +141,84 @@ def test_include_order_from_std_tex(source_dir, backend):
     basic_idx = labels.index("basic")
     expr_idx = labels.index("expr")
     assert basic_idx < expr_idx
+
+
+# -----------------------------------------------------------------------
+# Atomic vs non-atomic ingest and extracted data tests
+# -----------------------------------------------------------------------
+
+
+FIXTURE_RICH_TEX = r"""
+\rSec0[basic]{Basic concepts}
+
+\pnum
+Introductory text. See \iref{expr.prim} for primary expressions.
+
+\indextext{lifetime}
+\keyword{constexpr}
+
+\defn{well-formed}
+
+\begin{bnf}
+\nontermdef{simple-declaration}
+declaration: block-declaration
+\end{bnf}
+
+\rSec1[basic.life]{Object lifetime}
+
+\pnum
+The lifetime of an object \iref{basic.types} begins when storage is obtained.
+
+\indextext{object lifetime}
+\libglobal{move}
+"""
+
+
+@pytest.fixture
+def rich_source_dir(tmp_path):
+    src = tmp_path / "rich_source"
+    src.mkdir()
+    (src / "std.tex").write_text(r"\input{basic}", encoding="utf-8")
+    (src / "basic.tex").write_text(FIXTURE_RICH_TEX, encoding="utf-8")
+    return src
+
+
+def test_atomic_ingest(rich_source_dir, backend):
+    count = ingest_from_directory(backend, rich_source_dir, "n9999", atomic=True)
+    assert count > 0
+    assert backend.lookup_section("basic", "n9999") is not None
+    assert backend.lookup_section("basic.life", "n9999") is not None
+
+    staging_rows = backend.conn.execute(
+        "SELECT COUNT(*) as c FROM standard_sections WHERE draft_tag LIKE '_staging_%'"
+    ).fetchone()
+    assert staging_rows["c"] == 0
+
+
+def test_non_atomic_ingest(rich_source_dir, backend):
+    count = ingest_from_directory(backend, rich_source_dir, "n9999", atomic=False)
+    assert count > 0
+    assert backend.lookup_section("basic", "n9999") is not None
+    assert backend.lookup_section("basic.life", "n9999") is not None
+
+
+def test_version_metadata_populated(rich_source_dir, backend):
+    ingest_from_directory(backend, rich_source_dir, "n5008", atomic=True)
+    drafts = backend.list_drafts()
+    assert len(drafts) == 1
+    d = drafts[0]
+    assert d.standard_version == "C++26"
+    assert d.version_note == "working draft"
+
+
+def test_extracted_data_populated(rich_source_dir, backend):
+    ingest_from_directory(backend, rich_source_dir, "n5008", atomic=True)
+
+    xrefs = backend.get_references_from("basic", "n5008")
+    assert "expr.prim" in xrefs
+
+    mechanisms = backend.verify_mechanism("constexpr", "n5008")
+    assert len(mechanisms) > 0
+
+    index_hits = backend.search_index("lifetime", draft_tag="n5008")
+    assert len(index_hits) > 0

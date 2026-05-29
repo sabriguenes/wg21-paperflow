@@ -14,7 +14,15 @@ import json
 
 import pytest
 
-from cpp_mcp.backend import SectionRow
+from cpp_mcp.backend import (
+    DefinedTermRow,
+    GrammarRuleRow,
+    IndexTermRow,
+    LibraryDeclRow,
+    MechanismRow,
+    ParagraphRow,
+    SectionRow,
+)
 from cpp_mcp.server import _load_keys, create_server
 from cpp_mcp.sqlite_backend import SqliteStandardBackend
 
@@ -29,6 +37,8 @@ def _make_row(
     raw_latex: str = "\\pnum The lifetime...",
     cleaned_text: str = "The lifetime of an object",
     paragraph_count: int = 1,
+    is_deprecated: bool = False,
+    is_synopsis: bool = False,
 ) -> SectionRow:
     return SectionRow(
         draft_tag=draft_tag,
@@ -41,6 +51,8 @@ def _make_row(
         raw_latex=raw_latex,
         cleaned_text=cleaned_text,
         paragraph_count=paragraph_count,
+        is_deprecated=is_deprecated,
+        is_synopsis=is_synopsis,
     )
 
 
@@ -233,3 +245,199 @@ def test_auth_rejects_invalid_token(backend, tmp_path):
         assert "Unauthorized" in text or "error" in text.lower()
     except Exception as exc:
         assert "Unauthorized" in str(exc) or "error" in str(exc).lower()
+
+
+# -----------------------------------------------------------------------
+# Rich backend fixture and new tool tests
+# -----------------------------------------------------------------------
+
+
+@pytest.fixture
+def rich_backend(tmp_path):
+    b = SqliteStandardBackend(tmp_path / "rich.db")
+    b.create_schema()
+
+    b.upsert_draft("n4950", [
+        _make_row("n4950", "basic.life", "Object lifetime", 1, "basic", "basic.tex",
+                  r"\pnum Old", "Old lifetime text from C++23"),
+    ])
+    rows = [
+        _make_row("n5008", "basic", "Basic concepts", 0, None, "basic.tex",
+                  r"\pnum Intro", "Intro to basic concepts"),
+        _make_row("n5008", "basic.life", "Object lifetime", 1, "basic", "basic.tex",
+                  r"\pnum Lifetime", "The lifetime of an object begins"),
+        _make_row("n5008", "basic.life.general", "General", 2, "basic.life", "basic.tex",
+                  r"\pnum General", "General rules about lifetime"),
+        _make_row("n5008", "basic.types", "Types", 1, "basic", "basic.tex",
+                  r"\pnum Types", "Types are fundamental to C++"),
+    ]
+    b.upsert_draft("n5008", rows)
+
+    b.upsert_xrefs("n5008", [
+        ("basic.life", "basic.types"),
+        ("basic.types", "basic.life"),
+        ("basic.life", "basic"),
+    ])
+    b.upsert_index_terms("n5008", [
+        IndexTermRow("n5008", "basic.life", "text", "lifetime"),
+        IndexTermRow("n5008", "basic.life", "text", "object lifetime"),
+        IndexTermRow("n5008", "basic.types", "library", "type"),
+    ])
+    b.upsert_mechanisms("n5008", [
+        MechanismRow("n5008", "constexpr", "keyword", "basic.types"),
+        MechanismRow("n5008", "std::move", "library", "basic.life"),
+    ])
+    b.upsert_grammar_rules("n5008", [
+        GrammarRuleRow("n5008", "expression", "expr", "expression: assignment-expression"),
+    ])
+    b.upsert_defined_terms("n5008", [
+        DefinedTermRow("n5008", "undefined behavior", "defns.undefined",
+                       "behavior for which this document imposes no requirements"),
+    ])
+    b.upsert_library_declarations("n5008", [
+        LibraryDeclRow("n5008", "vector.modifiers", "void push_back(const T& x)",
+                       "Appends a copy of x.", effects="Appends x to the sequence."),
+    ])
+    b.upsert_paragraphs("n5008", [
+        ParagraphRow("n5008", "basic.life", 1,
+                     r"\pnum The lifetime begins", "The lifetime begins", "normative"),
+        ParagraphRow("n5008", "basic.life", 2,
+                     r"\pnum The lifetime ends", "The lifetime ends", "normative"),
+    ])
+    return b
+
+
+@pytest.fixture
+def rich_mcp(rich_backend):
+    return create_server(rich_backend, no_auth=True)
+
+
+def test_verify_mechanism_found(rich_mcp):
+    result = json.loads(asyncio.run(
+        rich_mcp.call_tool("verify_mechanism", {"name": "constexpr"})
+    ).content[0].text)
+    assert result["exists"] is True
+    assert len(result["matches"]) == 1
+    assert result["matches"][0]["name"] == "constexpr"
+    assert result["matches"][0]["category"] == "keyword"
+
+
+def test_verify_mechanism_not_found(rich_mcp):
+    result = json.loads(asyncio.run(
+        rich_mcp.call_tool("verify_mechanism", {"name": "nonexistent_thing"})
+    ).content[0].text)
+    assert result["exists"] is False
+    assert result["matches"] == []
+
+
+def test_search_index(rich_mcp):
+    results = _call(rich_mcp, "search_index", term="lifetime")
+    assert len(results) == 2
+    labels = {r["stable_label"] for r in results}
+    assert "basic.life" in labels
+
+
+def test_lookup_declaration(rich_mcp):
+    results = _call(rich_mcp, "lookup_declaration", pattern="push_back")
+    assert len(results) == 1
+    assert results[0]["stable_label"] == "vector.modifiers"
+    assert results[0]["effects"] == "Appends x to the sequence."
+
+
+def test_search_grammar_found(rich_mcp):
+    result = _call(rich_mcp, "search_grammar", nonterminal="expression")
+    assert "nonterminal" in result
+    assert result["nonterminal"] == "expression"
+    assert "raw_rule" in result
+
+
+def test_search_grammar_not_found(rich_mcp):
+    result = _call(rich_mcp, "search_grammar", nonterminal="nonexistent-nt")
+    assert "error" in result
+
+
+def test_get_cross_references(rich_mcp):
+    result = _call(rich_mcp, "get_cross_references", stable_label="basic.life")
+    assert "from" in result
+    assert "to" in result
+    assert "basic.types" in result["from"]
+    assert "basic.types" in result["to"]
+
+
+def test_lookup_sections_batch(rich_mcp):
+    results = _call(rich_mcp, "lookup_sections",
+                    stable_labels=["basic.life", "basic.types"])
+    assert len(results) == 2
+    labels = {r["stable_label"] for r in results}
+    assert labels == {"basic.life", "basic.types"}
+
+
+def test_lookup_definition_found(rich_mcp):
+    result = _call(rich_mcp, "lookup_definition", term="undefined behavior")
+    assert result["term"] == "undefined behavior"
+    assert "no requirements" in result["definition_text"]
+
+
+def test_lookup_definition_not_found(rich_mcp):
+    result = _call(rich_mcp, "lookup_definition", term="nonexistent term")
+    assert "error" in result
+
+
+def test_lookup_paragraph(rich_mcp):
+    result = _call(rich_mcp, "lookup_paragraph",
+                   stable_label="basic.life", paragraph=1)
+    assert result["paragraph_number"] == 1
+    assert result["cleaned_text"] == "The lifetime begins"
+    assert result["normative_force"] == "normative"
+
+
+def test_get_ancestors(rich_mcp):
+    results = _call(rich_mcp, "get_ancestors", stable_label="basic.life.general")
+    labels = [r["stable_label"] for r in results]
+    assert labels == ["basic", "basic.life"]
+
+
+def test_guide_query_stable_label(rich_mcp):
+    result = _call(rich_mcp, "guide_query",
+                   question="What does [basic.life] say?")
+    assert result["recommended_tool"] == "lookup_section"
+    assert result["parameters"]["stable_label"] == "basic.life"
+
+
+def test_guide_query_existence(rich_mcp):
+    result = _call(rich_mcp, "guide_query",
+                   question="Does constexpr exist in the standard?")
+    assert result["recommended_tool"] == "verify_mechanism"
+
+
+def test_guide_query_definition(rich_mcp):
+    result = _call(rich_mcp, "guide_query",
+                   question="What does undefined behavior mean?")
+    assert result["recommended_tool"] == "lookup_definition"
+
+
+def test_guide_query_fallback(rich_mcp):
+    result = _call(rich_mcp, "guide_query",
+                   question="How do templates work?")
+    assert result["recommended_tool"] == "semantic_search"
+
+
+def test_version_shorthand_in_draft(rich_mcp):
+    result = _call(rich_mcp, "lookup_section",
+                   stable_label="basic.life", draft="C++26")
+    assert result["draft_tag"] == "n5008"
+    assert result["stable_label"] == "basic.life"
+
+
+def test_list_drafts_includes_version_info(rich_backend):
+    rich_backend.conn.execute(
+        "UPDATE drafts SET standard_version = ?, version_note = ? "
+        "WHERE draft_tag = ?",
+        ("C++26", "working draft", "n5008"),
+    )
+    rich_backend.conn.commit()
+    mcp = create_server(rich_backend, no_auth=True)
+    drafts = _call(mcp, "list_drafts")
+    n5008 = next(d for d in drafts if d["draft_tag"] == "n5008")
+    assert n5008["standard_version"] == "C++26"
+    assert n5008["version_note"] == "working draft"
