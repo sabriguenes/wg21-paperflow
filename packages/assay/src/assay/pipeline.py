@@ -572,6 +572,12 @@ async def _custom_decide(state: PipelineState, ctx: StepContext, spec) -> None:
             f"{ctx.inject_untrusted(numbered)}\n\n"
             f"## Claims to judge\n\n{claims_block}\n"
         )
+        if state.std_client is not None:
+            std_context = await state.std_client.prefetch_standard_context(
+                claims_block + "\n" + numbered
+            )
+            if std_context:
+                user_msg += f"\n\n{std_context}"
         result = await agent.run(
             system_prompt=system_prompt,
             user_message=user_msg,
@@ -1032,6 +1038,22 @@ async def _custom_research(state: PipelineState, ctx: StepContext, spec) -> None
             if evidence:
                 user_msg += f"\n\n{evidence}"
 
+        tools = None
+        if lens == "Specification" and state.std_client is not None:
+            sc = state.std_client
+            tools = {
+                "guide_query": sc.guide_query_tool,
+                "search_standard": sc.search_standard_tool,
+                "verify_mechanism": sc.verify_mechanism_tool,
+                "lookup_section": sc.lookup_section_tool,
+                "lookup_declaration": sc.lookup_declaration_tool,
+                "lookup_definition": sc.lookup_definition_tool,
+                "search_index": sc.search_index_tool,
+                "search_grammar": sc.search_grammar_tool,
+                "get_cross_references": sc.get_cross_references_tool,
+                "get_ancestors": sc.get_ancestors_tool,
+            }
+
         try:
             result = await agent.run(
                 system_prompt=system_prompt,
@@ -1039,6 +1061,7 @@ async def _custom_research(state: PipelineState, ctx: StepContext, spec) -> None
                 output_type=ResearchLensOutput,
                 max_tokens=max_output,
                 thinking_budget=thinking,
+                tools=tools,
                 label=f"research-{lens}",
                 debug_log=ctx.debug_log if ctx.debug else None,
             )
@@ -1191,6 +1214,17 @@ async def _custom_challenge(state: PipelineState, ctx: StepContext, spec) -> Non
                             parts.append(f"\n**{f.title}:**\n{evidence_map[f.title]}\n")
                     if len(parts) > 1:
                         user_msg += "".join(parts)
+
+            if state.std_client is not None:
+                batch_text = "\n".join(
+                    f.explanation or f.title or "" for f in batch
+                )
+                mech_block = await state.std_client.prefetch_mechanism_verification(batch_text)
+                if mech_block:
+                    user_msg += f"\n\n{mech_block}"
+                std_block = await state.std_client.prefetch_standard_context(batch_text)
+                if std_block:
+                    user_msg += f"\n\n{std_block}"
 
             result = await agent.run(
                 system_prompt=system_prompt,
@@ -1523,6 +1557,8 @@ async def assay_paper(
     trace: bool = False,
     stop_after: int | None = None,
     on_progress: ProgressCallback | None = None,
+    no_cpp_mcp: bool = False,
+    cpp_mcp_url: str | None = None,
 ) -> str:
     """Run the assay pipeline on a WG21 paper and return the report markdown.
 
@@ -1554,7 +1590,12 @@ async def assay_paper(
     embedder_name = embedder_defaults.get("default")
     embedder = embedders.get(embedder_name) if embedder_name else None
 
-    state = PipelineState()
+    from assay.standard import from_env as std_from_env
+    std_client = std_from_env(url=cpp_mcp_url, no_cpp_mcp=no_cpp_mcp)
+    if std_client is not None:
+        await std_client.connect()
+
+    state = PipelineState(std_client=std_client)
 
     ctx = StepContext(
         prompt=prompt,
@@ -1576,22 +1617,26 @@ async def assay_paper(
         else None
     )
 
-    await dispatch(
-        pipeline,
-        state,
-        ctx,
-        tool_name="assay",
-        stop_after=stop_after,
-        on_progress=on_progress,
-        on_step_complete=lambda spec, st: _persist_step(spec, st, ctx),
-        render_trace_fn=lambda st, step: render_trace(st, step, step_durations=[m.duration_s for m in ctx.step_metrics]),
-        trace_path=trace_path,
-        debug_path=debug_path if debug else None,
-    )
+    try:
+        await dispatch(
+            pipeline,
+            state,
+            ctx,
+            tool_name="assay",
+            stop_after=stop_after,
+            on_progress=on_progress,
+            on_step_complete=lambda spec, st: _persist_step(spec, st, ctx),
+            render_trace_fn=lambda st, step: render_trace(st, step, step_durations=[m.duration_s for m in ctx.step_metrics]),
+            trace_path=trace_path,
+            debug_path=debug_path if debug else None,
+        )
 
-    if stop_after is not None:
-        return render_trace(state, stop_after)
-    return state.report or ""
+        if stop_after is not None:
+            return render_trace(state, stop_after)
+        return state.report or ""
+    finally:
+        if std_client is not None:
+            await std_client.close()
 
 
 async def assay_since(

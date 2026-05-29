@@ -220,6 +220,17 @@ Output: VerifyOutput (confirmations, contradictions, new_evidence).
 
 You are researching external technical context for one analytical lens of a WG21 paper. Budget: 3 web searches maximum. After each search, check relevance to the paper's thesis. Stop early if first 2 searches return nothing relevant. Return only direct hits. Every finding must connect to the paper's thesis or scope.
 
+When researching the Specification lens and standard-lookup tools are available, use them instead of web search for normative questions. Tool selection:
+- Not sure which tool? -> guide_query (describe what you need)
+- Does mechanism X exist? -> verify_mechanism
+- Fetch a specific section [label] -> lookup_section
+- Library API specs -> lookup_declaration
+- Definition of a term -> lookup_definition
+- Broader search -> search_standard or search_index
+- Grammar rules -> search_grammar
+- Related sections -> get_cross_references
+Web search remains available for non-normative context (implementations, benchmarks, blog posts).
+
 ---
 
 - Six sub-agents (one per lens)
@@ -302,8 +313,8 @@ For each finding, apply six challenges in order. Kill at the first failure.
 
 1. **Concession.** The paper already concedes this point.
 2. **Phantom.** The finding attacks an inference, not a statement the paper made.
-3. **Resolution.** The paper's own text, read competently, resolves the concern. If the paper names a standard C++ mechanism (e.g., `await_transform`, `operator co_await`, symmetric transfer, `allocator_arg_t`) as the means by which a concern is addressed, and that mechanism exists in the C++ standard, the resolution succeeds - the paper is not required to show the full implementation of the mechanism.
-4. **Technical accuracy.** Does the finding claim a language change, ABI change, or standards defect is required? Verify whether the standard library or an existing language feature (e.g., `promise_type::await_transform` returning a proxy awaiter) already provides the mechanism. A finding that asserts a language change is needed when a library-level solution exists in the standard is technically inaccurate and must be killed.
+3. **Resolution.** The paper's own text, read competently, resolves the concern. If the paper names a standard C++ mechanism (e.g., `await_transform`, `operator co_await`, symmetric transfer, `allocator_arg_t`) as the means by which a concern is addressed, and the "Standard verification" block confirms the mechanism exists, the resolution succeeds. The paper is not required to show the full implementation of the mechanism.
+4. **Technical accuracy.** Does the finding claim a language change, ABI change, or standards defect is required? Check the "Standard verification" block for whether the standard library or an existing language feature already provides the mechanism. A finding that asserts a language change is needed when the verification block shows a library-level solution exists is technically inaccurate and must be killed.
 5. **Plausibility.** No committee reviewer would raise this.
 6. **Substance.** Editorial, formatting, or stylistic - not structural.
 

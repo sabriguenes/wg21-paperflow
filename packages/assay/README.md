@@ -9,8 +9,41 @@ paperflow assay P4003R3
 paperflow assay P4003R3 --debug --trace
 paperflow assay P4003R3 --step 4          # stop after Derive, implies --trace
 paperflow assay P4003R3 --force           # re-run even if already complete
-paperflow assay P4003R3 --service fast=h200-qwen3-32b
 ```
+
+## C++ Standard Access
+
+Assay uses the cpp-mcp server at `https://mcpserver1.cpp.al/mcp` by
+default to look up C++ standard sections, verify mechanisms, and
+ground specification analysis in normative text.
+
+Set your API key:
+
+```bash
+export CPP_MCP_API_KEY="<your-api-key>"
+```
+
+To override the server URL (e.g. for local development):
+
+```bash
+export CPP_MCP_URL="http://localhost:8001/mcp"
+```
+
+Or via CLI flag:
+
+```bash
+paperflow assay P4003R3 --cpp-mcp-url http://localhost:8001/mcp
+```
+
+To run without the MCP server entirely:
+
+```bash
+paperflow assay P4003R3 --no-cpp-mcp
+```
+
+When the MCP server is disabled, Specification-lens research falls
+back to web search and mechanism existence checks in the Challenge
+step rely on the LLM's training data.
 
 ## Architecture
 

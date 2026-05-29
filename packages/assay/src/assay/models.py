@@ -425,6 +425,9 @@ class PipelineState(BaseModel):
     ref_pids: list = Field(default_factory=list)
     ref_urls: list = Field(default_factory=list)
 
+    # C++ Standard MCP client (None when --no-cpp-mcp)
+    std_client: Any = None
+
     # Step 2 - Index
     cited_paper_index: Any = None
     index_stats: Any = None

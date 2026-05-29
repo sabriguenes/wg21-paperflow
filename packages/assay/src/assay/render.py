@@ -22,6 +22,7 @@ The report pipeline:
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -43,6 +44,22 @@ from assay.models import (
     StrengthOutput,
     SynthesisOutput,
 )
+
+_EEL_IS_BASE = "https://eel.is/c++draft"
+_LINKIFY_RE = re.compile(r"(?<!\()\[([a-z][a-z0-9.]+)\](?!\()")
+
+
+def _linkify_stable_labels(text: str) -> str:
+    """Convert [stable.label] references to eel.is hyperlinks in markdown.
+
+    Skips labels already inside markdown links (preceded or followed by
+    parentheses) to avoid double-linking.
+    """
+    def _replace(m: re.Match) -> str:
+        label = m.group(1)
+        return f"[{label}]({_EEL_IS_BASE}/{label})"
+    return _LINKIFY_RE.sub(_replace, text)
+
 
 SEVERITY_ORDER = {"critical": 0, "significant": 1, "minor": 2}
 
@@ -392,7 +409,8 @@ def render_report(state: PipelineState, section_text: str) -> str:
     data = prepare_report_data(state)
     tmpl = Template(blocks[0], keep_trailing_newline=True,
                     trim_blocks=True, lstrip_blocks=True)
-    return tmpl.render(vars(data))
+    report = tmpl.render(vars(data))
+    return _linkify_stable_labels(report)
 
 
 def rerender_report(pid: str, backend) -> str:
