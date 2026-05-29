@@ -38,9 +38,25 @@ class TestSlideDeckDetection:
         doc = _mock_doc([(595, 842)] * 10)
         assert _is_slide_deck(doc) is False
 
-    def test_landscape_a4_is_not_slide_deck(self):
-        """A4 landscape (842x595) has width > 600, so not a slide deck."""
+    def test_landscape_a4_all_pages_is_slide_deck(self):
+        """A4 landscape (842x595) exceeds the 600pt width cap of rule 1,
+        but rule 2 catches it because every page is landscape."""
         doc = _mock_doc([(842, 595)] * 10)
+        assert _is_slide_deck(doc) is True
+
+    def test_landscape_1920x1080_is_slide_deck(self):
+        """16:9 widescreen at native 1920x1080. Rule 1 fails on width,
+        rule 2 succeeds because all pages are landscape."""
+        doc = _mock_doc([(1920, 1080)] * 50)
+        assert _is_slide_deck(doc) is True
+
+    def test_mostly_landscape_wide_pages_is_not_slide_deck(self):
+        """N5028 case: 105 landscape A4 pages + 9 portrait pages. Rule 1
+        fails (width 842 >= 600), rule 2 fails (not 100% landscape).
+        Stays out of the deck bucket so its high-quality conversion
+        isn't lost to the early-exit."""
+        pages = [(842, 595)] * 105 + [(595, 842)] * 9
+        doc = _mock_doc(pages)
         assert _is_slide_deck(doc) is False
 
     def test_empty_document(self):

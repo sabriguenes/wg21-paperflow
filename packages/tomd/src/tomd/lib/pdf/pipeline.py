@@ -133,17 +133,35 @@ _STANDARDS_DRAFT_MIN_PAGES = 200
 def _is_slide_deck(doc) -> bool:
     """Detect presentation / slide-deck PDFs from page geometry.
 
-    A PDF is a slide deck when most pages are landscape and smaller
-    than standard paper sizes (width < 600pt ≈ 8.3in).
+    Two rules, either is sufficient:
+
+    1. At least :data:`_SLIDE_DECK_LANDSCAPE_FRACTION` of pages are
+       landscape AND narrower than :data:`_SLIDE_DECK_MAX_WIDTH`. This
+       catches classic Beamer / Keynote 4:3 decks where the small
+       page width is itself diagnostic (a portrait title page is
+       fine).
+    2. Every page in the document is landscape. This catches modern
+       widescreen decks (720x405, 960x540, 1024x768, 1280x720,
+       1920x1080) that exceed the width cap of rule 1. Strict
+       all-landscape avoids false positives on mixed-orientation
+       technical documents (e.g. N5028 - 105/114 landscape A4 pages,
+       but the 9 portrait pages keep it out of the deck bucket).
     """
     if doc.page_count == 0:
         return False
-    landscape_count = 0
+    # Rule 1: small-width landscape dominant.
+    small_landscape_count = 0
+    all_landscape = True
     for pg_num in range(doc.page_count):
         r = doc[pg_num].rect
-        if r.width > r.height and r.width < _SLIDE_DECK_MAX_WIDTH:
-            landscape_count += 1
-    return landscape_count / doc.page_count >= _SLIDE_DECK_LANDSCAPE_FRACTION
+        if r.width <= r.height:
+            all_landscape = False
+        elif r.width < _SLIDE_DECK_MAX_WIDTH:
+            small_landscape_count += 1
+    if small_landscape_count / doc.page_count >= _SLIDE_DECK_LANDSCAPE_FRACTION:
+        return True
+    # Rule 2: every page is landscape (any width).
+    return all_landscape
 
 
 def _is_standards_draft(doc) -> bool:
