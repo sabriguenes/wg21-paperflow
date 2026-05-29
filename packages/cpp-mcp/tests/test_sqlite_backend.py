@@ -336,13 +336,13 @@ def test_upsert_defined_terms_and_lookup(backend):
         DefinedTermRow("n5008", "lvalue", "basic.lval",
                        "an expression whose evaluation designates an entity"),
     ])
-    result = backend.lookup_definition("undefined behavior")
-    assert result is not None
-    assert result.stable_label == "defns.undefined"
-    assert "no requirements" in result.definition_text
+    results = backend.lookup_definition("undefined behavior")
+    assert len(results) >= 1
+    assert results[0].stable_label == "defns.undefined"
+    assert "no requirements" in results[0].definition_text
 
     missing = backend.lookup_definition("nonexistent term")
-    assert missing is None
+    assert missing == []
 
 
 def test_upsert_library_declarations_and_lookup(backend):

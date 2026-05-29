@@ -555,7 +555,8 @@ def create_server(
         Example: lookup_definition("undefined behavior") or
         lookup_definition("lvalue")
 
-        Returns {term, stable_label, definition_text, url} or an error.
+        Returns all definition sites for the term, ordered by document position.
+        The first entry is the canonical definition (typically from Clause 3).
 
         When not to use: For non-definition sections that mention a term,
         use search_standard.
@@ -563,14 +564,17 @@ def create_server(
         tag = _resolve_draft(draft)
         if tag is None:
             return json.dumps(_NO_DRAFTS)
-        row = backend.lookup_definition(term, tag)
-        if row is None:
+        rows = backend.lookup_definition(term, tag)
+        if not rows:
             return json.dumps({"error": f"No defined term '{term}' in draft '{tag}'."})
-        return json.dumps(_format_with_url({
-            "term": row.term,
-            "stable_label": row.stable_label,
-            "definition_text": row.definition_text,
-        }))
+        return json.dumps([
+            _format_with_url({
+                "term": r.term,
+                "stable_label": r.stable_label,
+                "definition_text": r.definition_text,
+            })
+            for r in rows
+        ])
 
     @mcp.tool()
     def lookup_paragraph(

@@ -148,6 +148,27 @@ def test_include_order_from_std_tex(source_dir, backend):
 # -----------------------------------------------------------------------
 
 
+FIXTURE_DUPLICATE_DEFN_TEX = r"""
+\rSec0[defns]{Terms and definitions}
+
+\pnum
+\defn{well-formed} A program that follows all syntax and semantic rules.
+
+\rSec0[basic]{Basic concepts}
+
+\pnum
+A \defn{well-formed} program is one that is correct according to the language rules.
+
+\rSec1[basic.types]{Types}
+
+\pnum
+An \defn{entity} is a value, object, reference, or function.
+
+\pnum
+An \defn{entity} is also used here to test same-section dedup.
+"""
+
+
 FIXTURE_RICH_TEX = r"""
 \rSec0[basic]{Basic concepts}
 
@@ -222,3 +243,30 @@ def test_extracted_data_populated(rich_source_dir, backend):
 
     index_hits = backend.search_index("lifetime", draft_tag="n5008")
     assert len(index_hits) > 0
+
+
+def test_duplicate_defined_terms_across_sections(tmp_path):
+    """A term defined in multiple sections must not crash ingestion.
+
+    Both definition sites should be stored and retrievable.
+    """
+    src = tmp_path / "source"
+    src.mkdir()
+    (src / "std.tex").write_text(r"\input{basic}", encoding="utf-8")
+    (src / "basic.tex").write_text(FIXTURE_DUPLICATE_DEFN_TEX, encoding="utf-8")
+
+    db_path = tmp_path / "test.db"
+    b = SqliteStandardBackend(db_path)
+    b.create_schema()
+
+    count = ingest_from_directory(b, src, "test-tag", atomic=False)
+    assert count > 0
+
+    sites = b.lookup_definition("well-formed", "test-tag")
+    assert len(sites) == 2
+    labels = [s.stable_label for s in sites]
+    assert "defns" in labels
+    assert "basic" in labels
+
+    entity_sites = b.lookup_definition("entity", "test-tag")
+    assert len(entity_sites) == 1, "same-section duplicate should be deduped"

@@ -300,8 +300,8 @@ class StandardBackend(abc.ABC):
     @abc.abstractmethod
     def lookup_definition(
         self, term: str, draft_tag: str | None = None
-    ) -> DefinedTermRow | None:
-        """Return the defined-term entry for *term*, or ``None``."""
+    ) -> list[DefinedTermRow]:
+        """Return all definition sites for *term*, ordered by document position."""
 
     # -- library declarations -----------------------------------------------
 

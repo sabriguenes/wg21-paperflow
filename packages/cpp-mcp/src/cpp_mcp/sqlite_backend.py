@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS defined_terms (
     term TEXT NOT NULL,
     stable_label TEXT NOT NULL,
     definition_text TEXT NOT NULL,
-    PRIMARY KEY (draft_tag, term)
+    PRIMARY KEY (draft_tag, term, stable_label)
 );
 
 CREATE TABLE IF NOT EXISTS library_declarations (
@@ -723,22 +723,23 @@ class SqliteStandardBackend(StandardBackend):
 
     def lookup_definition(
         self, term: str, draft_tag: str | None = None
-    ) -> DefinedTermRow | None:
+    ) -> list[DefinedTermRow]:
         tag = self._resolve_draft(draft_tag)
         if tag is None:
-            return None
-        row = self.conn.execute(
-            "SELECT * FROM defined_terms WHERE draft_tag = ? AND term = ?",
+            return []
+        rows = self.conn.execute(
+            "SELECT * FROM defined_terms WHERE draft_tag = ? AND term = ? ORDER BY rowid",
             (tag, term),
-        ).fetchone()
-        if row is None:
-            return None
-        return DefinedTermRow(
-            draft_tag=row["draft_tag"],
-            term=row["term"],
-            stable_label=row["stable_label"],
-            definition_text=row["definition_text"],
-        )
+        ).fetchall()
+        return [
+            DefinedTermRow(
+                draft_tag=r["draft_tag"],
+                term=r["term"],
+                stable_label=r["stable_label"],
+                definition_text=r["definition_text"],
+            )
+            for r in rows
+        ]
 
     # ------------------------------------------------------------------
     # Library declarations

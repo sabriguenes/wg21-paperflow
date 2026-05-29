@@ -373,9 +373,11 @@ def test_lookup_sections_batch(rich_mcp):
 
 
 def test_lookup_definition_found(rich_mcp):
-    result = _call(rich_mcp, "lookup_definition", term="undefined behavior")
-    assert result["term"] == "undefined behavior"
-    assert "no requirements" in result["definition_text"]
+    results = _call(rich_mcp, "lookup_definition", term="undefined behavior")
+    assert isinstance(results, list)
+    assert len(results) >= 1
+    assert results[0]["term"] == "undefined behavior"
+    assert "no requirements" in results[0]["definition_text"]
 
 
 def test_lookup_definition_not_found(rich_mcp):

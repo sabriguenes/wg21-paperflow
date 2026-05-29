@@ -98,6 +98,7 @@ def _collect_extracted_data(
     all_paragraphs: list[ParagraphRow] = []
 
     seen_grammar: set[str] = set()
+    seen_defined: set[tuple[str, str]] = set()
 
     for section in sections:
         for target in section.xrefs:
@@ -130,12 +131,15 @@ def _collect_extracted_data(
                 ))
 
         for term_name in section.defined_terms:
-            all_defined_terms.append(DefinedTermRow(
-                draft_tag=draft_tag,
-                term=term_name,
-                stable_label=section.stable_label,
-                definition_text=section.cleaned_text[:500],
-            ))
+            key = (term_name, section.stable_label)
+            if key not in seen_defined:
+                seen_defined.add(key)
+                all_defined_terms.append(DefinedTermRow(
+                    draft_tag=draft_tag,
+                    term=term_name,
+                    stable_label=section.stable_label,
+                    definition_text=section.cleaned_text[:500],
+                ))
 
         for decl in section.library_declarations:
             all_library_decls.append(LibraryDeclRow(
