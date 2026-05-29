@@ -9,8 +9,6 @@
 
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
 from cpp_mcp.backend import (
@@ -99,14 +97,16 @@ def test_lookup_missing(backend):
     assert backend.lookup_section("nonexistent") is None
 
 
-def test_unique_constraint(backend):
+def test_duplicate_labels_allowed(backend):
+    """Duplicate stable labels within a draft are allowed (older drafts have them)."""
     _seed_basic(backend)
-    with pytest.raises(sqlite3.IntegrityError):
-        backend.conn.execute(
-            "INSERT INTO standard_sections (draft_tag, stable_label, title, depth, chapter_file, raw_latex, cleaned_text) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("n5008", "basic.life", "Duplicate", 1, "basic.tex", "", ""),
-        )
+    backend.conn.execute(
+        "INSERT INTO standard_sections (draft_tag, stable_label, title, depth, chapter_file, raw_latex, cleaned_text) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("n5008", "basic.life", "Duplicate", 1, "basic.tex", "", ""),
+    )
+    backend.conn.commit()
+    assert backend.count_label_occurrences("basic.life", "n5008") == 2
 
 
 def test_fts_search(backend):
@@ -447,3 +447,36 @@ def test_atomic_replace_draft(backend):
     mechs = backend.verify_mechanism("decltype", real_tag)
     assert len(mechs) == 1
     assert mechs[0].draft_tag == real_tag
+
+
+def test_duplicate_stable_labels(backend):
+    """Two sections with the same stable_label can coexist (older drafts)."""
+    rows = [
+        _make_row("n3337", "gram.basic", "Basics grammar", 1, "basic", "basic.tex",
+                  r"\pnum Per-chapter grammar", "Per-chapter grammar summary"),
+        _make_row("n3337", "gram.basic", "Basics grammar", 1, "grammar", "grammar.tex",
+                  r"\pnum Appendix grammar", "Appendix grammar collection"),
+    ]
+    backend.upsert_draft("n3337", rows)
+
+    # lookup_section returns the LAST (LaTeX semantics)
+    result = backend.lookup_section("gram.basic", "n3337")
+    assert result is not None
+    assert result.chapter_file == "grammar.tex"
+
+    # count_label_occurrences returns 2
+    assert backend.count_label_occurrences("gram.basic", "n3337") == 2
+
+    # lookup_all_sections returns both in document order
+    all_sections = backend.lookup_all_sections("gram.basic", "n3337")
+    assert len(all_sections) == 2
+    assert all_sections[0].chapter_file == "basic.tex"
+    assert all_sections[1].chapter_file == "grammar.tex"
+
+
+def test_unique_label_no_duplicate_flag(backend):
+    """A unique label has count 1 and lookup_all_sections returns one."""
+    _seed_basic(backend)
+    assert backend.count_label_occurrences("basic.life", "n5008") == 1
+    all_sections = backend.lookup_all_sections("basic.life", "n5008")
+    assert len(all_sections) == 1

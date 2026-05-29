@@ -234,7 +234,10 @@ def create_server(
     def lookup_section(stable_label: str, draft: str | None = None) -> str:
         """Look up a C++ standard section by its stable label (e.g. 'basic.life').
 
-        Returns the section's raw LaTeX, cleaned text, metadata, and eel.is URL.
+        Returns the authoritative section (last in document order, matching
+        LaTeX label resolution). If the label appears in multiple sections
+        (some older drafts), the response includes a duplicate_label flag
+        and a pointer to lookup_all_sections.
         """
         tag = _resolve_draft(draft)
         if tag is None:
@@ -242,7 +245,35 @@ def create_server(
         row = backend.lookup_section(stable_label, tag)
         if row is None:
             return json.dumps({"error": f"Section [{stable_label}] not found in draft '{tag}'."})
-        return json.dumps(_format_with_url(_format_section(row)))
+        result = _format_with_url(_format_section(row))
+        count = backend.count_label_occurrences(stable_label, tag)
+        if count > 1:
+            result["duplicate_label"] = True
+            result["duplicate_note"] = (
+                f"This label appears in {count} sections. This is the version "
+                f"the standard resolves to (last in document order). Use "
+                f"lookup_all_sections('{stable_label}') to see all occurrences."
+            )
+        return json.dumps(result)
+
+    @mcp.tool()
+    def lookup_all_sections_by_label(
+        stable_label: str, draft: str | None = None
+    ) -> str:
+        """Get all sections sharing a stable label, in document order.
+
+        Most labels are unique, but some older drafts (e.g. n3337) have
+        duplicate labels (grammar summaries appear both per-chapter and
+        in the grammar appendix). The last entry is the one the standard
+        resolves to.
+        """
+        tag = _resolve_draft(draft)
+        if tag is None:
+            return json.dumps(_NO_DRAFTS)
+        rows = backend.lookup_all_sections(stable_label, tag)
+        if not rows:
+            return json.dumps({"error": f"Section [{stable_label}] not found in draft '{tag}'."})
+        return json.dumps([_format_with_url(_format_section(r)) for r in rows])
 
     @mcp.tool()
     def search_standard(

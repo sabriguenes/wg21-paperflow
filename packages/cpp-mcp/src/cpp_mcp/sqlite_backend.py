@@ -42,8 +42,7 @@ CREATE TABLE IF NOT EXISTS standard_sections (
     cleaned_text TEXT NOT NULL,
     paragraph_count INTEGER,
     is_deprecated INTEGER DEFAULT 0,
-    is_synopsis INTEGER DEFAULT 0,
-    UNIQUE(draft_tag, stable_label)
+    is_synopsis INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_sections_label
@@ -457,15 +456,51 @@ class SqliteStandardBackend(StandardBackend):
     def lookup_section(
         self, stable_label: str, draft_tag: str | None = None
     ) -> SectionRow | None:
+        """Return the authoritative section for *stable_label*.
+
+        When duplicate labels exist (e.g. older drafts), returns the
+        last occurrence in document order, matching LaTeX ``\\label``
+        overwrite semantics.
+        """
         tag = self._resolve_draft(draft_tag)
         if tag is None:
             return None
         row = self.conn.execute(
             "SELECT * FROM standard_sections "
-            "WHERE draft_tag = ? AND stable_label = ?",
+            "WHERE draft_tag = ? AND stable_label = ? "
+            "ORDER BY id DESC LIMIT 1",
             (tag, stable_label),
         ).fetchone()
         return _row_to_section(row) if row else None
+
+    def count_label_occurrences(
+        self, stable_label: str, draft_tag: str | None = None
+    ) -> int:
+        """Return how many sections share *stable_label* in this draft."""
+        tag = self._resolve_draft(draft_tag)
+        if tag is None:
+            return 0
+        row = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM standard_sections "
+            "WHERE draft_tag = ? AND stable_label = ?",
+            (tag, stable_label),
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    def lookup_all_sections(
+        self, stable_label: str, draft_tag: str | None = None
+    ) -> list[SectionRow]:
+        """Return all sections with *stable_label*, in document order."""
+        tag = self._resolve_draft(draft_tag)
+        if tag is None:
+            return []
+        rows = self.conn.execute(
+            "SELECT * FROM standard_sections "
+            "WHERE draft_tag = ? AND stable_label = ? "
+            "ORDER BY id",
+            (tag, stable_label),
+        ).fetchall()
+        return [_row_to_section(r) for r in rows]
 
     def lookup_sections(
         self, labels: list[str], draft_tag: str | None = None

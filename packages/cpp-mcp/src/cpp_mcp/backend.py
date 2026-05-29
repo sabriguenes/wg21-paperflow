@@ -215,7 +215,23 @@ class StandardBackend(abc.ABC):
     def lookup_section(
         self, stable_label: str, draft_tag: str | None = None
     ) -> SectionRow | None:
-        """Return a single section by stable label, or ``None``."""
+        """Return the authoritative section for *stable_label*.
+
+        When duplicate labels exist (older drafts), returns the last
+        occurrence in document order (matching LaTeX label semantics).
+        """
+
+    @abc.abstractmethod
+    def count_label_occurrences(
+        self, stable_label: str, draft_tag: str | None = None
+    ) -> int:
+        """Return how many sections share *stable_label* in this draft."""
+
+    @abc.abstractmethod
+    def lookup_all_sections(
+        self, stable_label: str, draft_tag: str | None = None
+    ) -> list[SectionRow]:
+        """Return all sections with *stable_label*, in document order."""
 
     @abc.abstractmethod
     def lookup_sections(

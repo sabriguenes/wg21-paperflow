@@ -198,6 +198,16 @@ def ingest_from_directory(
     parse_time = time.monotonic() - t0
     log.info("Parsed %d sections in %.1fs", len(sections), parse_time)
 
+    from collections import Counter
+    label_counts = Counter(s.stable_label for s in sections)
+    duplicates = {label: count for label, count in label_counts.items() if count > 1}
+    if duplicates:
+        log.warning(
+            "Draft '%s' has %d duplicate stable labels: %s",
+            draft_tag, len(duplicates),
+            ", ".join(f"[{label}] x{cnt}" for label, cnt in sorted(duplicates.items())),
+        )
+
     version, note = resolve_version(draft_tag)
 
     if atomic:

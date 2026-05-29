@@ -443,3 +443,44 @@ def test_list_drafts_includes_version_info(rich_backend):
     n5008 = next(d for d in drafts if d["draft_tag"] == "n5008")
     assert n5008["standard_version"] == "C++26"
     assert n5008["version_note"] == "working draft"
+
+
+def test_lookup_section_duplicate_flag(tmp_path):
+    """lookup_section flags duplicate labels and points to lookup_all_sections_by_label."""
+    b = SqliteStandardBackend(tmp_path / "dup.db")
+    b.create_schema()
+    b.upsert_draft("n3337", [
+        _make_row("n3337", "gram.basic", "Basics grammar", 1, "basic", "basic.tex",
+                  r"\pnum Per-chapter", "Per-chapter grammar"),
+        _make_row("n3337", "gram.basic", "Basics grammar", 1, "grammar", "grammar.tex",
+                  r"\pnum Appendix", "Appendix grammar"),
+    ])
+    mcp = create_server(b, no_auth=True)
+    result = _call(mcp, "lookup_section", stable_label="gram.basic", draft="n3337")
+    assert result["chapter_file"] == "grammar.tex"
+    assert result["duplicate_label"] is True
+    assert "lookup_all_sections" in result["duplicate_note"]
+
+
+def test_lookup_section_no_duplicate_flag(mcp):
+    """Normal unique labels have no duplicate_label field."""
+    result = _call(mcp, "lookup_section", stable_label="basic.life")
+    assert "duplicate_label" not in result
+
+
+def test_lookup_all_sections_by_label(tmp_path):
+    """lookup_all_sections_by_label returns all occurrences in document order."""
+    b = SqliteStandardBackend(tmp_path / "dup.db")
+    b.create_schema()
+    b.upsert_draft("n3337", [
+        _make_row("n3337", "gram.basic", "Basics grammar", 1, "basic", "basic.tex",
+                  r"\pnum Per-chapter", "Per-chapter grammar"),
+        _make_row("n3337", "gram.basic", "Basics grammar", 1, "grammar", "grammar.tex",
+                  r"\pnum Appendix", "Appendix grammar"),
+    ])
+    mcp = create_server(b, no_auth=True)
+    results = _call(mcp, "lookup_all_sections_by_label",
+                    stable_label="gram.basic", draft="n3337")
+    assert len(results) == 2
+    assert results[0]["chapter_file"] == "basic.tex"
+    assert results[1]["chapter_file"] == "grammar.tex"
