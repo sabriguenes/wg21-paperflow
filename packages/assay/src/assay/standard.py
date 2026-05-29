@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Any
 
@@ -25,8 +24,6 @@ from fastmcp.client.transports import StreamableHttpTransport
 log = logging.getLogger(__name__)
 
 DEFAULT_CPP_MCP_URL = "https://mcpserver1.cpp.al/mcp"
-CPP_MCP_URL_ENV = "CPP_MCP_URL"
-CPP_MCP_API_KEY_ENV = "CPP_MCP_API_KEY"
 
 _STABLE_LABEL_RE = re.compile(r"\[([a-z][a-z0-9.]+)\]")
 _PARAGRAPH_REF_RE = re.compile(r"\[([a-z][a-z0-9.]+)\]\s*(?:paragraph|p)\s*(\d+)", re.IGNORECASE)
@@ -48,6 +45,7 @@ class StandardClient:
             headers={"Authorization": f"Bearer {api_key}"},
         )
         self._client: Client | None = None
+        self._call_count: int = 0
 
     async def connect(self) -> None:
         """Open the MCP session and validate authentication."""
@@ -82,10 +80,14 @@ class StandardClient:
         """Call an MCP tool and return the parsed JSON result."""
         if self._client is None:
             raise RuntimeError("StandardClient is not connected")
+        log.debug("MCP call: %s(%s)", tool, json.dumps(arguments, default=str)[:200])
         result = await self._client.call_tool(tool, arguments)
         if not result.content or not hasattr(result.content[0], "text"):
             raise ValueError(f"MCP tool '{tool}' returned no text content")
-        return json.loads(result.content[0].text)
+        parsed = json.loads(result.content[0].text)
+        self._call_count += 1
+        log.debug("MCP result: %s -> %d chars", tool, len(result.content[0].text))
+        return parsed
 
     # ------------------------------------------------------------------
     # Data methods (return parsed Python objects)
@@ -290,7 +292,10 @@ class StandardClient:
         if not parts:
             return ""
 
-        return "## Standard context (verified)\n\n" + "\n".join(parts)
+        block = "## Standard context (verified)\n\n" + "\n".join(parts)
+        log.info("Prefetch standard context: %d sections, %d paragraphs, %d chars",
+                 len(labels), len(para_refs), len(block))
+        return block
 
     async def prefetch_mechanism_verification(self, text: str) -> str:
         """Extract mechanism names from text and verify each against the standard.
@@ -324,26 +329,17 @@ class StandardClient:
         return "\n".join(parts) + "\n"
 
 
-def from_env(
-    *,
-    url: str | None = None,
-    no_cpp_mcp: bool = False,
-) -> StandardClient | None:
-    """Build a StandardClient from env vars and defaults.
+def from_service_config(base_url: str, api_key: str) -> StandardClient:
+    """Build a StandardClient from resolved service configuration.
 
-    Resolution order for URL: explicit *url* arg > $CPP_MCP_URL > default.
-    API key: $CPP_MCP_API_KEY (required unless *no_cpp_mcp*).
+    Both *base_url* and *api_key* are required. The caller (pipeline
+    entry function) resolves these from SERVICES.toml.
     """
-    if no_cpp_mcp:
-        return None
-
-    resolved_url = url or os.environ.get(CPP_MCP_URL_ENV, "").strip() or DEFAULT_CPP_MCP_URL
-    key = os.environ.get(CPP_MCP_API_KEY_ENV, "").strip()
-    if not key:
+    if not base_url:
+        raise ValueError("cpp-mcp base_url is empty")
+    if not api_key:
         raise ValueError(
-            f"CPP_MCP_API_KEY is not set. The C++ standard server at "
-            f"{resolved_url} requires authentication.\n"
-            f"  Set ${CPP_MCP_API_KEY_ENV} in your environment, or\n"
-            f"  pass --no-cpp-mcp to run without the C++ standard MCP server."
+            "cpp-mcp API key is empty. Set $CPP_MCP_API_KEY in your "
+            "environment (referenced by SERVICES.toml)."
         )
-    return StandardClient(resolved_url, key)
+    return StandardClient(base_url, api_key)

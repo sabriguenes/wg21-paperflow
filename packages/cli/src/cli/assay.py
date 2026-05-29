@@ -50,15 +50,11 @@ def command(args, backend):
     try:
         with progress_ctx:
             from assay import assay_paper
-            no_cpp_mcp = getattr(args, "no_cpp_mcp", False)
-            cpp_mcp_url = getattr(args, "cpp_mcp_url", None)
             report = asyncio.run(assay_paper(
                 pid, backend,
                 debug=debug, trace=trace,
                 stop_after=stop_after,
                 on_progress=on_progress,
-                no_cpp_mcp=no_cpp_mcp,
-                cpp_mcp_url=cpp_mcp_url,
             ))
 
         if stop_after is None:

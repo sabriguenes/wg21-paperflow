@@ -97,7 +97,7 @@ _VERB_FLAGS: dict[str, set[str]] = {
     "download":  {"force", "concurrency"},
     "convert":   {"force", "concurrency", "check_content", "check_content_json", "keep_downstream", "yes", "extract_vector_images", "vector_whiteout_text"},
     "agora":     {"debug", "trace", "step", "provider", "force"},
-    "assay":     {"debug", "trace", "step", "force", "rerender", "no_cpp_mcp", "cpp_mcp_url"},
+    "assay":     {"debug", "trace", "step", "force", "rerender"},
     "status":    set(),
 }
 
@@ -144,14 +144,6 @@ _FLAG_DEFS: list[dict] = [
          default=False,
          help="Regenerate report from stored data without re-running "
               "the pipeline. Applies the current template to DB artifacts."),
-    dict(name="no_cpp_mcp", flags=["--no-cpp-mcp"], action="store_true",
-         default=False,
-         help="Disable the C++ standard MCP server connection. "
-              "Specification-lens analysis falls back to web search and LLM knowledge."),
-    dict(name="cpp_mcp_url", flags=["--cpp-mcp-url"], default=None,
-         metavar="URL",
-         help="Override the C++ standard MCP server URL "
-              "(default: https://mcpserver1.cpp.al/mcp, or $CPP_MCP_URL)."),
     dict(name="extract_vector_images", flags=["--extract-vector-images"],
          action="store_true", default=False,
          help="On convert: extract vector figures (path-operator clusters) "

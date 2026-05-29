@@ -75,11 +75,64 @@ from assay.rag import (
     query_index,
     query_for_research, query_for_challenge, IndexStats,
 )
+from assay.standard import StandardClient, from_service_config
 from assay.triage import should_analyze
 from pipeline import tokens_to_chars
 from assay.render import render_report, render_trace
 
 logger = logging.getLogger(__name__)
+
+_MCP_TOML_SECTION = "mcp"
+_MCP_ENTRY_NAME = "cpp-standard"
+
+
+def _load_cpp_mcp_client() -> StandardClient:
+    """Load the cpp-mcp config from SERVICES.toml ``[mcp.cpp-standard]``.
+
+    Raises ``ValueError`` if the entry is missing or the API key is
+    not set. The C++ standard MCP server is required for assay.
+    """
+    import os
+    from pathlib import Path
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib  # type: ignore[no-redef]
+
+    toml_path = Path(__file__).resolve().parents[4] / "SERVICES.toml"
+    if not toml_path.exists():
+        raise ValueError(
+            f"SERVICES.toml not found at {toml_path}. "
+            f"The C++ standard MCP server ([{_MCP_TOML_SECTION}.{_MCP_ENTRY_NAME}]) "
+            f"is required for assay."
+        )
+    with open(toml_path, "rb") as f:
+        config = tomllib.load(f)
+
+    mcp_section = config.get(_MCP_TOML_SECTION) or {}
+    entry = mcp_section.get(_MCP_ENTRY_NAME)
+    if entry is None:
+        raise ValueError(
+            f"[{_MCP_TOML_SECTION}.{_MCP_ENTRY_NAME}] not found in SERVICES.toml. "
+            f"The C++ standard MCP server is required for assay."
+        )
+
+    base_url = entry.get("base_url", "")
+    api_key_raw = entry.get("api_key", "")
+    if api_key_raw.startswith("$"):
+        env_var = api_key_raw[1:]
+        api_key = os.environ.get(env_var, "").strip()
+        if not api_key:
+            raise ValueError(
+                f"Environment variable ${env_var} is not set (required by "
+                f"[{_MCP_TOML_SECTION}.{_MCP_ENTRY_NAME}] in SERVICES.toml)."
+            )
+    else:
+        api_key = api_key_raw
+
+    return from_service_config(base_url=base_url, api_key=api_key)
+
 
 # -- Step name constants (must match assay.md headers) -----------------------
 
@@ -1557,8 +1610,6 @@ async def assay_paper(
     trace: bool = False,
     stop_after: int | None = None,
     on_progress: ProgressCallback | None = None,
-    no_cpp_mcp: bool = False,
-    cpp_mcp_url: str | None = None,
 ) -> str:
     """Run the assay pipeline on a WG21 paper and return the report markdown.
 
@@ -1590,10 +1641,8 @@ async def assay_paper(
     embedder_name = embedder_defaults.get("default")
     embedder = embedders.get(embedder_name) if embedder_name else None
 
-    from assay.standard import from_env as std_from_env
-    std_client = std_from_env(url=cpp_mcp_url, no_cpp_mcp=no_cpp_mcp)
-    if std_client is not None:
-        await std_client.connect()
+    std_client = _load_cpp_mcp_client()
+    await std_client.connect()
 
     state = PipelineState(std_client=std_client)
 

@@ -5,7 +5,7 @@
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 #
 
-"""Tests for assay.standard (StandardClient and from_env)."""
+"""Tests for assay.standard (StandardClient and from_service_config)."""
 
 from __future__ import annotations
 
@@ -13,58 +13,24 @@ import pytest
 
 from assay.standard import (
     StandardClient,
-    from_env,
+    from_service_config,
 )
 
 
-def test_from_env_no_cpp_mcp():
-    result = from_env(no_cpp_mcp=True)
-    assert result is None
-
-
-def test_from_env_missing_key_raises(monkeypatch):
-    monkeypatch.delenv("CPP_MCP_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="CPP_MCP_API_KEY is not set"):
-        from_env()
-
-
-def test_from_env_empty_key_raises(monkeypatch):
-    monkeypatch.setenv("CPP_MCP_API_KEY", "")
-    with pytest.raises(ValueError, match="CPP_MCP_API_KEY is not set"):
-        from_env()
-
-
-def test_from_env_with_key_returns_client(monkeypatch):
-    monkeypatch.setenv("CPP_MCP_API_KEY", "test-key-123")
-    client = from_env()
+def test_from_service_config_returns_client():
+    client = from_service_config("https://example.com/mcp", "test-key")
     assert isinstance(client, StandardClient)
-    assert client._url == "https://mcpserver1.cpp.al/mcp"
+    assert client._url == "https://example.com/mcp"
 
 
-def test_from_env_custom_url_via_env(monkeypatch):
-    monkeypatch.setenv("CPP_MCP_API_KEY", "test-key-123")
-    monkeypatch.setenv("CPP_MCP_URL", "http://localhost:9999/mcp")
-    client = from_env()
-    assert client._url == "http://localhost:9999/mcp"
+def test_from_service_config_empty_url_raises():
+    with pytest.raises(ValueError, match="base_url is empty"):
+        from_service_config("", "test-key")
 
 
-def test_from_env_custom_url_via_arg(monkeypatch):
-    monkeypatch.setenv("CPP_MCP_API_KEY", "test-key-123")
-    client = from_env(url="http://custom:1234/mcp")
-    assert client._url == "http://custom:1234/mcp"
-
-
-def test_from_env_arg_overrides_env(monkeypatch):
-    monkeypatch.setenv("CPP_MCP_API_KEY", "test-key-123")
-    monkeypatch.setenv("CPP_MCP_URL", "http://env-url/mcp")
-    client = from_env(url="http://arg-url/mcp")
-    assert client._url == "http://arg-url/mcp"
-
-
-def test_from_env_no_cpp_mcp_skips_key_check(monkeypatch):
-    monkeypatch.delenv("CPP_MCP_API_KEY", raising=False)
-    result = from_env(no_cpp_mcp=True)
-    assert result is None
+def test_from_service_config_empty_key_raises():
+    with pytest.raises(ValueError, match="API key is empty"):
+        from_service_config("https://example.com/mcp", "")
 
 
 def test_extract_stable_labels():
@@ -99,3 +65,57 @@ def test_extract_mechanism_names_dedup():
     text = "`vector` and `vector` again."
     names = StandardClient.extract_mechanism_names(text)
     assert names.count("vector") == 1
+
+
+def test_prefetch_mechanism_verification_nonexistent():
+    """Verify that a nonexistent mechanism returns NOT FOUND, not an infinite loop."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    client = StandardClient.__new__(StandardClient)
+    client._client = MagicMock()
+    client._call_count = 0
+
+    async def mock_call_tool(tool, args):
+        result = MagicMock()
+        result.content = [MagicMock()]
+        result.content[0].text = '{"exists": false, "name": "' + args["name"] + '", "matches": []}'
+        return result
+
+    client._client.call_tool = mock_call_tool
+
+    text = "Uses `totally_fake_mechanism` and `another_nonexistent_thing`."
+    block = asyncio.run(client.prefetch_mechanism_verification(text))
+    assert "NOT FOUND" in block
+    assert "totally_fake_mechanism" in block
+    assert "another_nonexistent_thing" in block
+    assert "EXISTS" not in block
+
+
+def test_prefetch_mechanism_verification_mixed():
+    """Mixed real and fake mechanisms: real ones show EXISTS, fake show NOT FOUND."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    client = StandardClient.__new__(StandardClient)
+    client._client = MagicMock()
+    client._call_count = 0
+
+    async def mock_call_tool(tool, args):
+        name = args["name"]
+        result = MagicMock()
+        result.content = [MagicMock()]
+        if name == "vector":
+            result.content[0].text = '{"exists": true, "name": "vector", "matches": [{"name": "vector", "category": "library", "stable_label": "vector.overview"}]}'
+        else:
+            result.content[0].text = '{"exists": false, "name": "' + name + '", "matches": []}'
+        return result
+
+    client._client.call_tool = mock_call_tool
+
+    text = "`vector` and `nonexistent_widget`."
+    block = asyncio.run(client.prefetch_mechanism_verification(text))
+    assert "vector" in block
+    assert "EXISTS" in block
+    assert "NOT FOUND" in block
+    assert "nonexistent_widget" in block

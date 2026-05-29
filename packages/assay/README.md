@@ -13,37 +13,19 @@ paperflow assay P4003R3 --force           # re-run even if already complete
 
 ## C++ Standard Access
 
-Assay uses the cpp-mcp server at `https://mcpserver1.cpp.al/mcp` by
-default to look up C++ standard sections, verify mechanisms, and
-ground specification analysis in normative text.
+Assay requires the cpp-mcp server for normative text lookups,
+mechanism verification, and specification analysis grounding. The
+server URL is configured in `SERVICES.toml` under `[services.cpp-mcp]`.
 
-Set your API key:
+Set the API key in your environment:
 
 ```bash
 export CPP_MCP_API_KEY="<your-api-key>"
 ```
 
-To override the server URL (e.g. for local development):
-
-```bash
-export CPP_MCP_URL="http://localhost:8001/mcp"
-```
-
-Or via CLI flag:
-
-```bash
-paperflow assay P4003R3 --cpp-mcp-url http://localhost:8001/mcp
-```
-
-To run without the MCP server entirely:
-
-```bash
-paperflow assay P4003R3 --no-cpp-mcp
-```
-
-When the MCP server is disabled, Specification-lens research falls
-back to web search and mechanism existence checks in the Challenge
-step rely on the LLM's training data.
+Assay will hard-error if the MCP server is not reachable or the API
+key is missing. This is intentional: running without standard access
+degrades finding quality in ways that cannot be detected downstream.
 
 ## Architecture
 

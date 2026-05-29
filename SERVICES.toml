@@ -249,3 +249,13 @@ model = "sentence-transformers/all-MiniLM-L12-v2"
 
 [embedder_defaults]
 default = "minilm"
+
+# ---------------------------------------------------------------------------
+# MCP servers (non-LLM tool servers accessed by pipelines)
+# ---------------------------------------------------------------------------
+
+# C++ standard MCP server. Required by assay for normative text lookups,
+# mechanism verification, and specification analysis grounding.
+[mcp.cpp-standard]
+base_url = "https://mcpserver1.cpp.al/mcp"
+api_key = "$CPP_MCP_API_KEY"
