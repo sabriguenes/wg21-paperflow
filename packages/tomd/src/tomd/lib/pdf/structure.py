@@ -1,6 +1,7 @@
 """Dual-path comparison, heading intelligence, and document structuring."""
 
 import logging
+import math
 import re
 import unicodedata
 from collections import Counter
@@ -11,9 +12,10 @@ from .glyphs import GLYPH_FONT_SENTINEL, UNKNOWN_GLYPH
 from .types import (
     Block, Line, Span, Section, SectionKind, Confidence,
     SIMILARITY_THRESHOLD, TERMINAL_PUNCTUATION, FALLBACK_BODY_SIZE,
-    MIN_UNCERTAIN_WORDS,
+    MIN_UNCERTAIN_WORDS, compute_bbox,
     SECTION_NUM_RE, DOC_FIELD_RE, REPLY_TO_RE, AUDIENCE_RE,
     BULLET_RE, NUMBERED_LIST_RE, KNOWN_SECTIONS, BULLET_CHARS,
+    ZERO_WIDTH_CHARS,
 )
 
 _HEADING_SIZE_RATIO = 1.05
@@ -80,6 +82,140 @@ _STRUCTURAL_CODE_RE = re.compile(
 )
 
 _RESCUE_MIN_CODE_LINES = 3
+
+
+# str.translate table that drops the shared ZERO_WIDTH_CHARS (types.py),
+# so a line carrying only zero-width invisibles counts as empty.
+_ZERO_WIDTH = {c: None for c in ZERO_WIDTH_CHARS}
+
+
+def _section_geometry_lines(sec: Section) -> list[Line]:
+    """Lines that carry usable geometry for positioning ``sec``.
+
+    A line qualifies only when it is on the section's own page, carries a
+    real bbox (not the default (0, 0, 0, 0)), and has real text after
+    stripping whitespace and zero-width invisibles. The own-page filter
+    matters because the cross-page join (cleanup step) appends a
+    continuation line from the next page into the last section of a page;
+    that line's small top-of-page y must not anchor the section. A
+    section's page_num is where it begins, which is the correct anchor
+    page. The UNKNOWN_GLYPH placeholder is intentionally not stripped: it
+    stands at a real reading-order position and represents real (if
+    unidentified) content, so it anchors like any other content line.
+    """
+    return [
+        ln for ln in sec.lines
+        if ln.page_num == sec.page_num
+        and ln.bbox != (0, 0, 0, 0)
+        and ln.text.translate(_ZERO_WIDTH).strip()
+    ]
+
+
+def _section_top_y(sec: Section) -> float:
+    """Topmost y of a section's content lines, for reading-order repair.
+
+    A section with no anchorable line returns +inf, sorting to the end of
+    its page rather than being hoisted above positioned content. In
+    practice every section compare_extractions builds carries block lines
+    with real bboxes; the +inf path is purely defensive.
+    """
+    ys = [ln.bbox[1] for ln in _section_geometry_lines(sec)]
+    return min(ys) if ys else math.inf
+
+
+# Two sections are side-by-side (different columns) when they overlap
+# vertically but are separated by a horizontal gutter. A page with any
+# such pair is multi-column; MuPDF already emits it in column reading
+# order, so the repair leaves it untouched. Thresholds are permissive
+# because the failure mode of over-detecting is benign (forgo the repair
+# on that page), while under-detecting would interleave real columns.
+_COLUMN_GUTTER_MIN = 10.0    # min horizontal gap (pt) between columns
+_COLUMN_VOVERLAP_MIN = 3.0   # min vertical overlap (pt) to be side-by-side
+
+
+def _section_bbox(sec: Section) -> tuple[float, float, float, float] | None:
+    """Bounding box over a section's positioned content lines, or None.
+
+    Shares _section_geometry_lines with _section_top_y so the column
+    guard and the y-anchor agree on which lines carry usable geometry.
+    """
+    boxes = [ln.bbox for ln in _section_geometry_lines(sec)]
+    return compute_bbox(boxes) if boxes else None
+
+
+def _page_is_multicolumn(page_sections: list[Section]) -> bool:
+    """True if any two sections are side-by-side (same y band, gutter between)."""
+    boxes = [b for b in (_section_bbox(s) for s in page_sections) if b]
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            voverlap = min(a[3], b[3]) - max(a[1], b[1])
+            if voverlap < _COLUMN_VOVERLAP_MIN:
+                continue
+            gutter = max(b[0] - a[2], a[0] - b[2])
+            if gutter >= _COLUMN_GUTTER_MIN:
+                return True
+    return False
+
+
+def _reorders_only_monospace(original: list[Section],
+                             y_sorted: list[Section]) -> bool:
+    """True if y_sorted moves only all-monospace sections vs original.
+
+    Compares the non-monospace subsequences by identity: if every
+    non-monospace section sits in the same relative position before and
+    after the sort, the only sections that moved are code blocks.
+
+    The lengths are always equal (y_sorted is a permutation of original),
+    but the explicit length check makes that precondition local rather
+    than resting on it implicitly: without it a shorter list would let
+    zip truncate and wrongly report a reordered set as unchanged.
+    """
+    anchors_orig = [s for s in original if not _section_is_all_monospace(s)]
+    anchors_sorted = [s for s in y_sorted if not _section_is_all_monospace(s)]
+    return (len(anchors_orig) == len(anchors_sorted)
+            and all(a is b for a, b in zip(anchors_orig, anchors_sorted)))
+
+
+def _order_sections_reading(sections: list[Section]) -> list[Section]:
+    """Repair MuPDF's block order where a code block is out of reading order.
+
+    MuPDF's block stream is not always in reading order: a monospace
+    code block physically at the top/middle of a page can be reported
+    last (observed on P4007R0 pages 9 and 12, where it lands next to
+    another code block and _detect_code_blocks then merges the two into
+    one fenced block at the wrong position).
+
+    The repair is deliberately narrow. Per page, sections are sorted
+    top-to-bottom by y, but the sorted order is accepted only when both
+    guards pass:
+
+    - The page is single-column (_page_is_multicolumn is False). A
+      multi-column page, whether its columns are prose (TOC, revision
+      history) or side-by-side code comparisons, is already in column
+      reading order; a y-sort would interleave the columns.
+    - The reorder moves nothing except all-monospace ("code") sections
+      (_reorders_only_monospace). The relative order of non-monospace
+      anchors (prose, headings, title/TOC/metadata, footers) stays
+      byte-for-byte unchanged, so position-sensitive downstream passes
+      (TOC stripping, duplicate collapse) see the order they always did.
+
+    Together these keep the fix to its purpose: relocate a misplaced
+    code block on an otherwise single-flow page (P4007R0) and nothing
+    else. The sort is stable, so equal-y sections keep MuPDF order.
+    """
+    by_page: dict[int, list[Section]] = {}
+    for sec in sections:
+        by_page.setdefault(sec.page_num, []).append(sec)
+    ordered: list[Section] = []
+    for pg in sorted(by_page):
+        page_sections = by_page[pg]
+        y_sorted = sorted(page_sections, key=_section_top_y)
+        if (not _page_is_multicolumn(page_sections)
+                and _reorders_only_monospace(page_sections, y_sorted)):
+            ordered.extend(y_sorted)
+        else:
+            ordered.extend(page_sections)
+    return ordered
 
 
 def _make_paragraph_section(block: Block) -> Section:
@@ -228,7 +364,7 @@ def compare_extractions(mupdf_blocks: list[Block],
                     kept.append(_make_paragraph_section(block))
             sections = kept
 
-    sections.sort(key=lambda sec: sec.page_num)
+    sections = _order_sections_reading(sections)
 
     for sec in sections:
         if sec.kind != SectionKind.UNCERTAIN:
@@ -538,17 +674,14 @@ def structure_sections(sections: list[Section],
         # the list-detection branch below or the position-based detector
         # downstream, both of which know how to merge bullet + body.
         #
-        # Strip zero-width invisibles (U+200B / U+200C / U+200D /
-        # U+FEFF) before the emptiness check: some PDFs follow each
-        # bullet glyph with a zero-width joiner, which standard
-        # ``str.strip()`` does NOT remove. Also strip the placeholder
-        # character itself, since a freshly-injected sentinel may have
-        # been merged into the bullet line's text representation.
+        # Strip the shared ZERO_WIDTH_CHARS before the emptiness check:
+        # some PDFs follow each bullet glyph with a zero-width joiner,
+        # which standard ``str.strip()`` does NOT remove. Also strip the
+        # placeholder character itself, since a freshly-injected sentinel
+        # may have been merged into the bullet line's text representation.
         _BULLET_STRIP_FIRST_LINE = {ord(c): None for c in BULLET_CHARS}
-        _BULLET_STRIP_FIRST_LINE.update({
-            0x200B: None, 0x200C: None, 0x200D: None, 0xFEFF: None,
-            ord(UNKNOWN_GLYPH): None,
-        })
+        _BULLET_STRIP_FIRST_LINE.update({c: None for c in ZERO_WIDTH_CHARS})
+        _BULLET_STRIP_FIRST_LINE[ord(UNKNOWN_GLYPH)] = None
         _first_line_stripped = first_line.translate(
             _BULLET_STRIP_FIRST_LINE
         ).strip()

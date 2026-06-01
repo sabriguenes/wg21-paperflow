@@ -1,5 +1,7 @@
 """Tests for lib.pdf.structure."""
 
+import math
+
 from conftest import make_block, make_section, make_span
 from tomd.lib.pdf.types import (
     Block, Line, Span, Section, SectionKind, Confidence,
@@ -9,6 +11,7 @@ from tomd.lib.pdf.structure import (
     heading_confidence, _extract_metadata,
     _detect_body_size, _validate_nesting,
     _demote_repeated_low_confidence_numbers,
+    _section_top_y, _reorders_only_monospace, _page_is_multicolumn,
 )
 
 
@@ -617,3 +620,217 @@ class TestValidateNestingSiblingClamp:
         ]
         _validate_nesting(sections)
         assert sections[-1].heading_level == 3
+
+
+def _block_at(y, texts, page_num=0, mono=False, x=0):
+    """A Block whose lines carry real (x, y) positions, stacked from y down.
+
+    conftest's make_block leaves line bbox at the default (0,0,0,0),
+    which the reading-order sort cannot use, so these tests build
+    Block/Line/Span directly. ``mono=True`` marks every span monospace
+    so structure_sections' code-block detector treats the block as a
+    code run. ``x`` is the left edge; lines span ``x``..``x+100`` so a
+    second column at ``x=300`` is gutter-separated from one at ``x=0``.
+    """
+    lines = []
+    for i, t in enumerate(texts):
+        top = y + i * 10
+        span = Span(text=t, monospace=mono, bbox=(x, top, x + 100, top + 8))
+        lines.append(Line(spans=[span], bbox=(x, top, x + 100, top + 8),
+                          page_num=page_num))
+    return Block(lines=lines, page_num=page_num,
+                 bbox=(x, y, x + 100, y + len(texts) * 10))
+
+
+class TestReadingOrderRepair:
+    """compare_extractions repairs a MuPDF stream that reports a code
+    block out of order, but only when the reorder moves code alone."""
+
+    def test_displaced_code_block_moved_among_prose(self):
+        # MuPDF reports a monospace code block (y=200) last, after the
+        # prose that physically follows it (y=360, y=500). The repair
+        # moves the code to its y slot; the prose order is untouched.
+        code = _block_at(200, ["do_read ( sock , buf );"], mono=True)
+        prose1 = _block_at(360, ["The first body paragraph sits here."])
+        prose2 = _block_at(500, ["The second body paragraph sits here."])
+        mupdf = [prose1, prose2, code]            # code reported last
+        sections = compare_extractions(mupdf, mupdf)
+        first_lines = [s.text.split("\n")[0] for s in sections]
+        assert first_lines == [
+            "do_read ( sock , buf );",
+            "The first body paragraph sits here.",
+            "The second body paragraph sits here.",
+        ]
+
+    def test_displaced_monospace_not_merged_across_body(self):
+        # Page layout in reading order: code A @200, prose @360 and @500,
+        # code B @660. MuPDF supplies them mis-ordered (prose, prose, B,
+        # A); leaving that order adjacent A and B and merges them into one
+        # code block. The repair separates them by the intervening prose.
+        code_a = _block_at(200, ["do_read ( sock , buf )",
+                                 "  | then ([] { return; });"], mono=True)
+        prose1 = _block_at(360, ["The consequence is that this travels "
+                                 "together and nothing is lost here."])
+        prose2 = _block_at(500, ["Andrzej observes the pipeline carries "
+                                 "the program logic as follows:"])
+        code_b = _block_at(660, ["Level: I/O Composed Classification",
+                                 "success: [read] -> [process]"], mono=True)
+        mupdf = [prose1, prose2, code_b, code_a]   # MuPDF's wrong order
+        # Mirror the real pipeline: compare_extractions (where the repair
+        # lives) then structure_sections. Identical m/s keeps the page
+        # confident so blocks stay separate.
+        sections_in = compare_extractions(mupdf, mupdf)
+        _, sections, _ = structure_sections(sections_in, has_title=True)
+
+        code = [s for s in sections if s.kind == SectionKind.CODE]
+        assert len(code) == 2, "displaced code must not merge with code B"
+        assert "do_read" in code[0].text and "Level: I/O" not in code[0].text
+        assert "Level: I/O" in code[1].text
+        # Assert the full reading order, not just "first CODE before
+        # first PARAGRAPH" (which [CODE, CODE, PARA, PARA] would also
+        # satisfy): the do_read block brackets the prose above, the
+        # Level: I/O block brackets it below.
+        order = [(s.kind.name, s.text[:24]) for s in sections]
+        do_read_i = next(i for i, (k, t) in enumerate(order)
+                         if k == "CODE" and "do_read" in t)
+        level_i = next(i for i, (k, t) in enumerate(order)
+                       if k == "CODE" and "Level: I/O" in t)
+        prose_idx = [i for i, (k, _) in enumerate(order) if k == "PARAGRAPH"]
+        assert prose_idx, "intervening prose must survive"
+        assert do_read_i < min(prose_idx) < max(prose_idx) < level_i
+
+    def test_prose_only_reorder_is_not_applied(self):
+        # Two prose (non-monospace) blocks out of y-order. Reordering them
+        # would move an anchor, so the repair is rejected and MuPDF order
+        # stands. This is what protects footers and metadata blocks whose
+        # MuPDF position downstream passes (TOC strip, dedup) rely on.
+        late = _block_at(600, ["alpha beta gamma delta epsilon zeta"])
+        early = _block_at(200, ["one two three four five six seven"])
+        mupdf = [late, early]                      # prose out of y-order
+        sections = compare_extractions(mupdf, mupdf)
+        first_lines = [s.text.split("\n")[0] for s in sections]
+        assert first_lines == [
+            "alpha beta gamma delta epsilon zeta",   # MuPDF order kept
+            "one two three four five six seven",
+        ]
+
+    def test_multicolumn_prose_preserves_mupdf_order(self):
+        # Two-column prose page: MuPDF emits the whole left column, then
+        # the whole right column. A y-sort would interleave them; the
+        # column guard rejects the reorder so MuPDF's order stands.
+        left_top = _block_at(100, ["left column top paragraph text",
+                                    "wrapping onto a second line here"], x=50)
+        left_bot = _block_at(300, ["left column bottom paragraph text",
+                                   "also wrapping a second line"], x=50)
+        right_top = _block_at(110, ["right column top paragraph text",
+                                    "right wrapping second line"], x=300)
+        right_bot = _block_at(320, ["right column bottom paragraph text",
+                                    "right bottom second line"], x=300)
+        mupdf = [left_top, left_bot, right_top, right_bot]   # column order
+        sections = compare_extractions(mupdf, mupdf)
+        first_lines = [s.text.split("\n")[0] for s in sections]
+        assert first_lines == [
+            "left column top paragraph text",
+            "left column bottom paragraph text",
+            "right column top paragraph text",
+            "right column bottom paragraph text",
+        ]
+
+    def test_multicolumn_code_comparison_preserves_mupdf_order(self):
+        # Side-by-side CODE comparison (p1112r4 shape): both columns are
+        # monospace, so the anchor gate alone would accept interleaving
+        # them. The column guard must reject the reorder. MuPDF emits the
+        # left code column then the right.
+        left = _block_at(100, ["struct cell {", "  int idx;", "};"],
+                         x=90, mono=True)
+        right = _block_at(110, ["struct layout(standard) cell {",
+                                "  int idx;", "};"], x=311, mono=True)
+        mupdf = [left, right]                      # column reading order
+        sections = compare_extractions(mupdf, mupdf)
+        first_lines = [s.text.split("\n")[0] for s in sections]
+        assert first_lines == ["struct cell {",
+                               "struct layout(standard) cell {"]
+
+
+def _sec(block):
+    """Wrap a _block_at Block in a PARAGRAPH Section (lines drive the gate)."""
+    return Section(kind=SectionKind.PARAGRAPH, text=block.text,
+                   lines=block.lines, page_num=block.page_num)
+
+
+class TestReordersOnlyMonospace:
+    def test_only_code_moved_is_accepted(self):
+        code = _sec(_block_at(200, ["code();"], mono=True))
+        prose1 = _sec(_block_at(360, ["first prose block"]))
+        prose2 = _sec(_block_at(500, ["second prose block"]))
+        page = [prose1, prose2, code]              # code reported last
+        y_sorted = sorted(page, key=_section_top_y)
+        assert _reorders_only_monospace(page, y_sorted) is True
+
+    def test_moved_anchor_is_rejected(self):
+        # Two prose anchors out of y-order: sorting moves an anchor.
+        page = [_sec(_block_at(600, ["late prose"])),
+                _sec(_block_at(200, ["early prose"]))]
+        y_sorted = sorted(page, key=_section_top_y)
+        assert _reorders_only_monospace(page, y_sorted) is False
+
+
+class TestPageIsMulticolumn:
+    def test_side_by_side_blocks_detected(self):
+        left = _sec(_block_at(100, ["left text"], x=50))
+        right = _sec(_block_at(105, ["right text"], x=300))  # overlap+gutter
+        assert _page_is_multicolumn([left, right]) is True
+
+    def test_stacked_single_column_not_detected(self):
+        top = _sec(_block_at(100, ["first stacked block"], x=50))
+        bot = _sec(_block_at(300, ["second stacked block"], x=50))
+        assert _page_is_multicolumn([top, bot]) is False
+
+    def test_full_width_stacked_not_multicolumn(self):
+        # Title/metadata stacked vertically (no horizontal neighbor) are
+        # single-column even when they start at different x.
+        a = _sec(_block_at(100, ["wide title spanning"], x=200))
+        b = _sec(_block_at(200, ["document metadata line"], x=80))
+        assert _page_is_multicolumn([a, b]) is False
+
+
+class TestSectionTopY:
+    def test_min_over_positioned_lines(self):
+        sec = Section(kind=SectionKind.PARAGRAPH, text="x", lines=[
+            Line(spans=[Span(text="lower")], bbox=(0, 500, 10, 508)),
+            Line(spans=[Span(text="upper")], bbox=(0, 100, 10, 108)),
+        ])
+        assert _section_top_y(sec) == 100        # min, not first
+
+    def test_blank_and_zero_width_lines_ignored(self):
+        zero_width = chr(0x200B) + chr(0xFEFF)   # ZWSP + BOM/ZWNBSP
+        sec = Section(kind=SectionKind.PARAGRAPH, text="x", lines=[
+            Line(spans=[Span(text="   ")], bbox=(0, 40, 10, 48)),
+            Line(spans=[Span(text=zero_width)], bbox=(0, 50, 10, 58)),
+            Line(spans=[Span(text="real")], bbox=(0, 300, 10, 308)),
+        ])
+        assert _section_top_y(sec) == 300        # @40 and @50 skipped
+
+    def test_default_bbox_line_excluded(self):
+        # A (0,0,0,0) bbox is truthy; it must NOT collapse the anchor to 0.
+        sec = Section(kind=SectionKind.PARAGRAPH, text="x", lines=[
+            Line(spans=[Span(text="floating")]),               # default bbox
+            Line(spans=[Span(text="real")], bbox=(0, 220, 10, 228)),
+        ])
+        assert _section_top_y(sec) == 220
+
+    def test_no_anchor_falls_back_to_inf(self):
+        sec = Section(kind=SectionKind.PARAGRAPH, text="x", lines=[])
+        assert _section_top_y(sec) == math.inf
+
+    def test_cross_page_continuation_line_ignored(self):
+        # The cross-page join appends a next-page line (small y) into the
+        # last section of a page. The anchor must stay on the section's
+        # own page, not jump to the continuation line's top-of-page y.
+        sec = Section(kind=SectionKind.PARAGRAPH, text="x", page_num=6, lines=[
+            Line(spans=[Span(text="own page tail")], bbox=(0, 700, 10, 710),
+                 page_num=6),
+            Line(spans=[Span(text="next page head")], bbox=(0, 55, 10, 65),
+                 page_num=7),
+        ])
+        assert _section_top_y(sec) == 700

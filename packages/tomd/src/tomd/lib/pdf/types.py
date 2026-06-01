@@ -183,6 +183,13 @@ PAGE_NUM_RE = re.compile(
 
 BULLET_CHARS = frozenset("\u2022\u2023\u25cf\u25e6\u2043\u2219\u25aa\u25ab")
 
+# Zero-width invisibles that str.strip() does not remove (ZWSP, ZWNJ,
+# ZWJ, ZWNBSP/BOM). A line carrying only these counts as empty for
+# positioning and bullet-marker detection. Single source for the strip
+# sets in structure.py. Note: glyphs.py's _ZERO_WIDTH_JOINER (U+200D) is
+# a distinct, emoji-sequence concept and intentionally not derived here.
+ZERO_WIDTH_CHARS = frozenset({0x200B, 0x200C, 0x200D, 0xFEFF})
+
 BULLET_RE = re.compile(r"^[\s]*[-*" + "".join(BULLET_CHARS) + r"]\s+")
 
 NUMBERED_LIST_RE = re.compile(r"^[\s]*(?:\d+[.)]\s+|[a-z][.)]\s+|\([a-z]\)\s+)", re.IGNORECASE)
