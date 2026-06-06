@@ -47,6 +47,7 @@ from assay.models import (
     BatchClassifyOutput,
     GapOutput,
     ChunkAnalyzeOutput,
+    ChunkClassifyOutput,
     ChunkDecideOutput,
     ChunkEntry,
     ChunkExtractOutput,
@@ -63,6 +64,7 @@ from assay.models import (
     ProbeResult,
     RationaleOutput,
     ResearchLensOutput,
+    ScanOutput,
     StrengthOutput,
     SynthesisOutput,
     VerifyOutput,
@@ -772,7 +774,15 @@ async def _cross_chunk_decide(
 
 
 async def _custom_classify(state: PipelineState, ctx: StepContext, spec) -> None:
-    """Step 6: single-batch gap classification on unsupported claims."""
+    """Step 6: per-chunk gap classification on unsupported claims.
+
+    One ``agent.run()`` per chunk that has unsupported claims, rather than
+    a single batch call over the whole paper. Each call carries only its
+    own chunk text plus that chunk's unsupported claims, so neither the
+    input nor the ``gaps`` output can grow with paper size and overflow
+    the shared thinking+output budget. Cross-chunk dedup still happens
+    downstream in Step 7 Collect, so splitting loses nothing.
+    """
     extractions = state.raw_extractions or []
     decisions = state.raw_decisions or []
 
@@ -782,20 +792,26 @@ async def _custom_classify(state: PipelineState, ctx: StepContext, spec) -> None
         if claims:
             claims_by_chunk[ext.chunk_index] = claims
 
-    unsupported: list[dict] = []
+    chunk_by_index = {c.index: c for c in (state.chunk_map or [])}
+
+    unsupported_by_chunk: dict[int, list[dict]] = {}
     for dec_output in decisions:
         chunk_claims = claims_by_chunk.get(dec_output.chunk_index, [])
         for d in dec_output.decisions:
             if not d.supported and 0 <= d.claim_id < len(chunk_claims):
                 c = chunk_claims[d.claim_id]
-                unsupported.append({
+                unsupported_by_chunk.setdefault(dec_output.chunk_index, []).append({
                     "quote": c.quote,
                     "line": c.line,
-                    "chunk_index": dec_output.chunk_index,
                     "reason": d.reason,
                 })
 
-    if not unsupported:
+    targets = [
+        (ci, items_in)
+        for ci, items_in in sorted(unsupported_by_chunk.items())
+        if chunk_by_index.get(ci) is not None
+    ]
+    if not targets:
         state.raw_classifications = BatchClassifyOutput(gaps=[])
         state.raw_scans = []
         return
@@ -804,45 +820,71 @@ async def _custom_classify(state: PipelineState, ctx: StepContext, spec) -> None
     max_output = spec.step.max_output_tokens or agent.max_tokens
     thinking = spec.step.thinking_budget
     system_prompt = _prompt_for(ctx, _STEP_6_CLASSIFY)
-
-    unsupported_by_chunk: dict[int, list[dict]] = {}
-    for u in unsupported:
-        unsupported_by_chunk.setdefault(u["chunk_index"], []).append(u)
-
     paper_lines = state.paper_md.splitlines()
-    chunk_by_index = {c.index: c for c in (state.chunk_map or [])}
 
-    parts: list[str] = [
-        f"# Paper: {state.paper_id}\n\n",
-        f"## Unsupported claims grouped by chunk ({len(unsupported)} total)\n\n",
-    ]
-    for ci, items_in in sorted(unsupported_by_chunk.items()):
-        chunk = chunk_by_index.get(ci)
-        if chunk is None:
-            continue
+    async def _classify_one(ci: int, items_in: list[dict]):
+        local_log: list[str] | None = [] if ctx.debug else None
+        chunk = chunk_by_index[ci]
         numbered = format_numbered_lines(paper_lines, chunk.start_line, chunk.end_line)
-        parts.append(
-            f"### Chunk {ci}: {chunk.heading} (lines {chunk.start_line}-{chunk.end_line})\n\n"
+        claims_block = "".join(
+            f"- (line {u['line']}) \"{u['quote']}\" - {u['reason']}\n"
+            for u in items_in
         )
-        parts.append(f"{ctx.inject_untrusted(numbered)}\n\n")
-        parts.append("**Unsupported claims in this chunk:**\n\n")
-        for u in items_in:
-            parts.append(f"- (line {u['line']}) \"{u['quote']}\" - {u['reason']}\n")
-        parts.append("\n")
-    user_msg = "".join(parts)
+        user_msg = (
+            f"# Paper: {state.paper_id}\n\n"
+            f"## {chunk.heading} (chunk {ci}, lines {chunk.start_line}-{chunk.end_line})\n\n"
+            f"{ctx.inject_untrusted(numbered)}\n\n"
+            f"## Unsupported claims in this chunk\n\n{claims_block}\n"
+        )
+        result = await agent.run(
+            system_prompt=system_prompt,
+            user_message=user_msg,
+            output_type=ChunkClassifyOutput,
+            max_tokens=max_output,
+            thinking_budget=thinking,
+            label=f"classify-chunk-{ci}",
+            debug_log=local_log,
+        )
+        return ci, result, local_log
 
-    result = await agent.run(
-        system_prompt=system_prompt,
-        user_message=user_msg,
-        output_type=BatchClassifyOutput,
-        max_tokens=max_output,
-        thinking_budget=thinking,
-        label="classify-batch",
-        debug_log=ctx.debug_log if ctx.debug else None,
+    concurrency = spec.step.concurrency or ctx.default_concurrency
+    results = await ctx.gather_concurrent(
+        [_classify_one(ci, items_in) for ci, items_in in targets],
+        concurrency=concurrency,
+        label="classify",
     )
-    state.raw_classifications = result
-    from assay.models import ScanOutput
-    state.raw_scans = [ScanOutput(chunk_index=0, gaps=result.gaps)]
+
+    # results are sorted by ci, so gap order (and the IDs Collect assigns)
+    # is deterministic regardless of completion order. The model authors only
+    # the semantic fields (ClassifyGap); chunk_index is set to the call's
+    # authoritative ci here (Analyze partitions own- vs other-chunk gaps on it),
+    # and id / closed_by are pipeline-assigned (Collect reassigns id).
+    scans: list[ScanOutput] = []
+    all_gaps: list[GapOutput] = []
+    for ci, result, _ in results:
+        chunk_gaps = [
+            GapOutput(
+                id=0,
+                chunk_index=ci,
+                item_quote=g.item_quote,
+                line=g.line,
+                gap=g.gap,
+                why_important=g.why_important,
+                primary_lens=g.primary_lens,
+                secondary_lens=g.secondary_lens,
+                severity=g.severity,
+                closed_by=[],
+            )
+            for g in result.gaps
+        ]
+        scans.append(ScanOutput(chunk_index=ci, gaps=chunk_gaps))
+        all_gaps.extend(chunk_gaps)
+    state.raw_scans = scans
+    state.raw_classifications = BatchClassifyOutput(gaps=all_gaps)
+    if ctx.debug and ctx.debug_log is not None:
+        for _, _, local_log in results:
+            if local_log:
+                ctx.debug_log.extend(local_log)
 
 
 async def _custom_collect(state: PipelineState, ctx: StepContext, spec) -> None:

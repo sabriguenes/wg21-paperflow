@@ -222,8 +222,35 @@ class CrossChunkDecideOutput(BaseModel, frozen=True):
 # -- Step 6: Classify output ------------------------------------------------
 
 
+class ClassifyGap(BaseModel, frozen=True):
+    """One gap as authored by the Classify model (one per unsupported claim).
+
+    Deliberately omits the pipeline-managed fields of ``GapOutput``: ``id``
+    and ``closed_by`` are assigned downstream (Collect reassigns every gap's
+    ``id``), and ``chunk_index`` is known from the per-chunk call context.
+    Exposing those in the model-facing schema asks the model to author values
+    that are then discarded, and destabilizes JSON generation on thinking
+    backends (observed: a junk token emitted for ``id``). The orchestrator
+    maps each ``ClassifyGap`` into a ``GapOutput`` after the call.
+    """
+
+    item_quote: str = Field(description="Quote of the item with the gap.")
+    line: int = Field(description="Line number.")
+    gap: str = Field(description="One-sentence reviewer question targeting the gap.")
+    why_important: str = Field(description="One sentence: why this matters.")
+    primary_lens: str = Field(description="Primary analytical lens.")
+    secondary_lens: str | None = Field(default=None, description="Optional secondary lens.")
+    severity: str = Field(default="minor", description="significant|minor (no critical in Pass 1).")
+
+
+class ChunkClassifyOutput(BaseModel, frozen=True):
+    """Model-facing output from one per-chunk classify call."""
+
+    gaps: list[ClassifyGap] = Field(default=[], description="Gaps for this chunk's unsupported claims.")
+
+
 class BatchClassifyOutput(BaseModel, frozen=True):
-    """Structured output from the single-batch classify step."""
+    """Aggregated classify output (all chunks), with pipeline-assigned fields."""
 
     gaps: list[GapOutput] = Field(default=[], description="Gaps for unsupported claims.")
 

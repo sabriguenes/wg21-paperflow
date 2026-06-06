@@ -31,7 +31,6 @@ flowchart TD
 
 - **gemma:** b200x2-gemma4
 - **deepseek:** h200x8-deepseek-v4-pro
-- **opus:** anthropic-opus
 - **default:** h200x8-deepseek-v4-pro
 
 ## Config
@@ -141,8 +140,9 @@ Per-chunk decide with concurrency from ## Config. Output: ChunkDecideOutput per 
 
 - **max-output:** 16384
 - **thinking-budget:** 4096
+- **concurrency:** 8
 
-You receive all claims judged unsupported in the previous step, each with a reason.
+You receive the claims judged unsupported in one chunk of the paper, each with a reason.
 
 For each unsupported claim, produce a GapOutput:
 
@@ -164,7 +164,7 @@ Lens definitions:
 
 ---
 
-Single batch call. Receives unsupported claims from Step 5. Output: BatchClassifyOutput.
+Per-chunk call with concurrency from ## Config. Receives one chunk's unsupported claims from Step 5. Output: ChunkClassifyOutput per chunk (model authors semantic fields only; the orchestrator assigns chunk_index and pipeline-managed id/closed_by). Gaps are merged and deduped in Step 7 Collect.
 
 ## 7. Collect
 

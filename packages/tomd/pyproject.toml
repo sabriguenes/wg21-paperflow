@@ -1,6 +1,6 @@
 [project]
 name = "tomd"
-version = "0.4.0"
+version = "0.4.1"
 description = "PDF/HTML to Markdown for WG21 papers (paperstore-aware)"
 requires-python = ">=3.12"
 license = {text = "BSL-1.0"}

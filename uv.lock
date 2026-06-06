@@ -30,7 +30,7 @@ wheels = [
 
 [[package]]
 name = "agora"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "packages/agora" }
 dependencies = [
     { name = "paperstore" },
@@ -227,7 +227,7 @@ wheels = [
 
 [[package]]
 name = "assay"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "packages/assay" }
 dependencies = [
     { name = "jinja2" },
@@ -509,7 +509,7 @@ wheels = [
 
 [[package]]
 name = "cli"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "packages/cli" }
 dependencies = [
     { name = "agora" },
@@ -1684,7 +1684,7 @@ wheels = [
 
 [[package]]
 name = "mailing"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "packages/mailing" }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -2360,7 +2360,7 @@ wheels = [
 
 [[package]]
 name = "paperstore"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "packages/paperstore" }
 
 [[package]]
@@ -2443,7 +2443,7 @@ wheels = [
 
 [[package]]
 name = "pipeline"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "packages/pipeline" }
 dependencies = [
     { name = "httpx" },
@@ -2482,7 +2482,7 @@ wheels = [
 
 [[package]]
 name = "preview"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "packages/preview" }
 dependencies = [
     { name = "flask" },
@@ -3755,7 +3755,7 @@ wheels = [
 
 [[package]]
 name = "tomd"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "packages/tomd" }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -4156,7 +4156,7 @@ wheels = [
 
 [[package]]
 name = "wg21-paperflow"
-version = "0.4.0"
+version = "0.4.1"
 source = { virtual = "." }
 dependencies = [
     { name = "agora" },

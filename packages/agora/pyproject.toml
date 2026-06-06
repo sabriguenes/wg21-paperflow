@@ -1,6 +1,6 @@
 [project]
 name = "agora"
-version = "0.4.0"
+version = "0.4.1"
 description = "WG21 paper thread planning pipeline (analysis phase of the Mod)"
 requires-python = ">=3.12"
 license = {text = "BSL-1.0"}
