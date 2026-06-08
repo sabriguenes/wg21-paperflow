@@ -113,7 +113,14 @@ class StandardClient:
         args: dict[str, Any] = {"stable_labels": labels}
         if draft:
             args["draft"] = draft
-        return await self._call("lookup_sections", args)
+        result = await self._call("lookup_sections", args)
+        # The server returns a JSON array of section dicts on success, but a
+        # bare {"error": ...} object when no draft is ingested or the draft
+        # cannot be resolved. Normalize to the declared list[dict] contract so
+        # callers never iterate a dict's keys. Mirrors lookup_section's guard.
+        if not isinstance(result, list):
+            return []
+        return [s for s in result if isinstance(s, dict)]
 
     async def lookup_paragraph(
         self, stable_label: str, paragraph: int, draft: str | None = None
