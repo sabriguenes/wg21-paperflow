@@ -120,11 +120,11 @@ Tightening similarity without prompts; loosening TOC detection; aggressive parag
 
 ### Readability gate
 
-- After stripping hidden text, join MuPDF block text and reject conversion when text is **too short**, **alphanumeric ratio** in an early sample is **below 0.3**, or **slash density** is too high ([`types.py`](lib/pdf/types.py) `is_readable`).
+- After stripping hidden text, join MuPDF block text and reject conversion when text is **too short**, **alphanumeric ratio** in an early sample is **below 0.3**, or **slash density** is too high ([`types.py`](lib/pdf/types.py) `is_readable`). Failure returns `PipelineResult.for_skip(SkipReason.UNREADABLE, readable=False)` with empty markdown.
 
-**Why:** Detect scanned or garbage extraction early ([`types.py`](lib/pdf/types.py)).
+**Why:** Detect scanned or garbage extraction early ([`types.py`](lib/pdf/types.py)) and surface it as a typed skip, not a silent empty result.
 
-**Sources:** `is_readable` in [`lib/pdf/types.py`](lib/pdf/types.py).
+**Sources:** `is_readable` in [`lib/pdf/types.py`](lib/pdf/types.py); skip construction in [`lib/pdf/pipeline.py`](lib/pdf/pipeline.py).
 
 ---
 

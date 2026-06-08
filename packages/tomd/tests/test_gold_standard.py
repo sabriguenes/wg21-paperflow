@@ -128,10 +128,10 @@ class TestD4036Structure:
 
 @pytest.fixture
 def p2583r3_md():
-    from tomd.lib.pdf import convert_pdf
+    from tomd.lib.pdf import run_pipeline
     if not _P2583R3_PDF.is_file():
         pytest.skip("P2583R3 PDF fixture not available")
-    md, _ = convert_pdf(_P2583R3_PDF)
+    md = run_pipeline(_P2583R3_PDF).md
     return md
 
 

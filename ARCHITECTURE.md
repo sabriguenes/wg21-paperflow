@@ -70,6 +70,32 @@ TARGET is a paper ID (P4003R2), year (2026), or month (2026-05). No "all" keywor
 
 Each command runs `process_paper` for matching papers, which auto-runs all prerequisite stages.
 
+### Skip buckets
+
+`run_convert` (and `paperflow convert`) accumulate skipped papers in the result dict's
+`skipped` list. Every entry has `paper_id` and `reason` (the consumer contract).
+Pre-filtered entries (`already_converted`, download `already_staged` / `no_url` pre-seed)
+use only those two keys. Entries appended from convert or download workers may also
+carry `"status": "skipped"` (an internal routing field retained in the output).
+
+When tomd intentionally skips a PDF, `reason` is one of four snake_case buckets mapped
+from `SkipReason` in `cli/jobs.py`:
+
+| `reason` | Meaning |
+|----------|---------|
+| `empty_pdf` | Zero-page or empty source |
+| `slide_deck` | Presentation-style layout |
+| `standards_draft` | Standards-track draft (not a WG21 paper) |
+| `unreadable` | Encrypted, scanned, or otherwise unreadable |
+
+**Breaking change:** `unreadable_source` is retired. Previously every tomd skip (including
+slide decks and standards drafts) was lumped into `unreadable_source` via a
+`RuntimeError` message match on `"empty markdown"`. Operators or scripts that filter on
+`reason == "unreadable_source"` must switch to the bucket above that matches the case.
+
+Other convert skip reasons are unchanged (`already_converted`, `timeout`, and download-stage
+reasons such as `no_url`).
+
 ## Django integration
 
 Django dispatches work using modulus sharding: each Celery worker gets `worker_id` and `num_workers`, processes papers where `paper_number % num_workers == worker_id`. Zero contention between workers.

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tomd.lib.pdf import convert_pdf
+from tomd.lib.pdf import run_pipeline
 
 _GOLDEN = Path(__file__).resolve().parent / "fixtures" / "golden"
 
@@ -36,12 +36,13 @@ def _diff_head(actual: str, golden: str, limit: int = 120) -> str:
 
 
 @pytest.mark.parametrize("stem", _GOLDEN_STEMS)
-def test_convert_pdf_matches_golden(stem: str):
+def test_run_pipeline_matches_golden(stem: str):
     pdf_path = _GOLDEN / f"{stem}.pdf"
     if not pdf_path.is_file():
         pytest.skip(f"missing PDF fixture: {pdf_path}")
 
-    md, prompts = convert_pdf(pdf_path)
+    result = run_pipeline(pdf_path)
+    md, prompts = result.md, result.prompts
     golden_md = _GOLDEN / f"{stem}.golden.md"
     assert golden_md.is_file(), f"missing golden: {golden_md}"
     expected_md = golden_md.read_text(encoding="utf-8")

@@ -43,11 +43,10 @@ def _patch_html(monkeypatch, md: str, prompts: list[str] | None = None):
 def _patch_pdf(monkeypatch, md: str, prompts: list[str] | None = None):
     """Patch the PDF dispatch by stubbing ``run_pipeline``.
 
-    ``api._convert_with_tomd_full`` routes PDFs through ``run_pipeline``
-    (not the legacy ``convert_pdf`` wrapper), so the test fake returns
-    a synthetic :class:`PipelineResult` with zero images and the caller's
-    chosen md / prompts. Matches the current behavior of papers with no
-    embedded raster images.
+    ``api._convert_with_tomd_full`` routes PDFs through ``run_pipeline``,
+    so the test fake returns a synthetic :class:`PipelineResult` with
+    zero images and the caller's chosen md / prompts. Matches the
+    current behavior of papers with no embedded raster images.
     """
     from tomd.lib.pdf import PipelineResult
 
@@ -76,7 +75,7 @@ class TestDispatch:
         assert "text" in md
         assert store.get_paper_md("P1") == md
 
-    def test_pdf_path_calls_convert_pdf(self, tmp_path: Path, monkeypatch):
+    def test_pdf_path_calls_run_pipeline(self, tmp_path: Path, monkeypatch):
         store = SqliteBackend(tmp_path)
         _stage(store, "P1", suffix=".pdf", mailing_row={"title": "T"})
         _patch_html(monkeypatch, "HTML SHOULD NOT BE CALLED")

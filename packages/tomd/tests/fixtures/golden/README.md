@@ -54,11 +54,12 @@ From the `tomd/` directory, after intentionally changing PDF converter output:
 python -c "
 import json
 from pathlib import Path
-from tomd.lib.pdf import convert_pdf
+from tomd.lib.pdf import run_pipeline
 out = Path('tests/fixtures/golden')
 for stem in ['p0533r9', 'p0957r8', 'p1068r11', 'p3556r0',
              'p1122r3', 'p2040r0', 'p3714r0', 'p1112r4']:
-    md, prompts = convert_pdf(out / f'{stem}.pdf')
+    r = run_pipeline(out / f'{stem}.pdf')
+    md, prompts = r.md, r.prompts
     (out / f'{stem}.golden.md').write_text(md, encoding='utf-8', newline='\n')
     ppath = out / f'{stem}.golden.prompts.json'
     if prompts:

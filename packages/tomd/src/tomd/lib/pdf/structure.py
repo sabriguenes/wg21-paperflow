@@ -474,7 +474,7 @@ def _extract_metadata(sections: list[Section]) -> tuple[dict[str, str | list[str
     """Pull WG21 metadata fields from early sections into a dict.
 
     PDF section line scan (pathway 1 of 3). Lower precedence than
-    wg21.extract_metadata_from_blocks; both are merged in convert_pdf.
+    wg21.extract_metadata_from_blocks; both are merged in run_pipeline.
 
     Returns (metadata_dict, remaining_sections).
     """

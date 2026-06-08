@@ -52,11 +52,13 @@ Enums:
 
 ### Layer 1: Extraction (8 techniques)
 
-**T0. Document-type early exits**
-- `__init__.py:_is_slide_deck`, `__init__.py:_is_standards_draft`
-- Slide-deck detection: landscape (width > height) AND small (width < 600pt) on 80%+ of pages. Catches presentation PDFs whose navigation sidebars confuse the dual-path extractor.
+**T0. Document-type and readability early exits**
+- `pipeline.py:_is_slide_deck`, `pipeline.py:_is_standards_draft`, `types.py:is_readable`
+- Four skip kinds, all via `PipelineResult.for_skip(SkipReason, ...)`: empty PDF (`page_count == 0`), slide deck, standards draft (page count >= 200), and unreadable extracted text.
+- Slide-deck detection: landscape (width > height) AND small (width < 600pt) on 80%+ of pages, or every page landscape. Catches presentation PDFs whose navigation sidebars confuse the dual-path extractor.
 - Standards-draft detection: page count >= 200. Catches C++ standard drafts (2000+ pages) that are not technical papers.
-- Both return `PipelineResult` with `skipped=True`, empty markdown, and a prompts message identifying the document type.
+- Unreadable gate: after hidden-text stripping, joined MuPDF text must pass `is_readable` (minimum length, alphanumeric ratio, slash density).
+- `_enforce_skip_contract` validates skip invariants on every `run_pipeline` return.
 - Named constants: `_SLIDE_DECK_MAX_WIDTH`, `_SLIDE_DECK_LANDSCAPE_FRACTION`, `_STANDARDS_DRAFT_MIN_PAGES`
 
 **T1. MuPDF dict-path extraction**
@@ -185,7 +187,7 @@ Enums:
 - Removes spatial blocks whose y-center falls within detected table y-ranges (5-unit margin)
 
 **T16. Table section insertion**
-- `__init__.py:convert_pdf`
+- `pipeline.py:run_pipeline`
 - Tables inserted into the section list by page number and y-position ordering
 
 ### Layer 5: Wording Detection (3 techniques)
@@ -330,8 +332,8 @@ Enums:
 ### Layer 10: Pipeline Orchestration (1 technique)
 
 **T38. Pipeline execution**
-- `__init__.py:convert_pdf`
-- Strict ordering of all 13 steps. Early exit on empty PDF or unreadable text.
+- `pipeline.py:run_pipeline`
+- Strict ordering of all pipeline steps. Early exit via `SkipReason` on empty PDF, slide deck, standards draft, or unreadable text.
 - Metadata merging: `{**structure_metadata, **wg21_metadata}` - WG21 metadata takes precedence.
 - TOC heading collection: only HEADING sections used as the reference set for TOC matching.
 
@@ -348,8 +350,9 @@ Enums:
 
 | Module | Responsibility | Public API | Lines |
 |--------|---------------|------------|------:|
-| `__init__.py` | Pipeline orchestration, slide-deck detection | `convert_pdf`, `run_pipeline`, `PipelineResult`, `ExtractedImage` | ~295 |
-| `types.py` | Data model, enums, constants | Span, Line, Block, Section, SectionKind, Confidence, is_readable + shared constants | ~252 |
+| `pipeline.py` | Pipeline orchestration, skip contract, slide-deck detection | `run_pipeline`, `PipelineResult`, `ExtractedImage` | ~1100 |
+| `__init__.py` | Re-exports | `run_pipeline`, `PipelineResult`, `SkipReason`, `ExtractedImage` | ~25 |
+| `types.py` | Data model, enums, constants | Span, Line, Block, Section, SectionKind, Confidence, SkipReason, is_readable + shared constants | ~280 |
 | `extract.py` | Dual-path text extraction | `extract_mupdf`, `extract_spatial`, `collect_links`, `attach_links` | ~249 |
 | `images.py` | Resource-Dictionary path: embedded raster extraction | `ExtractedImage`, `ExtractionResult`, `extract_page_images`, `finalize_extraction` | ~250 |
 | `mono.py` | Monospace font detection | `classify_monospace`, `propagate_monospace` | ~222 |

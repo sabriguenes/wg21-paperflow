@@ -420,7 +420,7 @@ def strip_freeform_metadata_lines(md: str) -> str:
 
     Called from ``api.convert_paper`` after ``_strip_body_metadata_text``,
     so it runs on the final markdown but does not affect the golden-test
-    layer (``convert_pdf`` / ``convert_html``).
+    layer (``run_pipeline`` / ``convert_html``).
     """
     return _strip_freeform_metadata_lines(md)
 

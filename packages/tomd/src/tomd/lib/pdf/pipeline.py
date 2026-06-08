@@ -33,10 +33,17 @@ from .structure import compare_extractions, structure_sections
 from .table import detect_tables, exclude_table_regions
 from .wg21 import extract_metadata_from_blocks
 from .emit import emit_markdown, emit_prompts
-from .types import KNOWN_SECTIONS, Confidence, Section, SectionKind, is_readable
+from .types import (
+    KNOWN_SECTIONS,
+    Confidence,
+    Section,
+    SectionKind,
+    SkipReason,
+    is_readable,
+)
 from ..toc import find_toc_indices
 
-__all__ = ["convert_pdf", "run_pipeline", "PipelineResult", "ExtractedImage"]
+__all__ = ["run_pipeline", "PipelineResult", "ExtractedImage"]
 
 _log = logging.getLogger(__name__)
 
@@ -601,12 +608,83 @@ class PipelineResult:
     nesting_corrections: int = 0
     readable: bool = True
     skipped: bool = False
-    skip_reason: str = ""
+    skip_reason: SkipReason | None = None
     images: list[ExtractedImage] = field(default_factory=list)
     source_image_count: int = 0
     images_truncated: bool = False
     vector_uncertainty: VectorUncertaintyStats | None = None
     glyph_stats: GlyphPassStats | None = None
+
+    @classmethod
+    def for_skip(
+        cls,
+        reason: SkipReason,
+        *,
+        page_count: int = 0,
+        prompts: list[str] | None = None,
+        readable: bool = True,
+    ) -> "PipelineResult":
+        """Construct a complete skip result.
+
+        Single source of truth for exit-condition fields on early-exit
+        paths; bypasses partial-build mutation. Named ``for_skip`` (not
+        ``skipped``) to avoid shadowing the ``skipped`` dataclass field.
+        """
+        return cls(
+            md="",
+            prompts=prompts,
+            page_count=page_count,
+            readable=readable,
+            skipped=True,
+            skip_reason=reason,
+            images=[],
+        )
+
+
+def _enforce_skip_contract(result: PipelineResult) -> PipelineResult:
+    """Validate skip invariants before returning from :func:`run_pipeline`."""
+    empty_md = not result.md.strip()
+    if empty_md or not result.readable:
+        if not result.skipped:
+            _log.error(
+                "PipelineResult skip contract violated: skipped=False "
+                "readable=%s md_empty=%s",
+                result.readable,
+                empty_md,
+            )
+            raise AssertionError(
+                "PipelineResult must set skipped=True when markdown is empty "
+                "or readable is False"
+            )
+        if not isinstance(result.skip_reason, SkipReason):
+            _log.error(
+                "PipelineResult skip contract violated: invalid skip_reason=%r",
+                result.skip_reason,
+            )
+            raise AssertionError(
+                f"PipelineResult skip_reason must be a SkipReason member, "
+                f"got {result.skip_reason!r}"
+            )
+    if result.skipped:
+        if result.skip_reason is None:
+            _log.error("PipelineResult skip contract violated: missing skip_reason")
+            raise AssertionError(
+                "PipelineResult skip_reason must be set when skipped=True"
+            )
+        if result.images:
+            _log.error(
+                "PipelineResult skip contract violated: skipped with %d images",
+                len(result.images),
+            )
+            raise AssertionError(
+                "PipelineResult images must be empty when skipped=True"
+            )
+        if result.md.strip():
+            _log.error("PipelineResult skip contract violated: skipped with non-empty md")
+            raise AssertionError(
+                "PipelineResult md must be empty when skipped=True"
+            )
+    return result
 
 
 def _parse_pdf_info_date(raw: str) -> str:
@@ -720,29 +798,35 @@ def run_pipeline(
     vector_stats = _VectorExtractionStats() if extract_vector else None
     try:
         doc = fitz.open(str(path))
-        result.page_count = doc.page_count
-        if result.page_count == 0:
-            return result
+        page_count = doc.page_count
+        if page_count == 0:
+            return _enforce_skip_contract(
+                PipelineResult.for_skip(SkipReason.EMPTY_PDF, page_count=0)
+            )
 
         if _is_slide_deck(doc):
             _log.info("Detected slide deck (%d pages), skipping conversion",
-                       result.page_count)
-            result.skipped = True
-            result.skip_reason = "slide deck"
-            result.prompts = ["# tomd - Slide Deck Detected\n\n"
-                "This PDF appears to be a presentation / slide deck. "
-                "tomd does not convert slide decks to Markdown.\n"]
-            return result
+                       page_count)
+            return _enforce_skip_contract(PipelineResult.for_skip(
+                SkipReason.SLIDE_DECK,
+                page_count=page_count,
+                prompts=["# tomd - Slide Deck Detected\n\n"
+                    "This PDF appears to be a presentation / slide deck. "
+                    "tomd does not convert slide decks to Markdown.\n"],
+            ))
 
         if _is_standards_draft(doc):
             _log.info("Detected standards draft (%d pages), skipping conversion",
-                       result.page_count)
-            result.skipped = True
-            result.skip_reason = "standards draft"
-            result.prompts = ["# tomd - Standards Draft Detected\n\n"
-                f"This PDF has {result.page_count} pages and appears to be "
-                "a standards draft. tomd is designed for technical papers.\n"]
-            return result
+                       page_count)
+            return _enforce_skip_contract(PipelineResult.for_skip(
+                SkipReason.STANDARDS_DRAFT,
+                page_count=page_count,
+                prompts=["# tomd - Standards Draft Detected\n\n"
+                    f"This PDF has {page_count} pages and appears to be "
+                    "a standards draft. tomd is designed for technical papers.\n"],
+            ))
+
+        result.page_count = page_count
 
         all_mupdf_blocks = []
         all_spatial_blocks = []
@@ -834,8 +918,11 @@ def run_pipeline(
     mupdf_text = "\n".join(b.text for b in all_mupdf_blocks)
     if not is_readable(mupdf_text):
         _log.warning("Extracted text is not readable (encrypted/scanned PDF?)")
-        result.readable = False
-        return result
+        return _enforce_skip_contract(PipelineResult.for_skip(
+            SkipReason.UNREADABLE,
+            page_count=result.page_count,
+            readable=False,
+        ))
 
     extraction_result = finalize_extraction(
         per_page_image_candidates, path.stem.lower(),
@@ -1075,26 +1162,4 @@ def run_pipeline(
     result.sections = sections
     result.metadata = metadata
     result.nesting_corrections = nesting_corrections
-    return result
-
-
-def convert_pdf(
-    path: Path,
-    *,
-    extract_vector: bool = False,
-    whiteout_text: bool = False,
-) -> tuple[str, list[str] | None]:
-    """Convert a PDF file to Markdown.
-
-    Returns ``(markdown_text, prompts_or_none)`` where ``prompts_or_none``
-    is a list of self-contained LLM reconcile prompts (one per uncertain
-    region, plus one per flagged wording issue) or ``None`` when the
-    converter is fully confident. Returns ``("", None)`` for empty or
-    unreadable PDFs. Raises fitz exceptions for corrupt or inaccessible
-    files.
-
-    ``extract_vector`` opts in to vector-figure extraction. See
-    :func:`run_pipeline` for the contract.
-    """
-    r = run_pipeline(path, extract_vector=extract_vector, whiteout_text=whiteout_text)
-    return r.md, r.prompts
+    return _enforce_skip_contract(result)

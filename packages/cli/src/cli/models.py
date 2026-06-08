@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from tomd.lib.pdf import ExtractedImage
+    from tomd.lib.pdf import ExtractedImage, SkipReason
 
 __all__ = [
     "Paper",
@@ -73,6 +73,7 @@ class ConvertResult:
     prompts: list[str] | None
     intent: str
     title: str
-    status: str         # "ok" | "error"
+    status: str         # "ok" | "skipped" | "error"
+    skip_reason: "SkipReason | None" = None
     error: str = ""
     images: list["ExtractedImage"] = field(default_factory=list)
