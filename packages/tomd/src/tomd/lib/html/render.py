@@ -296,7 +296,7 @@ def _render_heading(el: Tag) -> str | None:
     if len(el.name) < 2 or not el.name[1].isdigit():
         return ""
     level = int(el.name[1])
-    text = _inline_text_excluding(el, _HEADING_SKIP_CLASSES).strip()
+    text = _inline_text(el, _HEADING_SKIP_CLASSES).strip()
     if not text:
         return None
     text = text.replace("\n", " ")
@@ -771,24 +771,13 @@ def _render_inline(el: Tag) -> str:
     return _inline_text(el)
 
 
-def _inline_text_excluding(el: Tag, skip_classes: frozenset[str]) -> str:
-    """Like _inline_text but skips child elements with any class in skip_classes."""
-    parts = []
-    for child in el.children:
-        if isinstance(child, Comment):
-            continue
-        if isinstance(child, NavigableString):
-            parts.append(str(child))
-        elif isinstance(child, Tag):
-            child_classes = set(child.get("class", []))
-            if child_classes & skip_classes:
-                continue
-            parts.append(_inline_text(child))
-    return "".join(parts)
+def _inline_text(el: Tag, skip_classes: frozenset[str] = frozenset()) -> str:
+    """Convert an element's content to inline Markdown text.
 
-
-def _inline_text(el: Tag) -> str:
-    """Convert an element's content to inline Markdown text."""
+    `skip_classes` drops direct children carrying any of those classes (used
+    by headings to strip section-number and self-link spans) while preserving
+    inline formatting such as <code> on the remaining children.
+    """
     parts = []
     for child in el.children:
         if isinstance(child, Comment):
@@ -797,6 +786,9 @@ def _inline_text(el: Tag) -> str:
             parts.append(str(child))
         elif isinstance(child, Tag):
             tag = child.name
+
+            if skip_classes and skip_classes.intersection(child.get("class") or []):
+                continue
 
             if tag in ("style", "script"):
                 continue

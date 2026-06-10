@@ -305,6 +305,26 @@ class TestHeadingEdgeCases:
         md = render_body(soup, "mpark")
         assert "#" not in md.strip() or md.strip() == ""
 
+    def test_inline_code_preserved_in_heading(self):
+        soup = parse_html("<h2>The <code>foo_bar</code> section</h2>")
+        md = render_body(soup, "mpark")
+        assert "## The `foo_bar` section" in md
+
+    def test_inline_code_preserved_with_skipped_number_span(self):
+        soup = parse_html(
+            '<h2><span class="header-section-number">3</span> '
+            "<code>foo</code> bar</h2>"
+        )
+        md = render_body(soup, "mpark")
+        assert "## `foo` bar" in md
+
+    def test_link_preserved_in_heading(self):
+        soup = parse_html(
+            '<h2>See <a href="https://example.com/x">X</a> now</h2>'
+        )
+        md = render_body(soup, "mpark")
+        assert "## See [X](https://example.com/x) now" in md
+
 
 class TestCodeBlockExtended:
     def test_pre_without_code(self):
