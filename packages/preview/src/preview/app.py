@@ -47,6 +47,10 @@ def create_app(
     """Build a Flask app pinned to a single paper id."""
     pid = paper_id.strip().upper()
     title = _resolve_title(backend, pid)
+    try:
+        source_format = backend.get_source_path(pid).suffix.lstrip(".").upper()
+    except Exception:  # paper may have no source yet; default to PDF label
+        source_format = "PDF"
 
     app = Flask(
         __name__,
@@ -62,8 +66,17 @@ def create_app(
             "index.html",
             paper_id=pid,
             title=title,
+            source_format=source_format,
             reload_event=_RELOAD_EVENT,
         )
+
+    @app.after_request
+    def _no_cache(response: Response) -> Response:
+        """Prevent browser from caching iframe content across paper switches."""
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
     @app.get("/source")
     def source():
@@ -83,6 +96,14 @@ def create_app(
         except MissingPaperMdError:
             return render_template("not_yet.html", paper_id=pid), 200
         return Response(html, mimetype="text/html")
+
+    @app.get("/markdown-raw")
+    def markdown_raw():
+        md_path = backend.get_paper_md_path(pid)
+        try:
+            return send_file(md_path, mimetype="text/plain; charset=utf-8")
+        except FileNotFoundError:
+            return render_template("not_yet.html", paper_id=pid), 200
 
     @app.get("/events")
     def events() -> Response:

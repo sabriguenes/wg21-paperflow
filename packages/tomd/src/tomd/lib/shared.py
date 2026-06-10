@@ -3,6 +3,7 @@
 import logging as _logging
 import re
 import unicodedata
+from collections import Counter
 
 _NAMED_ENTITIES = {
     0xC0: "&Agrave;", 0xC1: "&Aacute;", 0xC2: "&Acirc;", 0xC3: "&Atilde;",
@@ -89,7 +90,6 @@ def dedup_paragraphs(md: str) -> str:
         if block.strip() != deduped[-1].strip():
             deduped.append(block)
 
-    from collections import Counter
     counts: Counter[str] = Counter()
     result: list[str] = []
     for block in deduped:
@@ -109,146 +109,7 @@ def dedup_paragraphs(md: str) -> str:
     return "\n\n".join(result)
 
 
-FRONT_MATTER_ORDER = ("title", "document", "date", "intent", "audience", "reply-to")
-
 DEFAULT_FENCE_LANG = "cpp"
-
-_TITLE_LABEL_RE = re.compile(
-    r"(?:Paper\s*Number|Document(?:\s*Number)?|Title|Authors?|"
-    r"Acknowledgements?|Reply[- ]?to|Audience|Date)\s*:",
-    re.IGNORECASE,
-)
-
-_DOUBLE_ANGLE_RE = re.compile(r"<\s*<([^>]+)>")
-
-_NON_AUTHOR_RE = re.compile(
-    r"^(?:Target|Proposed|Wording|Structures?|Version|Contents?|"
-    r"Read-Copy|Abstract|Introduction|Overview|Revision)\b",
-    re.IGNORECASE,
-)
-
-
-def sanitize_metadata(metadata: dict) -> dict:
-    """Clean up extracted metadata values before formatting.
-
-    Fixes: embedded newlines in title, metadata labels in title text,
-    double angle brackets in reply-to entries, non-author reply-to values.
-    """
-    md = dict(metadata)
-
-    if "title" in md and not isinstance(md["title"], str):
-        md["title"] = str(md["title"])
-
-    if "title" in md:
-        title = md["title"]
-        title = title.replace("\n", " ").replace("\r", " ")
-        title = re.sub(r"\s{2,}", " ", title).strip()
-        title_label_m = re.search(r"\bTitle\s*:\s*", title, re.IGNORECASE)
-        if title_label_m:
-            after_title = title[title_label_m.end():].strip()
-            next_label = _TITLE_LABEL_RE.search(after_title)
-            if next_label:
-                title = after_title[:next_label.start()].rstrip(" ,;")
-            elif after_title:
-                title = after_title
-        else:
-            m = _TITLE_LABEL_RE.search(title)
-            if m and m.start() > 0:
-                title = title[:m.start()].rstrip(" ,;")
-            elif m and m.start() == 0:
-                after_label = title[m.end():].strip()
-                next_label = _TITLE_LABEL_RE.search(after_label)
-                if next_label:
-                    title = after_label[:next_label.start()].rstrip(" ,;")
-                elif after_label:
-                    title = after_label
-        md["title"] = title.strip()
-
-    if isinstance(md.get("reply-to"), str):
-        md["reply-to"] = [md["reply-to"]]
-
-    if "reply-to" in md and isinstance(md["reply-to"], list):
-        cleaned = []
-        for entry in md["reply-to"]:
-            entry = _DOUBLE_ANGLE_RE.sub(r"<\1>", entry)
-            if _NON_AUTHOR_RE.match(entry.strip()):
-                continue
-            cleaned.append(entry)
-        if cleaned:
-            md["reply-to"] = cleaned
-        else:
-            del md["reply-to"]
-
-    return md
-
-
-def _yaml_escape(s: str) -> str:
-    """Escape a string for safe inclusion in double-quoted YAML."""
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-
-
-def _yaml_value(key: str, val) -> str:
-    """Format a single YAML value, quoting where needed."""
-    if isinstance(val, list):
-        items = [f'  - "{_yaml_escape(str(v))}"' for v in val]
-        return f"{key}:\n" + "\n".join(items)
-    val = str(val) if not isinstance(val, str) else val
-    if key == "title" or any(c in val for c in ':{}[]#&*?|>!%@`"\'\n\\'):
-        return f'{key}: "{_yaml_escape(val)}"'
-    return f"{key}: {val}"
-
-
-def format_front_matter(metadata: dict) -> str:
-    """Format metadata dict as YAML front matter in strict canonical order.
-
-    Strict-order contract: keys are emitted exactly in the order
-    ``title, document, date, intent, audience, reply-to``. Missing keys
-    are skipped (no placeholders, no blank lines). Unknown keys appear
-    after ``audience`` so ``reply-to`` is always last. Callers and
-    downstream tools may rely on this ordering for diffs and parsing.
-
-    Title and values containing YAML-special characters are double-quoted
-    with backslash-escaping for embedded quotes, backslashes, and newlines.
-    Reply-to is a YAML list of double-quoted strings. Returns the empty
-    string when ``metadata`` is empty.
-    """
-    if not metadata:
-        return ""
-    metadata = dict(metadata)
-    if "title" in metadata and isinstance(metadata["title"], str):
-        title = metadata["title"].replace("\n", " ")
-        title = re.sub(r"\s*::\s*", "::", title)
-        title = re.sub(r"  +", " ", title).strip()
-        metadata["title"] = title
-
-    if "intent" not in metadata:
-        title = metadata.get("title", "")
-        if isinstance(title, str):
-            t = title.strip()
-            if t.startswith("Info:"):
-                metadata["intent"] = "info"
-            elif t.startswith("Ask:"):
-                metadata["intent"] = "ask"
-
-    lines = ["---"]
-    pre_reply_to: list[str] = []
-    reply_to_line: str | None = None
-    for key in FRONT_MATTER_ORDER:
-        if key not in metadata:
-            continue
-        rendered = _yaml_value(key, metadata[key])
-        if key == "reply-to":
-            reply_to_line = rendered
-        else:
-            pre_reply_to.append(rendered)
-    lines.extend(pre_reply_to)
-    for key, val in metadata.items():
-        if key not in FRONT_MATTER_ORDER:
-            lines.append(_yaml_value(key, val))
-    if reply_to_line is not None:
-        lines.append(reply_to_line)
-    lines.append("---")
-    return "\n".join(lines)
 
 
 def strip_leading_h1(body: str, title: str = "") -> str:
@@ -256,20 +117,43 @@ def strip_leading_h1(body: str, title: str = "") -> str:
 
     Strips the first non-blank line if it is an ATX H1 (starts with '# ') and
     either matches the front-matter title or is the very first content.
+    Also handles plaintext title echoes (no '#' prefix) and promotes a bare
+    "Abstract" line immediately following to ``## Abstract``.
     """
     lines = body.split("\n")
+    title_clean = title.strip().strip('"').strip()
+    title_removed_at = -1
     for i, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
             continue
+        if stripped.startswith("<!--") and stripped.endswith("-->"):
+            continue
         if stripped.startswith("# ") and not stripped.startswith("## "):
             h1_text = stripped[2:].strip()
-            title_clean = title.strip().strip('"').strip()
             if not title_clean or _titles_match(h1_text, title_clean):
                 lines[i] = ""
+                title_removed_at = i
             break
-        else:
-            break
+        # Plaintext title echo (PDF structurer did not add #).
+        if title_clean and not stripped.startswith("#") and _titles_match(stripped, title_clean):
+            lines[i] = ""
+            title_removed_at = i
+        break
+
+    # Promote a bare "Abstract" line to ## heading when it appears
+    # early in the body (PDF structurer missed the heading markup).
+    start = title_removed_at + 1 if title_removed_at >= 0 else 0
+    for j in range(start, len(lines)):
+        s = lines[j].strip()
+        if not s:
+            continue
+        if s.startswith("<!--") and s.endswith("-->"):
+            continue
+        if s.lower().rstrip(":") == "abstract" and not s.startswith("#"):
+            lines[j] = "## Abstract"
+        break
+
     result = "\n".join(lines)
     result = re.sub(r"^\n{3,}", "\n\n", result)
     return result
@@ -285,27 +169,58 @@ def _titles_match(h1: str, title: str) -> bool:
 
 
 _REDUNDANT_META_RE = re.compile(
-    r"^Document\s+(?:number|No\.?)\s*:.*$",
+    r"^\*{0,2}Document\s+(?:number|No\.?)\*{0,2}\s*:.*$",
     re.IGNORECASE | re.MULTILINE,
-)
-
-_REDUNDANT_TABLE_RE = re.compile(
-    r"^(?:\|[^\n]*\|\n){2,6}\n*---\n*",
-    re.MULTILINE,
 )
 
 # Labels that identify a body line as leaked metadata.  Covers the
 # standard WG21 header fields plus common variants.
 _FREEFORM_META_LABEL_RE = re.compile(
-    r"^(?:Reply[- ]?to|Audience|Target|Date|Project|"
+    r"^\*{0,2}(?:Reply[- ]?to|Audience|Target|Date|Project|"
     r"Authors?|Editors?|Co-?authors?|Subgroup|Source|"
-    r"Doc\.?\s*(?:No\.?|Number|#)|Previous|Issues?|"
-    r"Follow[- ]?up(?:\s+to)?|Ship\s+vehicle|Targeted\s+for)\s*:",
+    r"Doc\.?\s*(?:No\.?|Number|#)|Document\s*(?:number|No\.?|#)?|"
+    r"Previous|Issues?|"
+    r"Follow[- ]?up(?:\s+to)?|Ship\s+vehicle|Targeted\s+for)\*{0,2}\s*:",
+    re.IGNORECASE,
+)
+
+# "Document P2034R6 Authors ..." -- no colon after "Document", but the
+# paper ID immediately follows.  Treated as a metadata line.
+# Also matches "ISO/IEC JTC1 SC22 WG21 N5040 ..." style header lines.
+_FREEFORM_DOC_ID_RE = re.compile(
+    r"^(?:Document\s+[DPN]\d{3,5}R?\d*\b|ISO/?IEC\s+JTC)",
     re.IGNORECASE,
 )
 
 # Lines that should never be stripped (structural markdown).
 _STRUCTURAL_LINE_RE = re.compile(r"^(?:#{1,6}\s|```|[>*\-+]\s|\d+\.\s|\|)")
+
+# Heading whose text (after # prefix) is a metadata label.
+_HEADING_META_LABEL_RE = re.compile(
+    r"^#{1,6}\s+\*{0,2}(?:Reply[- ]?to|Audience|Target|Date|Project|"
+    r"Authors?|Editors?|Co-?authors?|Subgroup|Source|"
+    r"Doc\.?\s*(?:No\.?|Number|#)|Document\s*(?:number|No\.?|#)?)\*{0,2}\s*:",
+    re.IGNORECASE,
+)
+
+# List item whose text is a metadata label ("- **Document number:** ...").
+_LIST_META_LABEL_RE = re.compile(
+    r"^[-*+]\s+\*{0,2}(?:Reply[- ]?to|Audience|Target|Date|Project|"
+    r"Authors?|Editors?|Co-?authors?|Subgroup|Source|"
+    r"Doc\.?\s*(?:No\.?|Number|#)|Document\s*(?:number|No\.?|#)?)\*{0,2}\s*:",
+    re.IGNORECASE,
+)
+
+# Bare date heading: "### March 26, 2026" or "### 2026-03-26".
+_HEADING_BARE_DATE_RE = re.compile(
+    r"^#{1,6}\s+\*?(?:"
+    r"(?:January|February|March|April|May|June|July|August|"
+    r"September|October|November|December)\s+\d{1,2},?\s+\d{4}|"
+    r"\d{1,2}\s+(?:January|February|March|April|May|June|July|August|"
+    r"September|October|November|December)\s+\d{4}|"
+    r"\d{4}[-/]\d{1,2}[-/]\d{1,2})\*?\s*$",
+    re.IGNORECASE,
+)
 
 # Maximum non-blank body lines to scan for leaked metadata.
 _FREEFORM_SCAN_DEPTH = 15
@@ -317,7 +232,8 @@ _LONG_CONTENT_THRESHOLD = 120
 _CODE_FENCE_RE = re.compile(r"^```")
 
 
-def _strip_freeform_metadata_lines(md: str) -> str:
+def _strip_freeform_metadata_lines(md: str,
+                                    metadata: dict | None = None) -> str:
     """Strip free-form metadata lines leaked into the body after front matter.
 
     Scans the first non-blank body lines (up to ``_FREEFORM_SCAN_DEPTH``)
@@ -325,7 +241,28 @@ def _strip_freeform_metadata_lines(md: str) -> str:
     continuation lines (indented / comma-prefixed) that follow them.
     Stops at structural markdown (headings, lists, blockquotes, table
     rows), long paragraph text, or code fences.
+
+    When ``metadata`` is provided, also strips metadata-carrying structural
+    lines (headings with author names or dates, list items with metadata
+    labels) and bare author+email lines matching ``reply-to``.
     """
+    # Build author tokens from metadata for content-aware stripping.
+    # Metadata can be a dict (from YAML) or a PaperRow dataclass.
+    author_tokens: set[str] = set()
+    if metadata:
+        if isinstance(metadata, dict):
+            reply_to = (metadata.get("reply-to")
+                        or metadata.get("authors") or [])
+        else:
+            reply_to = getattr(metadata, "authors", None) or []
+        for entry in reply_to:
+            name = entry.split("<")[0].strip()
+            for token in name.split(","):
+                token = token.strip()
+                for p in token.split():
+                    cleaned = p.strip(".,;:*_()").lower()
+                    if len(cleaned) >= 3:
+                        author_tokens.add(cleaned)
     fm_end = _find_front_matter_end(md)
     if fm_end is None:
         return md
@@ -360,33 +297,93 @@ def _strip_freeform_metadata_lines(md: str) -> str:
         if in_code_fence:
             continue
 
-        # Structural markdown (headings, lists, blockquotes, tables):
-        # real body content has begun.
+        # Structural markdown (headings, lists, blockquotes, tables).
+        # Before breaking, check if the structural line itself carries
+        # metadata that should be stripped.
         if _STRUCTURAL_LINE_RE.match(stripped):
+            is_meta_structural = False
+
+            # Heading or list item with a metadata label.
+            if _HEADING_META_LABEL_RE.match(stripped):
+                is_meta_structural = True
+            elif _LIST_META_LABEL_RE.match(stripped):
+                is_meta_structural = True
+            # Bare date heading ("### March 26, 2026").
+            elif _HEADING_BARE_DATE_RE.match(stripped):
+                is_meta_structural = True
+            # Author-name heading matching reply-to ("#### *Christof Meerwald*").
+            elif author_tokens and re.match(r"^#{1,6}\s+", stripped):
+                heading_text = re.sub(r"^#{1,6}\s+", "", stripped)
+                clean_name = re.sub(r"[*_`()\[\]<>]", " ", heading_text)
+                clean_name = re.sub(r"\S+@\S+", " ", clean_name)
+                clean_name = re.sub(r"https?://\S+", " ", clean_name)
+                name_toks = [t.lower() for t in clean_name.split()
+                             if len(t) >= 3 and t[0].isalpha()]
+                if 1 <= len(name_toks) <= 4:
+                    match_ct = sum(1 for t in name_toks if t in author_tokens)
+                    if match_ct >= 1 and match_ct / len(name_toks) >= 0.5:
+                        is_meta_structural = True
+
+            if is_meta_structural:
+                _strip_meta_log.debug(
+                    "Stripping metadata structural line %d: %.80s",
+                    i, stripped)
+                to_remove.add(i)
+                continue
+
             break
 
         # Long lines are body paragraphs: stop scanning.
-        if len(stripped) > _LONG_CONTENT_THRESHOLD and not _FREEFORM_META_LABEL_RE.match(stripped):
+        if (len(stripped) > _LONG_CONTENT_THRESHOLD
+                and not _FREEFORM_META_LABEL_RE.match(stripped)
+                and not _FREEFORM_DOC_ID_RE.match(stripped)):
             break
 
-        if _FREEFORM_META_LABEL_RE.match(stripped):
+        if _FREEFORM_META_LABEL_RE.match(stripped) or _FREEFORM_DOC_ID_RE.match(stripped):
             _strip_meta_log.debug(
                 "Stripping leaked metadata line %d: %.80s", i, stripped)
             to_remove.add(i)
-            # Also remove continuation lines (indented or comma-prefixed,
-            # no label of their own) that belong to this metadata entry.
+            # Also remove continuation lines that belong to this entry.
+            # Two cases: (a) indented / comma-prefixed continuations,
+            # (b) value-on-next-line when the label ends with ":"
+            #    e.g. "Date:\nJanuary 22, 2026".
+            label_only = stripped.endswith(":")
             for k in range(i + 1, len(lines)):
                 cont = lines[k].strip()
                 if not cont:
+                    if label_only:
+                        continue
                     break
                 if _FREEFORM_META_LABEL_RE.match(cont):
                     break
                 if _STRUCTURAL_LINE_RE.match(cont):
                     break
+                if label_only:
+                    to_remove.add(k)
+                    label_only = False
+                    continue
                 if not lines[k][0].isspace() and not cont.startswith(","):
                     break
                 to_remove.add(k)
             continue
+
+        # Bare author name + email matching reply-to metadata.
+        # "Vinnie Falco vinnie.falco@gmail.com" or
+        # "Vinnie Falco <vinnie.falco@gmail.com>"
+        if author_tokens and ("@" in stripped or "mailto:" in stripped):
+            clean_text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", stripped)
+            clean_text = re.sub(r"\S+@\S+", " ", clean_text)
+            clean_text = re.sub(r"[*_`()\[\]<>]", " ", clean_text)
+            name_toks = [t.lower() for t in clean_text.split()
+                         if len(t) >= 3 and t[0].isalpha()]
+            if name_toks:
+                match_ct = sum(1 for t in name_toks if t in author_tokens)
+                if match_ct >= 1 and match_ct / len(name_toks) >= 0.5:
+                    _strip_meta_log.debug(
+                        "Stripping bare author+email line %d: %.80s",
+                        i, stripped)
+                    to_remove.add(i)
+                    continue
 
         # Short non-metadata line: skip over it (title echo, page number,
         # tomd uncertain marker, etc.).  Do not strip it.
@@ -415,14 +412,127 @@ def strip_redundant_body_meta(md: str) -> str:
     return md
 
 
-def strip_freeform_metadata_lines(md: str) -> str:
+_ORPHAN_BULLET_RE = re.compile(r"^\s*[-*\u2022\u2023\u25e6\u2043]\s+")
+_ORPHAN_HEADING_RE = re.compile(r"^#{2,}\s+(.*)")
+_ORPHAN_MIN_BULLETS = 3
+_ORPHAN_MATCH_RATIO = 0.5
+_SECTION_NUM_STRIP_RE = re.compile(r"^\d+(?:\.\d+)*\.?\s*")
+_ORPHAN_TOC_LABELS = frozenset({"table of contents", "contents", "toc"})
+_ORPHAN_INLINE_MD_RE = re.compile(r"\*{1,3}|`|(?:\[([^\]]+)\]\([^)]*\))")
+_TRIPLE_NEWLINE_RE = re.compile(r"\n{3,}")
+_orphan_log = _logging.getLogger(__name__)
+
+
+def strip_orphan_toc_list(md: str) -> str:
+    """Remove bullet-list TOCs orphaned before the first heading.
+
+    Some WG21 PDFs have a minimal Table of Contents as a bullet list of
+    section names (no dot-leaders, no page numbers). These survive PDF
+    extraction as orphan content between the front matter and the first
+    ``## `` heading. This helper strips them when the majority of bullet
+    texts match actual headings in the document.
+    """
+    fm_end_offset = _find_front_matter_end(md)
+    if fm_end_offset is None:
+        return md
+
+    lines = md.split("\n")
+    # Find the line index of the closing --- in front matter.
+    char_pos = 0
+    fm_end_line = -1
+    for i, line in enumerate(lines):
+        if char_pos >= fm_end_offset:
+            fm_end_line = i
+            break
+        char_pos += len(line) + 1
+    if fm_end_line < 0:
+        return md
+
+    preamble_start = fm_end_line + 1
+
+    # Find the first ## heading after front matter.
+    first_heading_line = -1
+    for i in range(preamble_start, len(lines)):
+        if _ORPHAN_HEADING_RE.match(lines[i]):
+            first_heading_line = i
+            break
+    if first_heading_line < 0:
+        return md
+
+    # Collect bullet lines in the preamble zone.
+    bullet_entries: list[tuple[int, str]] = []
+    for i in range(preamble_start, first_heading_line):
+        if _ORPHAN_BULLET_RE.match(lines[i]):
+            text = _ORPHAN_BULLET_RE.sub("", lines[i]).strip().lower()
+            text = _SECTION_NUM_STRIP_RE.sub("", text)
+            text = _ORPHAN_INLINE_MD_RE.sub(lambda m: m.group(1) or "", text)
+            bullet_entries.append((i, text.strip()))
+
+    if len(bullet_entries) < _ORPHAN_MIN_BULLETS:
+        return md
+
+    # Collect all document headings (## and deeper), normalized.
+    doc_headings: set[str] = set()
+    for line in lines[first_heading_line:]:
+        m = _ORPHAN_HEADING_RE.match(line)
+        if m:
+            h = m.group(1).strip().lower()
+            h = _SECTION_NUM_STRIP_RE.sub("", h)
+            doc_headings.add(h)
+
+    matches = sum(1 for _, bt in bullet_entries if bt in doc_headings)
+    if matches / len(bullet_entries) < _ORPHAN_MATCH_RATIO:
+        return md
+
+    _orphan_log.debug(
+        "Stripped orphan TOC list: %d bullets, %d/%d matched headings",
+        len(bullet_entries), matches, len(bullet_entries),
+    )
+
+    # Verify no substantive non-bullet content between first and last bullet.
+    bullet_indices = {i for i, _ in bullet_entries}
+    strip_start = min(bullet_indices)
+    strip_end = max(bullet_indices)
+    for i in range(strip_start, strip_end + 1):
+        if i not in bullet_indices and lines[i].strip():
+            return md
+
+    # Absorb a TOC label line immediately before the first bullet.
+    if strip_start > preamble_start:
+        label_candidate = lines[strip_start - 1].strip().lower()
+        label_candidate = _ORPHAN_INLINE_MD_RE.sub(
+            lambda m: m.group(1) or "", label_candidate,
+        )
+        if label_candidate in _ORPHAN_TOC_LABELS:
+            strip_start -= 1
+
+    # Extend to absorb trailing blank lines up to the first heading.
+    while strip_end + 1 < first_heading_line and not lines[strip_end + 1].strip():
+        strip_end += 1
+
+    strip_set = set(range(strip_start, strip_end + 1))
+    cleaned = [lines[i] for i in range(len(lines)) if i not in strip_set]
+    # Collapse triple-newlines only in the preamble area, not the whole doc.
+    preamble_end_in_cleaned = max(0, first_heading_line - len(strip_set))
+    head = "\n".join(cleaned[:preamble_end_in_cleaned])
+    tail = "\n".join(cleaned[preamble_end_in_cleaned:])
+    head = _TRIPLE_NEWLINE_RE.sub("\n\n", head)
+    return head + "\n" + tail if tail else head
+
+
+def strip_freeform_metadata_lines(md: str,
+                                   metadata: dict | None = None) -> str:
     """Public entry point for free-form metadata stripping.
 
     Called from ``api.convert_paper`` after ``_strip_body_metadata_text``,
     so it runs on the final markdown but does not affect the golden-test
     layer (``run_pipeline`` / ``convert_html``).
+
+    When ``metadata`` is provided, content-aware stripping kicks in:
+    structural lines (headings, list items) carrying metadata and bare
+    author+email lines are also removed.
     """
-    return _strip_freeform_metadata_lines(md)
+    return _strip_freeform_metadata_lines(md, metadata=metadata)
 
 
 _META_TABLE_LABELS = frozenset({
@@ -838,7 +948,8 @@ DOC_NUM_PATTERN = (
     r"|SD-\d+"
 )
 
-SECTION_NUM_PATTERN = r"\d+(?:\.\d+)*"
+_ROMAN = r"[IVXLCDM]+"
+SECTION_NUM_PATTERN = rf"(?:\d+(?:\.\d+)*|{_ROMAN})"
 
 # Broad document-number match used for header stripping and HTML metadata.
 # For line-anchored field extraction in PDF blocks, see DOC_FIELD_RE in

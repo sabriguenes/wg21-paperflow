@@ -7,13 +7,17 @@ import unicodedata
 from collections import Counter
 from dataclasses import replace
 
-from .. import DATE_RE, DEFAULT_FENCE_LANG, strip_format_chars
+from .. import (
+    DATE_RE, DEFAULT_FENCE_LANG, SECTION_NUM_PATTERN, SECTION_NUM_PREFIX_RE,
+    strip_format_chars,
+)
 from .glyphs import GLYPH_FONT_SENTINEL, UNKNOWN_GLYPH
 from .types import (
     Block, Line, Span, Section, SectionKind, Confidence,
+    FigureRegion,
     SIMILARITY_THRESHOLD, TERMINAL_PUNCTUATION, FALLBACK_BODY_SIZE,
     MIN_UNCERTAIN_WORDS, compute_bbox,
-    SECTION_NUM_RE, DOC_FIELD_RE, REPLY_TO_RE, AUDIENCE_RE,
+    SECTION_NUM_RE,
     BULLET_RE, NUMBERED_LIST_RE, KNOWN_SECTIONS, BULLET_CHARS,
     ZERO_WIDTH_CHARS,
 )
@@ -21,12 +25,31 @@ from .types import (
 _HEADING_SIZE_RATIO = 1.05
 _TITLE_SIZE_RATIO = 1.2
 
+# Minimum font-size drop (points) between a heading's first line and a
+# subsequent line to trigger a heading/body split.  Calibrated from corpus:
+# real heading+body merges show 2+ pt differences; same-level heading
+# continuations show 0-1 pt jitter.
+_HEADING_BODY_SPLIT_DELTA = 2.0
+
 # Max words in a heading's first physical line. Beyond this the line is
 # prose, not a title. Numbered spec clauses ("1 A fiber is a single flow
 # of control...") and numeric arithmetic results that happen to start a
 # continuation line both trigger SECTION_NUM_RE; this length cap rejects
 # them downstream. Real WG21 section titles are 1-8 words.
 _HEADING_MAX_WORDS = 12
+
+# Characters that indicate code, not a heading.  Used to reject
+# bold-only heading candidates that are really code fragments.
+_CODE_CHARS = frozenset("{}();=<>[]")
+
+
+def _line_color(line) -> int | None:
+    """Dominant text color of a line (first non-whitespace span), or None."""
+    for span in line.spans:
+        if span.text.strip():
+            return span.color
+    return None
+
 
 _TITLE_MAX_LENGTH = 120
 # Max font-size deviation (fraction) for a subsequent LARGE section to
@@ -54,14 +77,6 @@ _TITLE_PID_PREFIX_RE = re.compile(
 _BODY_MARGIN_FRACTION = 0.1
 _BULLET_JOIN_MAX_CHARS = 3
 
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
-# Quick-strip pattern for removing email addresses from reply-to values.
-# Intentionally broader than lib.EMAIL_RE which is for precise matching.
-_EMAIL_INLINE_RE = re.compile(r"\S+@\S+\.\S+")
-# Targets all whitespace including newlines; distinct from
-# cleanup._MULTI_SPACE_RE which targets only spaces and tabs.
-_MULTI_SPACE_RE = re.compile(r"\s{2,}")
-_LEADING_TRAILING_COMMA_RE = re.compile(r"^[,\s]+|[,\s]+$")
 
 _log = logging.getLogger(__name__)
 
@@ -294,6 +309,13 @@ def compare_extractions(mupdf_blocks: list[Block],
             if m_joined == s_joined:
                 sim = 1.0
 
+        # When spatial has zero words (e.g. all blocks removed by table
+        # exclusion) but mupdf has content, trust mupdf directly.  The
+        # absence of spatial data is a pipeline artifact, not a real
+        # extraction disagreement.
+        if not s_words and m_words:
+            sim = 1.0
+
         if sim >= SIMILARITY_THRESHOLD:
             for block in m_blocks:
                 sections.append(_make_paragraph_section(block))
@@ -335,7 +357,14 @@ def compare_extractions(mupdf_blocks: list[Block],
         kept = [s for s in sections
                 if not (s.kind == SectionKind.UNCERTAIN
                         and s.page_num in promoted)]
+        # Only re-add blocks for pages that were actually uncertain.
+        # Pages pulled into the promoted set as neighbors may already
+        # have high-confidence sections; re-adding would duplicate them.
+        already_covered = {s.page_num for s in kept
+                           if s.page_num in promoted}
         for pg in sorted(promoted):
+            if pg in already_covered:
+                continue
             for block in mupdf_by_page.get(pg, []):
                 kept.append(_make_paragraph_section(block))
         sections = kept
@@ -359,7 +388,11 @@ def compare_extractions(mupdf_blocks: list[Block],
             kept = [s for s in sections
                     if not (s.kind == SectionKind.UNCERTAIN
                             and s.page_num in bulk_promoted)]
+            already_covered = {s.page_num for s in kept
+                               if s.page_num in bulk_promoted}
             for pg in sorted(bulk_promoted):
+                if pg in already_covered:
+                    continue
                 for block in mupdf_by_page.get(pg, []):
                     kept.append(_make_paragraph_section(block))
             sections = kept
@@ -429,10 +462,41 @@ def _rank_font_sizes(sections: list[Section],
     return {sz: i + 1 for i, sz in enumerate(ranked)}
 
 
+_ROMAN_RE = re.compile(r"^[IVXLCDM]+$")
+
+
 def _heading_level_from_number(section_num: str) -> int:
-    """Compute heading level from dotted decimal: depth + 1."""
+    """Compute heading level from dotted decimal or Roman numeral: depth + 1.
+
+    Roman numerals (I, II, IV, ...) are flat top-level sections = level 2.
+    Arabic dotted numbers use dot-count + 2 (1 = 2, 1.1 = 3, 1.1.1 = 4).
+    """
+    if _ROMAN_RE.match(section_num):
+        return 2
     parts = section_num.split(".")
     return len(parts) + 1
+
+
+def _is_known_section(first_line: str) -> bool:
+    """Check if *first_line* names a KNOWN_SECTIONS entry.
+
+    Handles plain names ("Abstract"), numbered prefixes without trailing
+    dot ("3.2 Motivation"), and numbered prefixes with trailing dot
+    ("1. Introduction", "1.1. Alternatives") by stripping the section
+    number before the lookup.
+    """
+    normalized = first_line.lower().rstrip(":")
+    if normalized in KNOWN_SECTIONS:
+        return True
+    m = SECTION_NUM_RE.match(first_line)
+    if m:
+        rest = m.group(2).strip().lower().rstrip(":")
+        return rest in KNOWN_SECTIONS
+    m2 = SECTION_NUM_PREFIX_RE.match(first_line)
+    if m2:
+        rest = first_line[m2.end():].strip().lower().rstrip(":")
+        return rest in KNOWN_SECTIONS
+    return False
 
 
 def heading_confidence(has_number: bool, number_level: int,
@@ -440,8 +504,12 @@ def heading_confidence(has_number: bool, number_level: int,
                         is_known: bool) -> tuple[int, Confidence]:
     """Determine heading level and confidence from multiple signals.
 
-    Bold never determines heading level, but as a confirming signal
-    it raises confidence by one tier.
+    Bold alone (no section number, no enlarged font, not a known name)
+    yields level 0 with LOW confidence.  The caller must assign a
+    context-derived level (typically previous_heading_level + 1) before
+    accepting the heading.  This keeps the function stateless while
+    allowing bold-only sub-headings (common in WG21 papers) to enter
+    the heading path.
     """
     if has_number:
         level = number_level
@@ -467,98 +535,73 @@ def heading_confidence(has_number: bool, number_level: int,
     if is_known:
         return 2, Confidence.LOW
 
+    if is_bold:
+        return 0, Confidence.LOW
+
     return 0, Confidence.UNCERTAIN
 
 
-def _extract_metadata(sections: list[Section]) -> tuple[dict[str, str | list[str]], list[Section]]:
-    """Pull WG21 metadata fields from early sections into a dict.
+# Deferred import: metadata_yaml.extract imports from pdf.types which imports
+# from pdf.__init__ which imports from structure.py. Moving this to the
+# top-level import block creates a circular import.
+from ..metadata_yaml.extract import extract_metadata as _extract_metadata  # noqa: E402
 
-    PDF section line scan (pathway 1 of 3). Lower precedence than
-    wg21.extract_metadata_from_blocks; both are merged in run_pipeline.
 
-    Returns (metadata_dict, remaining_sections).
+
+def _split_heading_body(sec: Section,
+                        body_size: float,
+                        ) -> tuple[Section, Section | None]:
+    """Split a multi-line section when the first line is a heading and
+    the remaining lines are body text at a smaller font size.
+
+    MuPDF sometimes merges a heading and its following paragraph into a
+    single Block because they share a bounding region.  This function
+    detects the pattern and returns (heading_section, body_section).
+    When no split is needed, returns (sec, None).
+
+    Split triggers when *either*:
+    - first line font_size exceeds the second by >= _HEADING_BODY_SPLIT_DELTA, or
+    - first line is bold and the second is not, AND the first line is
+      either above body_size * _HEADING_SIZE_RATIO or short enough to
+      be a heading (<= _HEADING_MAX_WORDS words).
     """
-    meta: dict[str, str | list[str]] = {}
-    remaining = []
-    metadata_zone = True
+    if len(sec.lines) < 2:
+        return sec, None
 
-    for sec in sections:
-        if sec.kind == SectionKind.UNCERTAIN:
-            remaining.append(sec)
-            continue
+    line0 = sec.lines[0]
+    line1 = sec.lines[1]
+    fs0 = line0.font_size
+    fs1 = line1.font_size
 
-        text = sec.text.strip()
-        if not text:
-            remaining.append(sec)
-            continue
+    size_drop = fs0 - fs1 >= _HEADING_BODY_SPLIT_DELTA
+    bold_drop = (
+        line0.is_bold
+        and not line1.is_bold
+        and (fs0 >= body_size * _HEADING_SIZE_RATIO
+             or len(line0.text.split()) <= _HEADING_MAX_WORDS)
+    )
 
-        if metadata_zone:
-            consumed = False
-            for line_text in text.split("\n"):
-                lt = line_text.strip()
-                if not lt:
-                    continue
+    if not size_drop and not bold_drop:
+        return sec, None
 
-                m = DOC_FIELD_RE.match(lt)
-                if m:
-                    meta["document"] = m.group(1).upper()
-                    consumed = True
-                    continue
+    body_lines = sec.lines[1:]
+    body_text = "\n".join(ln.text for ln in body_lines).strip()
+    if not body_text:
+        head = replace(sec, lines=[line0], text=line0.text,
+                        font_size=fs0)
+        return head, None
 
-                m = DATE_RE.search(lt)
-                if m and "date" not in meta and not SECTION_NUM_RE.match(lt):
-                    if lt.lower().startswith("date"):
-                        meta["date"] = m.group(1)
-                        consumed = True
-                        continue
-
-                m = REPLY_TO_RE.match(lt)
-                if m:
-                    raw = m.group(1).strip()
-                    raw = _HTML_TAG_RE.sub("", raw)
-                    raw = _EMAIL_INLINE_RE.sub("", raw)
-                    raw = _MULTI_SPACE_RE.sub(" ", raw).strip()
-                    raw = _LEADING_TRAILING_COMMA_RE.sub("", raw)
-                    if raw:
-                        if "reply-to" not in meta:
-                            meta["reply-to"] = []
-                        meta["reply-to"].append(raw)
-                    consumed = True
-                    continue
-
-                m = AUDIENCE_RE.match(lt)
-                if m:
-                    meta["audience"] = m.group(1).strip()
-                    consumed = True
-                    continue
-
-            if consumed:
-                leftover = []
-                for line_text in text.split("\n"):
-                    lt = line_text.strip()
-                    if not lt:
-                        continue
-                    if (DOC_FIELD_RE.match(lt) or REPLY_TO_RE.match(lt)
-                            or AUDIENCE_RE.match(lt)):
-                        continue
-                    if lt.lower().startswith("date") and DATE_RE.search(lt):
-                        continue
-                    leftover.append(lt)
-                if leftover:
-                    remaining.append(replace(sec, text="\n".join(leftover)))
-                continue
-
-            alpha = [c for c in text if c.isalpha()]
-            if alpha and all(c.isupper() for c in alpha) and len(text.split()) <= 3:
-                _log.debug("Consumed category label in metadata zone: %r", text)
-                continue
-
-            if SECTION_NUM_RE.match(text.split("\n")[0]):
-                metadata_zone = False
-
-        remaining.append(sec)
-
-    return meta, remaining
+    head = replace(sec, lines=[line0], text=line0.text,
+                    font_size=fs0)
+    body = replace(sec,
+                   kind=SectionKind.PARAGRAPH,
+                   text=body_text,
+                   confidence=Confidence.HIGH,
+                   lines=body_lines,
+                   font_size=fs1)
+    _log.debug("Split heading+body: heading=%r body=%r (fs %.0f->%.0f)",
+               line0.text.strip()[:40], body_text[:40], fs0, fs1)
+    return head, body
 
 
 def structure_sections(sections: list[Section],
@@ -570,8 +613,71 @@ def structure_sections(sections: list[Section],
     and no title detection is performed.
 
     Returns (metadata_dict, structured_sections, nesting_corrections).
+
+    Note: metadata extraction is done internally for backward compatibility.
+    New callers should use structure_body() after separate metadata extraction.
     """
     metadata, sections = _extract_metadata(sections)
+    return _structure_body_impl(metadata, sections, has_title)
+
+
+def structure_body(sections: list[Section],
+                   has_title: bool = False,
+                   figure_regions: list | None = None,
+                   ) -> tuple[dict, list[Section], int]:
+    """Body structuring only, without metadata extraction.
+
+    Called after metadata extraction is complete.
+    Returns (body_metadata, structured_sections, nesting_corrections).
+    body_metadata may contain a 'title' if one was detected during structuring.
+    """
+    return _structure_body_impl({}, sections, has_title,
+                                figure_regions=figure_regions)
+
+
+def _section_in_figure_region(sec: Section,
+                              figure_regions: list[FigureRegion],
+                              ) -> FigureRegion | None:
+    """Return the matching FigureRegion if *sec* overlaps one, else None."""
+    if not sec.lines:
+        return None
+    s_bbox = sec.lines[0].bbox
+    s_y0, s_y1 = s_bbox[1], s_bbox[3]
+    s_x0, s_x1 = s_bbox[0], s_bbox[2]
+    for fr in figure_regions:
+        if sec.page_num != fr.page_num:
+            continue
+        f_x0, f_y0, f_x1, f_y1 = fr.bbox
+        if s_x0 < f_x1 and s_x1 > f_x0 and s_y0 < f_y1 and s_y1 > f_y0:
+            return fr
+    return None
+
+
+def _merge_figure_sections(sections: list[Section]) -> list[Section]:
+    """Consolidate consecutive FIGURE sections into one per figure."""
+    if not sections:
+        return sections
+    merged: list[Section] = [sections[0]]
+    for sec in sections[1:]:
+        prev = merged[-1]
+        if (sec.kind == SectionKind.FIGURE
+                and prev.kind == SectionKind.FIGURE
+                and sec.page_num == prev.page_num):
+            prev.text = prev.text + "\n" + sec.text
+            prev.lines.extend(sec.lines)
+            if sec.figure_graph is not None and prev.figure_graph is None:
+                prev.figure_graph = sec.figure_graph
+        else:
+            merged.append(sec)
+    return merged
+
+
+def _structure_body_impl(metadata: dict,
+                         sections: list[Section],
+                         has_title: bool = False,
+                         figure_regions: list | None = None,
+                         ) -> tuple[dict, list[Section], int]:
+    """Implementation of body structuring logic."""
     body_size = _detect_body_size(sections)
     font_ranks = _rank_font_sizes(sections, body_size)
 
@@ -580,6 +686,7 @@ def structure_sections(sections: list[Section],
     title_found = has_title
     structured: list[Section] = []
     skip_indices: set[int] = set()
+    last_heading_level = 0
 
     for idx, sec in enumerate(sections):
         if idx in skip_indices:
@@ -599,11 +706,25 @@ def structure_sections(sections: list[Section],
             structured.append(sec)
             continue
 
-        first_line = sec.text.split("\n")[0].strip()
+        all_lines = sec.text.split("\n")
+        first_line = all_lines[0].strip()
+
+        # Multi-line heading blocks: MuPDF sometimes places the section
+        # number ("I.", "2.") on line 0 and the title on line 1.  Join
+        # them so SECTION_NUM_RE and _is_known_section see the full heading.
+        # Guard: require bold (heading font) to avoid joining numbered list items.
+        _sec_is_bold = bool(sec.lines) and sec.lines[0].is_bold
+        if (len(all_lines) >= 2
+                and _sec_is_bold
+                and _BARE_SECTION_NUM_RE.match(first_line)):
+            second = all_lines[1].strip()
+            if second and len(second.split()) <= _HEADING_MAX_WORDS:
+                _log.debug("Multi-line heading join: %r + %r", first_line, second)
+                first_line = first_line.rstrip(".").rstrip() + " " + second
 
         if not title_found:
             is_large = sec.font_size > body_size * _TITLE_SIZE_RATIO
-            is_known = (first_line.lower().rstrip(":") in KNOWN_SECTIONS
+            is_known = (_is_known_section(first_line)
                         or first_line.lower() in ("contents", "table of contents"))
             is_section_num = bool(SECTION_NUM_RE.match(first_line))
             has_email = "@" in first_line
@@ -612,8 +733,8 @@ def structure_sections(sections: list[Section],
 
             if is_large and (is_known or is_section_num):
                 title_found = True
-                structured.append(sec)
-                continue
+                # Fall through to heading classification below so the
+                # section is classified as HEADING, not left as PARAGRAPH.
 
             if (is_large and not is_section_num and not is_known
                     and not has_email and not is_date and not too_long):
@@ -630,7 +751,7 @@ def structure_sections(sections: list[Section],
                     if abs(nxt.font_size - title_fs) / title_fs > _TITLE_CONT_FONT_TOL:
                         break
                     fl_low = fl.lower().rstrip(":")
-                    if fl_low in KNOWN_SECTIONS or fl_low in _TITLE_CONT_SKIP:
+                    if _is_known_section(fl) or fl_low in _TITLE_CONT_SKIP:
                         break
                     if SECTION_NUM_RE.match(fl):
                         break
@@ -652,6 +773,20 @@ def structure_sections(sections: list[Section],
                 sec.confidence = Confidence.HIGH
                 title_found = True
                 structured.append(sec)
+                last_heading_level = 1
+                continue
+
+        # Figure-region guard: text overlapping a detected vector-graphic
+        # figure is classified as FIGURE to prevent heading misclassification
+        # of diagram label fragments (e.g. box labels rendered in bold).
+        if figure_regions:
+            matched_region = _section_in_figure_region(sec, figure_regions)
+            if matched_region is not None:
+                sec.kind = SectionKind.FIGURE
+                sec.confidence = Confidence.HIGH
+                if matched_region.graph is not None:
+                    sec.figure_graph = matched_region.graph
+                structured.append(sec)
                 continue
 
         m = SECTION_NUM_RE.match(first_line)
@@ -660,8 +795,20 @@ def structure_sections(sections: list[Section],
 
         line_fs = sec.font_size
         font_level = font_ranks.get(line_fs)
+        # Fallback: if section's most-common font size isn't a heading font,
+        # check the first line's font size (handles MuPDF heading+body merges).
+        # Only triggers when there is a clear size drop from line 0 to line 1,
+        # confirming the heading+body merge pattern.
+        if font_level is None and len(sec.lines) >= 2:
+            first_fs = sec.lines[0].font_size
+            second_fs = sec.lines[1].font_size
+            if first_fs - second_fs >= _HEADING_BODY_SPLIT_DELTA:
+                first_level = font_ranks.get(first_fs)
+                if first_level is not None:
+                    font_level = first_level
+                    line_fs = first_fs
         is_bold = bool(sec.lines) and sec.lines[0].is_bold
-        is_known = first_line.lower().rstrip(":") in KNOWN_SECTIONS
+        is_known = _is_known_section(first_line)
 
         # Sections whose FIRST LINE is just a bullet character plus an
         # injected glyph placeholder ("●" + "�") are list-item prefixes
@@ -693,18 +840,45 @@ def structure_sections(sections: list[Section],
             )
         )
 
-        if (has_number or font_level is not None or is_known) and not first_line_is_bullet_marker:
+        if (has_number or font_level is not None or is_known or is_bold) and not first_line_is_bullet_marker:
             number_level = _heading_level_from_number(section_num) if has_number else 0
             level, conf = heading_confidence(
                 has_number, number_level, font_level, is_bold, is_known)
 
+            # Color signal: if the first line's color differs from the
+            # next body line, the visual distinction strengthens the case
+            # for a heading.  Upgrade LOW -> MEDIUM so the prose-length
+            # filter does not reject long but visually distinct headings.
+            if conf == Confidence.LOW and len(sec.lines) >= 2:
+                head_color = _line_color(sec.lines[0])
+                body_color = _line_color(sec.lines[1])
+                if head_color is not None and body_color is not None and head_color != body_color:
+                    conf = Confidence.MEDIUM
+
+            # Bold-only headings: heading_confidence returns level=0.
+            # Infer level from the last heading seen (child of it),
+            # clamped to at least 3 so bold-only never becomes H2.
+            # Reject if the line contains code-like characters or is
+            # monospace (avoids misclassifying code fragments as headings).
+            if level == 0 and is_bold and conf == Confidence.LOW:
+                has_code_chars = bool(_CODE_CHARS & set(first_line))
+                is_mono = bool(sec.lines) and sec.lines[0].is_monospace
+                if has_code_chars or is_mono:
+                    level = 0  # keep as paragraph
+                else:
+                    level = max(last_heading_level + 1, 3)
+
             is_prose_length = len(first_line.split()) > _HEADING_MAX_WORDS
             prose_on_weak_signal = is_prose_length and conf == Confidence.LOW
             if level > 0 and not prose_on_weak_signal:
-                sec.kind = SectionKind.HEADING
-                sec.heading_level = level
-                sec.confidence = conf
-                structured.append(sec)
+                head_sec, body_sec = _split_heading_body(sec, body_size)
+                head_sec.kind = SectionKind.HEADING
+                head_sec.heading_level = level
+                head_sec.confidence = conf
+                structured.append(head_sec)
+                if body_sec is not None:
+                    structured.append(body_sec)
+                last_heading_level = level
                 continue
 
         lines = sec.text.split("\n")
@@ -720,16 +894,78 @@ def structure_sections(sections: list[Section],
         sec.kind = SectionKind.PARAGRAPH
         structured.append(sec)
 
+    if figure_regions:
+        structured = _merge_figure_sections(structured)
+    structured = _merge_orphan_heading_numbers(structured)
     structured = _detect_lists_by_position(structured)
     structured = _merge_paragraphs(structured)
     structured = _detect_code_blocks(structured)
     structured = [s for s in structured if _detect_lang_label(s) is None]
     structured = _classify_wording_sections(structured)
     structured = _coalesce_code_paragraphs(structured)
+    structured = _absorb_code_orphans(structured)
     structured = _rescue_unfenced_code(structured)
     _demote_repeated_low_confidence_numbers(structured)
     nesting_corrections = _validate_nesting(structured)
     return metadata, structured, nesting_corrections
+
+
+# Bare section number with no heading text (e.g. "1", "2.3", "A").
+# Some PDFs render the heading number in large font and the title
+# text in a smaller font, producing separate blocks.
+_BARE_SECTION_NUM_RE = re.compile(
+    rf"^\s*(?:{SECTION_NUM_PATTERN}|[A-Z])\.?\s*$"
+)
+# Max words in the paragraph that follows an orphan heading number.
+# Real heading titles are short; if the next paragraph is longer,
+# it's body text, not a title.
+_ORPHAN_HEADING_MAX_WORDS = 8
+
+
+def _merge_orphan_heading_numbers(sections: list[Section]) -> list[Section]:
+    """Merge bare-number headings with the following short paragraph.
+
+    Some PDFs (e.g. P4012R0) render heading numbers in large font
+    and heading titles in a different, smaller font. The structure
+    pass classifies the number as a HEADING and the title as a
+    PARAGRAPH. This pass detects that pattern and merges them:
+    the heading text becomes "N TITLE" and the paragraph is consumed.
+    """
+    if len(sections) < 2:
+        return sections
+
+    result: list[Section] = []
+    skip_next = False
+
+    for i, sec in enumerate(sections):
+        if skip_next:
+            skip_next = False
+            continue
+
+        if (sec.kind == SectionKind.HEADING
+                and i + 1 < len(sections)
+                and _BARE_SECTION_NUM_RE.match(sec.text.strip())):
+            nxt = sections[i + 1]
+            nxt_text = nxt.text.strip()
+            nxt_words = len(nxt_text.split())
+            if (nxt.kind == SectionKind.PARAGRAPH
+                    and 0 < nxt_words <= _ORPHAN_HEADING_MAX_WORDS
+                    and nxt.page_num == sec.page_num):
+                merged_text = f"{sec.text.strip()} {nxt_text}"
+                merged = replace(
+                    sec,
+                    text=merged_text,
+                    lines=sec.lines + nxt.lines,
+                )
+                _log.info("Merged orphan heading number %r + %r -> %r",
+                           sec.text.strip(), nxt_text, merged_text)
+                result.append(merged)
+                skip_next = True
+                continue
+
+        result.append(sec)
+
+    return result
 
 
 _BULLET_SPLIT_RE = re.compile(
@@ -963,6 +1199,10 @@ def _split_inline_bullets_text(sec: Section) -> list[Section]:
     return result if result else [sec]
 
 
+_LIST_CONTINUATION_INDENT = 10.0  # min extra x-offset (pt) for indent merge
+_BULLET_LIKE = BULLET_CHARS | frozenset("\u25cb\u25b8\u25ba\u25c6\u2013\u2014")
+
+
 def _merge_paragraphs(sections: list[Section]) -> list[Section]:
     """Merge consecutive sections that are continuations.
 
@@ -970,6 +1210,11 @@ def _merge_paragraphs(sections: list[Section]) -> list[Section]:
     paragraph starts with a lowercase letter, they are the same
     logical paragraph split by PDF line wrapping. Works for
     PARAGRAPH+PARAGRAPH and LIST+PARAGRAPH (bullet continuation).
+
+    Also merges PARAGRAPH into a preceding LIST when the paragraph is
+    x-indented relative to the list item, indicating it is a
+    continuation of the same list entry (e.g. a second sentence under
+    a numbered item that MuPDF placed in a separate block).
     """
     if len(sections) < 2:
         return sections
@@ -985,8 +1230,29 @@ def _merge_paragraphs(sections: list[Section]) -> list[Section]:
                 and sec.text.lstrip()):
             prev_end = prev.text.rstrip()[-1]
             cur_start = sec.text.lstrip()[0]
-            if prev_end not in TERMINAL_PUNCTUATION and cur_start.islower():
-                prev.text = prev.text.rstrip() + " " + sec.text.lstrip()
+
+            text_merge = (prev_end not in TERMINAL_PUNCTUATION
+                          and cur_start.islower())
+
+            indent_merge = False
+            if (prev.kind == SectionKind.LIST
+                    and prev.lines and sec.lines
+                    and sec.page_num == prev.page_num):
+                prev_x0 = prev.lines[0].bbox[0]
+                prev_last_x0 = prev.lines[-1].bbox[0]
+                sec_x0 = sec.lines[0].bbox[0]
+                y_gap = sec.lines[0].bbox[1] - prev.lines[-1].bbox[3]
+                max_gap = prev.font_size * 2.0
+                first_char = sec.text.lstrip()[:1]
+                if (sec_x0 - prev_x0 >= _LIST_CONTINUATION_INDENT
+                        and sec_x0 >= prev_last_x0
+                        and 0 <= y_gap <= max_gap
+                        and first_char not in _BULLET_LIKE):
+                    indent_merge = True
+
+            if text_merge or indent_merge:
+                joiner = "\n" if indent_merge else " "
+                prev.text = prev.text.rstrip() + joiner + sec.text.lstrip()
                 prev.lines.extend(sec.lines)
                 if prev.lines:
                     prev.font_size = prev.lines[0].font_size
@@ -1201,6 +1467,57 @@ def _coalesce_code_paragraphs(sections: list[Section]) -> list[Section]:
         else:
             result.append(sec)
         i = j
+    return result
+
+
+def _absorb_code_orphans(sections: list[Section]) -> list[Section]:
+    """Absorb monospace-only first lines from PARAGRAPHs into preceding CODE.
+
+    When a PDF code block is split across MuPDF blocks, the trailing
+    fragment (e.g. ``});``) becomes a separate PARAGRAPH whose first
+    line(s) are purely monospace. This pass detects that pattern and
+    moves monospace-only leading lines back into the preceding CODE
+    section, leaving any remaining non-monospace lines as the paragraph.
+    """
+    result: list[Section] = []
+    for sec in sections:
+        if (result
+                and result[-1].kind == SectionKind.CODE
+                and sec.kind == SectionKind.PARAGRAPH
+                and sec.page_num == result[-1].page_num
+                and sec.lines):
+            # Find leading monospace lines.
+            mono_lines: list[Line] = []
+            rest_lines: list[Line] = []
+            found_non_mono = False
+            for ln in sec.lines:
+                if found_non_mono:
+                    rest_lines.append(ln)
+                elif ln.is_monospace:
+                    mono_lines.append(ln)
+                else:
+                    found_non_mono = True
+                    rest_lines.append(ln)
+
+            if mono_lines:
+                prev = result[-1]
+                mono_text = "\n".join(
+                    "".join(s.text for s in ln.spans) for ln in mono_lines
+                )
+                result[-1] = replace(
+                    prev,
+                    text=prev.text + "\n" + mono_text,
+                    lines=prev.lines + mono_lines,
+                )
+                if rest_lines:
+                    rest_text = "\n".join(
+                        "".join(s.text for s in ln.spans) for ln in rest_lines
+                    )
+                    result.append(replace(sec, text=rest_text, lines=rest_lines))
+                _log.info("Absorbed %d mono orphan line(s) into code block",
+                          len(mono_lines))
+                continue
+        result.append(sec)
     return result
 
 

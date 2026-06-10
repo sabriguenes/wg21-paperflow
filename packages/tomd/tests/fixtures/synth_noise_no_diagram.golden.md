@@ -4,8 +4,6 @@ reply-to:
 
 ---
 
-## Synthetic Noise Fixture
-
 This synthetic fixture contains only table borders and horizontal rules. The vector-extraction pipeline must produce zero image candidates from this page.
 
 | Header | Column B cell | Column C cell |

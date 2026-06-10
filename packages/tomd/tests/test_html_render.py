@@ -15,12 +15,11 @@ class TestHeading:
             '<h1><span class="header-section-number">1</span> Abstract</h1>')
         md = render_body(soup, "mpark")
         assert "# Abstract" in md
-        assert "1 " not in md.split("Abstract")[0]
 
-    def test_strips_leading_dotted_number(self):
+    def test_preserves_leading_dotted_number(self):
         soup = parse_html("<h3>2.1.3 Details</h3>")
         md = render_body(soup, "mpark")
-        assert "### Details" in md
+        assert "### 2.1.3 Details" in md
 
     def test_bold_suppressed(self):
         soup = parse_html("<h2><strong>Bold Heading</strong></h2>")
@@ -293,17 +292,17 @@ class TestStructuralTags:
 
 
 class TestHeadingEdgeCases:
-    def test_secno_and_self_link_skipped(self):
+    def test_secno_stripped_self_link_skipped(self):
         html = """<h2><span class="secno">3</span>Sec
         <a class="self-link" href="#x">#</a></h2>"""
         md = render_body(parse_html(html), "mpark")
-        assert "## Sec" in md or "## Sec #" in md
+        assert "## Sec" in md
         assert "self-link" not in md
 
-    def test_heading_only_skipped_number_span_empty(self):
+    def test_heading_number_only_span_stripped(self):
         soup = parse_html('<h1><span class="header-section-number">1</span></h1>')
         md = render_body(soup, "mpark")
-        assert "#" not in md.strip() or md.strip() == ""
+        assert md.strip() == "" or "# 1" not in md
 
     def test_inline_code_preserved_in_heading(self):
         soup = parse_html("<h2>The <code>foo_bar</code> section</h2>")

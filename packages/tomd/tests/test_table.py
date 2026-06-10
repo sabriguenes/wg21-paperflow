@@ -356,10 +356,10 @@ class TestRightAlignedColumnMatch:
         line2 = _col_line("page", 290.0, 100)
         b1 = Block(lines=[line1, line2], bbox=(60, 100, 390, 112), page_num=0)
 
-        line1 = _col_line("section name B", 80.0, 120)
-        line1 = Line(spans=line1.spans, bbox=(80.0, 120, 158.0, 132), page_num=0)
-        line2 = _col_line("page", 290.0, 120)
-        b2 = Block(lines=[line1, line2], bbox=(80, 120, 390, 132), page_num=0)
+        line1 = _col_line("section name B", 80.0, 200)
+        line1 = Line(spans=line1.spans, bbox=(80.0, 200, 158.0, 212), page_num=0)
+        line2 = _col_line("page", 290.0, 200)
+        b2 = Block(lines=[line1, line2], bbox=(80, 200, 390, 212), page_num=0)
         # Col 1 starts diff = 20 > tolerance, ends diff = 6 >> 1.0 strict.
         # No match expected.
         tables, _remaining = detect_tables([b1, b2])

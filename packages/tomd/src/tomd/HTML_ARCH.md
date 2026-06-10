@@ -1,6 +1,6 @@
 # HTML conversion rules (tomd)
 
-This document describes how the **HTML** branch of tomd turns WG21-style HTML into Markdown. It follows [`convert_html`](lib/html/__init__.py) and [`render_body`](lib/html/render.py), groups multi-step behaviors into clusters, and adds **Why** only where intent is clear from comments, module docstrings, or [`lib/html/ARCHITECTURE.md`](lib/html/ARCHITECTURE.md).
+This document describes how the **HTML** branch of tomd turns WG21-style HTML into Markdown. It follows [`convert_html`](lib/html/convert.py) and [`render_body`](lib/html/render.py), groups multi-step behaviors into clusters, and adds **Why** only where intent is clear from comments, module docstrings, or [`lib/html/ARCHITECTURE.md`](lib/html/ARCHITECTURE.md).
 
 Deep technique numbering lives in [`lib/html/ARCHITECTURE.md`](lib/html/ARCHITECTURE.md).
 
@@ -21,8 +21,8 @@ Deep technique numbering lives in [`lib/html/ARCHITECTURE.md`](lib/html/ARCHITEC
 
 - **Single DOM truth:** Unlike PDF, there is no dual extraction or per-page uncertainty routing; structure comes from the parsed tree ([`ARCHITECTURE.md`](lib/html/ARCHITECTURE.md)).
 - **Forgiving parse:** BeautifulSoup uses the stdlib **`html.parser`**, which tolerates malformed HTML but can mis-nest tags; the renderer applies explicit repairs ([`extract.py`](lib/html/extract.py), [`render.py`](lib/html/render.py)).
-- **Problems become prompts:** Unknown generators and other issues are recorded as strings and wrapped into LLM-ready prompts ([`convert_html`](lib/html/__init__.py)).
-- **Shared emit helpers:** PDF and HTML both call [`lib/__init__.py`](lib/__init__.py) `format_front_matter`, `dedup_paragraphs`, `strip_redundant_body_meta`, and `strip_leading_h1` after assembly.
+- **Problems become prompts:** Unknown generators and other issues are recorded as strings and wrapped into LLM-ready prompts ([`convert_html`](lib/html/convert.py)).
+- **Shared emit helpers:** PDF and HTML both call [`lib/__init__.py`](lib/__init__.py) `format_front_matter`, `dedup_paragraphs`, `strip_redundant_body_meta`, `strip_orphan_toc_list`, and `strip_leading_h1` after assembly.
 
 ## Before changing behavior
 
@@ -41,7 +41,7 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 
 ### Parse
 
-- Read file as **UTF-8** with replacement on decode errors ([`convert_html`](lib/html/__init__.py)).
+- Read file as **UTF-8** with replacement on decode errors ([`convert_html`](lib/html/convert.py)).
 - Build a BeautifulSoup tree with **`html.parser`** ([`parse_html`](lib/html/extract.py)).
 
 **Sources:** `parse_html`, [`lib/html/extract.py`](lib/html/extract.py).
@@ -113,10 +113,10 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 
 ### Filename fallbacks
 
-- If metadata lacks **document**, parse paper id from filename stem with [`DOC_NUM_RE`](lib/__init__.py) ([`convert_html`](lib/html/__init__.py)).
-- **`_override_revision_from_filename`:** Same rules as PDF: align revision from stem when base number matches and embedded id is **not** a **D** draft ([`lib/html/__init__.py`](lib/html/__init__.py)).
+- If metadata lacks **document**, parse paper id from filename stem with [`DOC_NUM_RE`](lib/__init__.py) ([`convert_html`](lib/html/convert.py)).
+- **`_override_revision_from_filename`:** Same rules as PDF: align revision from stem when base number matches and embedded id is **not** a **D** draft. Duplicated from `metadata_yaml/extract.py` to avoid a circular import chain through `pdf.__init__` ([`lib/html/convert.py`](lib/html/convert.py)).
 
-**Sources:** `convert_html`, `_override_revision_from_filename`, [`lib/html/__init__.py`](lib/html/__init__.py).
+**Sources:** `convert_html`, `_override_revision_from_filename`, [`lib/html/convert.py`](lib/html/convert.py).
 
 ---
 
@@ -133,7 +133,7 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 
 **Per generator**
 
-- **bikeshed:** Remove `div[data-fill-with]`, `h1.p-name`, `h2#profile-and-date`.
+- **bikeshed:** Remove `div[data-fill-with]` (except `abstract`), `h1.p-name`, `h2#profile-and-date`. The `abstract` container is preserved because Bikeshed wraps the abstract heading and body text in `<div data-fill-with="abstract">`; removing it deletes the paper's abstract from the output.
 - **hand-written:** Remove `<address>` and `table.header`.
 - **wg21:** Remove `div.wg21-head`, `div.toc`.
 
@@ -147,7 +147,7 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 
 ### Unknown generator prompts filter
 
-- If generator is **unknown** but metadata dict is **non-empty**, drop problems whose text contains **"Unrecognized"** so a usable generic extraction does not noise the operator ([`convert_html`](lib/html/__init__.py)).
+- If generator is **unknown** but metadata dict is **non-empty**, drop problems whose text contains **"Unrecognized"** so a usable generic extraction does not noise the operator ([`convert_html`](lib/html/convert.py)).
 
 **Sources:** [`lib/html/__init__.py`](lib/html/__init__.py).
 
@@ -184,8 +184,7 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 ### Headings
 
 - Map `h1` through `h6` to ATX Markdown.
-- Inline assembly skips elements whose class is **`header-section-number`**, **`secno`**, or **`self-link`**.
-- Strip leading dotted-decimal section numbers via [`SECTION_NUM_PREFIX_RE`](lib/__init__.py).
+- Inline assembly skips elements whose class is **`self-link`** (UI chrome). Section numbering spans (`header-section-number`, `secno`) are preserved so section numbers appear in the output.
 - Strip a wrapping `**...**` around the whole heading text when present.
 - Collapse internal whitespace newlines to spaces ([`_render_heading`](lib/html/render.py)).
 
@@ -268,6 +267,7 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 
 **Custom blocks**
 
+- **`abstract-block`** renders as `## Abstract` heading followed by child content. The CSS pseudo-element (`abstract-block::before`) that provides the visual heading in browsers is invisible to BeautifulSoup, so the handler synthesizes it ([`_render_element`](lib/html/render.py)).
 - **`example-block`**, **`note-block`**, **`bug-block`** render as blockquotes wrapping child content ([`_render_element`](lib/html/render.py)).
 
 **Sources:** `_render_div`, `_render_element`, [`lib/html/render.py`](lib/html/render.py).
@@ -313,7 +313,7 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 
 ### Title fallback from body
 
-- If metadata exists but **title** is missing, take first **`## ...`** line from rendered body Markdown ([`convert_html`](lib/html/__init__.py)).
+- If metadata exists but **title** is missing, take first **`## ...`** line from rendered body Markdown ([`convert_html`](lib/html/convert.py)).
 
 **Sources:** [`lib/html/__init__.py`](lib/html/__init__.py).
 
@@ -321,7 +321,7 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 
 ### Assemble front matter and body
 
-- If metadata exists, prepend `format_front_matter` output ([`convert_html`](lib/html/__init__.py)).
+- If metadata exists, prepend `format_front_matter` output ([`convert_html`](lib/html/convert.py)).
 - Strip a leading standalone `---` line from body text repeatedly so embedded YAML-looking lines do not duplicate front matter.
 
 **Sources:** [`lib/html/__init__.py`](lib/html/__init__.py), [`lib/__init__.py`](lib/__init__.py).
@@ -333,7 +333,8 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 - **`dedup_paragraphs`** on full markdown string.
 - **`strip_leading_h1`** on body when front matter present (slice after first closing front matter newline). Uses prefix matching: a truncated H1 is still stripped if the full title starts with the H1 text after normalization.
 - **`strip_redundant_body_meta`** removes redundant metadata lines or tables.
-- **`strip_leading_h1`** again after redundant strip ([`convert_html`](lib/html/__init__.py)).
+- **`strip_orphan_toc_list`** removes bullet-list TOCs orphaned between front matter and first heading when at least 3 bullets exist and the majority match actual document headings ([`shared.py`](lib/shared.py)).
+- **`strip_leading_h1`** again after redundant strip ([`convert_html`](lib/html/convert.py)).
 
 **Why:** Same finishing sequence as PDF emit keeps HTML and PDF outputs consistent ([`lib/pdf/emit.py`](lib/pdf/emit.py)).
 
@@ -343,7 +344,7 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 
 ### Prompts
 
-- Non-empty **problems** list becomes one prompt per entry with fixed framing text ([`convert_html`](lib/html/__init__.py)).
+- Non-empty **problems** list becomes one prompt per entry with fixed framing text ([`convert_html`](lib/html/convert.py)).
 
 **Sources:** [`lib/html/__init__.py`](lib/html/__init__.py).
 
@@ -353,7 +354,8 @@ Unknown generator prompt suppression when generic metadata still succeeded; loss
 
 | Module | Topics |
 |--------|--------|
-| [`lib/html/__init__.py`](lib/html/__init__.py) | [Filename fallbacks](#filename-fallbacks), [Unknown filter](#unknown-generator-prompts-filter), [Title fallback](#title-fallback-from-body), [Assemble](#assemble-front-matter-and-body), [Post-pass](#post-pass-cleanup), [Prompts](#prompts) |
+| [`lib/html/__init__.py`](lib/html/__init__.py) | Package re-exports |
+| [`lib/html/convert.py`](lib/html/convert.py) | [Filename fallbacks](#filename-fallbacks), [Unknown filter](#unknown-generator-prompts-filter), [Title fallback](#title-fallback-from-body), [Assemble](#assemble-front-matter-and-body), [Post-pass](#post-pass-cleanup), [Prompts](#prompts) |
 | [`lib/html/extract.py`](lib/html/extract.py) | [Parse](#parse), [Generator detection](#generator-detection), [Metadata extraction](#metadata-extraction), [Boilerplate stripping](#boilerplate-stripping) |
 | [`lib/html/render.py`](lib/html/render.py) | [DOM repair](#dom-repair-before-render), [Render traversal](#render-traversal), [Headings](#headings), [Paragraphs](#paragraphs-and-code-shaped-paragraphs), [Fenced code](#fenced-code-blocks), [Tables](#tables), [Lists](#lists), [Divs](#divs-wording-and-notes), [Blockquotes and DL](#blockquotes-and-definition-lists), [Inline](#inline-markup-and-links), [Horizontal rule](#horizontal-rule) |
 | [`lib/__init__.py`](lib/__init__.py) | Shared helpers, link schemes, front matter formatting |

@@ -11,11 +11,14 @@ from .types import (
     Y_TOLERANCE, REPEATING_THRESHOLD, EDGE_ITEMS_PER_PAGE,
     TERMINAL_PUNCTUATION,
     PAGE_NUM_RE, COMPOUND_PREFIXES,
-    compute_bbox,
 )
 from .wg21 import _LABEL_RE as _WG21_LABEL_RE
 
 _log = logging.getLogger(__name__)
+
+_EDGE_BLOCK_MAX_HEIGHT = 30.0
+_EDGE_BLOCK_TOP_MAX_Y = 60.0
+_EDGE_BLOCK_BOTTOM_MIN_Y = 700.0
 
 
 def _y_bucket(bbox: tuple[float, float, float, float]) -> float:
@@ -30,8 +33,16 @@ def get_edge_items(blocks: list[Block], page_num: int) -> list[PageEdgeItem]:
     Deduplicates by (text, rounded y-position) to avoid counting the
     same visual item twice when blocks overlap edge regions.
     """
+    _COLUMNAR_X_GAP = 50.0
+
     items = []
     for block in blocks:
+        # Skip columnar blocks: 2+ lines at widely separated x-positions
+        # are table column headers, not repeating page headers/footers.
+        if len(block.lines) >= 2:
+            x0s = [ln.bbox[0] for ln in block.lines if ln.text.strip()]
+            if x0s and max(x0s) - min(x0s) > _COLUMNAR_X_GAP:
+                continue
         for line in block.lines:
             text = line.text.strip()
             if not text:
@@ -154,6 +165,10 @@ def strip_repeating(blocks: list[Block], repeating: set[tuple[float, str]],
     result = []
     for block in blocks:
         kept_lines = []
+        # Track y-buckets of stripped lines so co-located sibling lines
+        # (variable header text like "3 Motivation" next to repeating
+        # "P3948R1") are also stripped.
+        stripped_y_buckets: set[float] = set()
         for line in block.lines:
             text = line.text.strip()
             if not text:
@@ -169,6 +184,7 @@ def strip_repeating(blocks: list[Block], repeating: set[tuple[float, str]],
                 if block.page_num == 0 and line.bbox[1] < _page0_meta_y:
                     kept_lines.append(line)
                     continue
+                stripped_y_buckets.add(_y_bucket(line.bbox))
                 continue
 
             kept_spans = []
@@ -185,10 +201,27 @@ def strip_repeating(blocks: list[Block], repeating: set[tuple[float, str]],
                 kept_spans.append(span)
 
             if not any(sp.text.strip() for sp in kept_spans):
+                stripped_y_buckets.add(_y_bucket(line.bbox))
                 continue
 
             kept_lines.append(
                 replace(line, spans=kept_spans) if stripped_any else line)
+
+        # Second pass: strip lines co-located with stripped header lines.
+        # Only applies to small blocks at page edges (true header/footer
+        # assemblies). Body blocks in the middle of the page are never
+        # affected, even if they share a y-bucket with a stripped line.
+        if stripped_y_buckets and kept_lines:
+            blk_height = block.bbox[3] - block.bbox[1]
+            blk_top = block.bbox[1]
+            is_edge_block = (blk_height < _EDGE_BLOCK_MAX_HEIGHT
+                             and (blk_top < _EDGE_BLOCK_TOP_MAX_Y
+                                  or blk_top > _EDGE_BLOCK_BOTTOM_MIN_Y))
+            if is_edge_block:
+                kept_lines = [
+                    ln for ln in kept_lines
+                    if _y_bucket(ln.bbox) not in stripped_y_buckets
+                ]
 
         if kept_lines:
             result.append(replace(block, lines=kept_lines))
@@ -200,25 +233,39 @@ def _join_cross_page(blocks: list[Block]) -> list[Block]:
 
     When the last block on page N ends without terminal punctuation
     and the first block on page N+1 starts with a lowercase letter,
-    merge them into one block.
+    merge them into one block.  At most ONE block per page boundary
+    is merged; further blocks from the same source page are kept
+    separate so that ``compare_extractions`` (which groups by
+    ``page_num``) still sees them on their original page.
     """
     if len(blocks) < 2:
         return blocks
 
     result = [replace(blocks[0], lines=list(blocks[0].lines))]
+    merged_boundary: int | None = None
 
     for block in blocks[1:]:
         prev = result[-1]
         prev_text = prev.text.rstrip()
         cur_text = block.text.lstrip()
 
-        if (prev.page_num != block.page_num
+        cross_page = prev.page_num != block.page_num
+        if cross_page and block.page_num != merged_boundary:
+            merged_boundary = None
+
+        if (cross_page
+                and merged_boundary is None
                 and prev_text
                 and cur_text
+                and not PAGE_NUM_RE.match(prev_text)
                 and prev_text[-1] not in TERMINAL_PUNCTUATION
                 and cur_text[0].islower()):
             prev.lines.extend(block.lines)
-            prev.bbox = compute_bbox([ln.bbox for ln in prev.lines])
+            # Keep the original page's bbox: page coordinates are
+            # independent per page, so mixing y-values from page N+1
+            # into a page N bbox produces a nonsensical y_mid that
+            # breaks _column_aware_sort ordering.
+            merged_boundary = block.page_num
         else:
             result.append(replace(block, lines=list(block.lines)))
 
@@ -283,15 +330,27 @@ def find_hidden_regions(page, body_fonts: set[str] | None = None,
     return hidden_bboxes
 
 
-def strip_hidden_blocks(blocks: list[Block],
-                        hidden_bboxes: set[tuple[float, float, float, float]]) -> list[Block]:
-    """Remove blocks whose text is entirely within hidden regions."""
-    if not hidden_bboxes:
+def strip_hidden_blocks(
+    blocks: list[Block],
+    hidden_by_page: dict[int, set[tuple[float, float, float, float]]],
+) -> list[Block]:
+    """Remove blocks whose text is entirely within hidden regions.
+
+    *hidden_by_page* maps page numbers to sets of bboxes so that
+    hidden regions on one page cannot accidentally match visible
+    text on a different page that happens to share the same
+    coordinates.
+    """
+    if not hidden_by_page:
         return blocks
 
-    import fitz
+    import fitz  # lazy: PyMuPDF not required for HTML-only paths
     result = []
     for block in blocks:
+        page_hidden = hidden_by_page.get(block.page_num)
+        if not page_hidden:
+            result.append(block)
+            continue
         has_visible = False
         for line in block.lines:
             for span in line.spans:
@@ -300,7 +359,7 @@ def strip_hidden_blocks(blocks: list[Block],
                 span_rect = fitz.Rect(span.bbox)
                 is_hidden = any(
                     fitz.Rect(hb).intersects(span_rect)
-                    for hb in hidden_bboxes
+                    for hb in page_hidden
                 )
                 if not is_hidden:
                     has_visible = True

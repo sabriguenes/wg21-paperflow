@@ -71,6 +71,11 @@ class Line:
         text_spans = [s for s in self.spans if s.text.strip()]
         return bool(text_spans) and all(s.bold for s in text_spans)
 
+    @property
+    def is_monospace(self) -> bool:
+        text_spans = [s for s in self.spans if s.text.strip()]
+        return bool(text_spans) and all(s.monospace for s in text_spans)
+
 
 @dataclass
 class Block:
@@ -95,7 +100,6 @@ class Block:
 class SectionKind(Enum):
     """The structural role of a document section."""
     TITLE = "title"
-    METADATA = "metadata"
     HEADING = "heading"
     PARAGRAPH = "paragraph"
     LIST = "list"
@@ -106,6 +110,47 @@ class SectionKind(Enum):
     WORDING = "wording"
     WORDING_ADD = "wording-add"
     WORDING_REMOVE = "wording-remove"
+    FIGURE = "figure"
+
+
+@dataclass
+class FigureNode:
+    """A node (box) in a detected diagram graph."""
+    text: str
+    bbox: tuple[float, float, float, float]
+
+
+@dataclass
+class FigureEdge:
+    """A directed edge between two nodes in a diagram graph."""
+    source_idx: int
+    target_idx: int
+    bidirectional: bool = False
+    dashed: bool = False
+    label: str = ""
+    y_position: float = 0.0
+
+
+@dataclass
+class FigureGraph:
+    """Directed graph extracted from a vector-graphic diagram."""
+    nodes: list[FigureNode] = field(default_factory=list)
+    edges: list[FigureEdge] = field(default_factory=list)
+
+    @property
+    def is_linear(self) -> bool:
+        """True when the graph forms a single chain with no branches or cycles."""
+        if not self.edges:
+            return False
+        in_count = [0] * len(self.nodes)
+        out_count = [0] * len(self.nodes)
+        for e in self.edges:
+            out_count[e.source_idx] += 1
+            in_count[e.target_idx] += 1
+            if e.bidirectional:
+                out_count[e.target_idx] += 1
+                in_count[e.source_idx] += 1
+        return all(i <= 1 and o <= 1 for i, o in zip(in_count, out_count))
 
 
 @dataclass
@@ -124,13 +169,20 @@ class Section:
     columns: list[list[list[Span]]] = field(default_factory=list)
     fence_lang: str = "cpp"
     indent_level: int = 0
-    # Set only when kind == SectionKind.IMAGE. The image extractor in
-    # images.py is independent of the dual text-extraction paths (it
-    # reads the page's resource dictionary, not the rendered glyphs),
-    # so the canonical alt-text source is image_ref.suggested_alt, not
-    # Section.text. Consumers that legitimately want the alt content
-    # must route through image_ref, not text.
+    table_kind: str | None = None
+    table_strategy: str | None = None
+    table_source: str | None = None
+    table_continuation: bool = False
+    figure_graph: FigureGraph | None = None
     image_ref: "ExtractedImage | None" = None
+
+
+@dataclass
+class FigureRegion:
+    """A detected vector-graphic figure region on a page."""
+    page_num: int
+    bbox: tuple[float, float, float, float]
+    graph: FigureGraph | None = None
 
 
 @dataclass
@@ -229,11 +281,27 @@ KNOWN_SECTIONS = frozenset({
     "impact on the standard",
     "proposed changes",
     "poll results",
+    "polls",
     "changelog",
     "appendix",
     "bibliography",
     "summary",
     "conclusion",
+    "history",
+    "related work",
+    "prior art",
+    "proposal",
+    "discussion",
+    "rationale",
+    "open questions",
+    "straw polls",
+    "thanks",
+    "alternatives considered",
+    "alternatives",
+    "comparison",
+    "examples",
+    "faq",
+    "questions",
 })
 
 TERMINAL_PUNCTUATION = frozenset(".?!:")

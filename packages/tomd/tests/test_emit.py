@@ -111,6 +111,7 @@ def test_front_matter_canonical_order():
     assert keys.index("date") < keys.index("intent") < keys.index("audience")
     assert 'title: "Canonical Test"' in result
     assert "document: P9999R0" in result
+    assert "revision" not in result
 
 
 def test_front_matter_intent_position():

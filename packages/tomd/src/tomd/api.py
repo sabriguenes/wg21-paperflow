@@ -35,10 +35,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tomd.lib.metadata_yaml.format import format_front_matter, sanitize_metadata
 from tomd.errors import UnsupportedSourceFormatError
 from tomd.lib import (
-    format_front_matter,
-    sanitize_metadata,
     strip_freeform_metadata_lines,
     strip_leading_h1,
     EMAIL_RE,
@@ -507,7 +506,7 @@ def convert_paper_full(
 
     md = _normalize_front_matter(raw.md, meta)
     md = _strip_body_metadata_text(md)
-    md = strip_freeform_metadata_lines(md)
+    md = strip_freeform_metadata_lines(md, metadata=meta)
 
     # Re-run H1 stripping: leaked metadata before the H1 may have
     # blocked strip_leading_h1 in the emit layer.

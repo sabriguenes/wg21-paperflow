@@ -15,7 +15,7 @@ The converter handles six generator families (mpark/wg21, Bikeshed, hand-written
 | 3 | Extract metadata (title, document, date, audience, reply-to) | `extract.py` |
 | 4 | Strip boilerplate (CSS, scripts, TOC, generator chrome) | `extract.py` |
 | 5 | Walk DOM, render to Markdown | `render.py` |
-| 6 | Assemble front matter + body, ASCII-encode, generate prompts | `__init__.py` |
+| 6 | Assemble front matter + body, ASCII-encode, generate prompts | `convert.py` |
 
 ## Techniques by Layer
 
@@ -85,8 +85,7 @@ The converter handles six generator families (mpark/wg21, Bikeshed, hand-written
 **T9. Heading rendering**
 - `render.py:_render_heading`
 - Maps `<h1>`-`<h6>` to ATX headers (`#` - `######`)
-- Strips WG21 chrome: `span.header-section-number`, `span.secno`, `a.self-link`
-- Strips leading dotted-decimal section numbers via regex
+- Skips `a.self-link` (UI chrome). Section numbering spans (`span.header-section-number`, `span.secno`) are preserved so numbers appear in output.
 - Strips wrapping `**...**` bold markers (ATX prefix conveys weight)
 
 **T10. Paragraph rendering**
@@ -112,6 +111,7 @@ The converter handles six generator families (mpark/wg21, Bikeshed, hand-written
 - Pipe characters in cells escaped as `\|`
 - Short rows padded with empty cells
 - Paths 1-3 are lossy (table structure cannot be represented in CommonMark). Each emits a `<!-- tomd:lossy-table -->` HTML comment marker before the table. The QA scorer (`qa.py`) counts these markers as `lossy_table_count` to flag papers for manual review.
+- Note: HTML tables use DOM-structure-based rendering dispatch (above). PDF tables use a separate classification system with 5 table kinds and 5 detection passes; see `lib/pdf/table.py` module docstring.
 
 **T13. List rendering**
 - `render.py:_render_list`
@@ -144,13 +144,13 @@ The converter handles six generator families (mpark/wg21, Bikeshed, hand-written
 ### Layer 5: Output (2 techniques)
 
 **T17. Front matter assembly**
-- `__init__.py:convert_html`
+- `convert.py:convert_html`
 - Fixed field order: title, document, date, audience, reply-to
 - Title double-quoted. Reply-to as YAML list of double-quoted strings.
 - Extra keys appended after the standard order.
 
 **T18. Output encoding**
-- `__init__.py:convert_html`
+- `convert.py:convert_html`
 - Output is UTF-8 Unicode — non-ASCII characters are emitted directly
 - `ascii_escape` in `lib/__init__.py` is kept for external use but is not called in the pipeline
 
@@ -158,10 +158,11 @@ The converter handles six generator families (mpark/wg21, Bikeshed, hand-written
 
 | Module | Responsibility | Public API | Lines |
 |--------|---------------|------------|------:|
-| `__init__.py` | Pipeline orchestration | `convert_html` | 74 |
-| `extract.py` | Parsing, generator detection, metadata, boilerplate | (internal to `convert_html`) | 248 |
-| `render.py` | DOM-to-Markdown traversal | (internal to `convert_html`) | 341 |
-| **Total** | | **1 public function** | **663** |
+| `__init__.py` | Pipeline orchestration | `convert_html` | 3 |
+| `convert.py` | HTML-to-Markdown conversion, filename fallbacks | `convert_html` | ~109 |
+| `extract.py` | Parsing, generator detection, metadata, boilerplate | (internal to `convert_html`) | ~942 |
+| `render.py` | DOM-to-Markdown traversal | (internal to `convert_html`) | ~664 |
+| **Total** | | **1 public function** | **~1718** |
 
 ## Shared Dependencies
 

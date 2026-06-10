@@ -25,6 +25,15 @@ _BIKESHED_AUDIENCE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_AT_SPLIT_RE = re.compile(r"\s+at\s+", re.IGNORECASE)
+_DOT_WORD_RE = re.compile(r"\s+dot\s+", re.IGNORECASE)
+
+_PRE_FIELD_RE = re.compile(
+    r"^(Document\s*#?|Date|Intent|Project|Title|Reply[- ]?to|Authors?|"
+    r"Editors?|Target|Audience|Subgroup)\s*:\s*(.+)",
+    re.IGNORECASE,
+)
+
 
 def _extract_mailto_email(href: str) -> str:
     """Normalize both ``mailto:`` and the invalid ``mailto://`` to a bare address."""
@@ -101,12 +110,10 @@ def _extract_plaintext_authors(container: Tag) -> list[str]:
                 # may only capture from the last word before "at".
                 # Fall back to naive split-and-replace for the full
                 # bracketed text.
-                _AT_SPLIT = re.compile(r"\s+at\s+", re.IGNORECASE)
-                parts = _AT_SPLIT.split(bracketed, maxsplit=1)
+                parts = _AT_SPLIT_RE.split(bracketed, maxsplit=1)
                 if len(parts) == 2:
-                    _DOT_WORD = re.compile(r"\s+dot\s+", re.IGNORECASE)
-                    local = _DOT_WORD.sub(".", parts[0].strip())
-                    domain = _DOT_WORD.sub(".", parts[1].strip())
+                    local = _DOT_WORD_RE.sub(".", parts[0].strip())
+                    domain = _DOT_WORD_RE.sub(".", parts[1].strip())
                     naive = f"{local}@{domain}"
                     if EMAIL_RE.fullmatch(naive):
                         deob_email = naive
@@ -726,11 +733,6 @@ def _extract_generic_metadata(soup: BeautifulSoup) -> dict:
 
     # Pre-formatted metadata: <pre><code>Key: Value\n...</code></pre>
     # Used by some hand-authored papers (e.g. P4139R0).
-    _PRE_FIELD_RE = re.compile(
-        r"^(Document\s*#?|Date|Intent|Project|Title|Reply[- ]?to|Authors?|"
-        r"Editors?|Target|Audience|Subgroup)\s*:\s*(.+)",
-        re.IGNORECASE,
-    )
     for pre in soup.find_all("pre"):
         code = pre.find("code")
         text = (code or pre).get_text()
@@ -1059,7 +1061,8 @@ def strip_boilerplate(soup: BeautifulSoup, generator: str) -> list[str]:
 
     if generator == "bikeshed":
         for div in soup.find_all("div", {"data-fill-with": True}):
-            div.decompose()
+            if div["data-fill-with"] != "abstract":
+                div.decompose()
         for h1 in soup.find_all("h1", class_="p-name"):
             h1.decompose()
         for h2 in soup.find_all("h2", id="profile-and-date"):

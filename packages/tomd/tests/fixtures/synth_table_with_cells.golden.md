@@ -4,8 +4,6 @@ reply-to:
 
 ---
 
-## Synthetic Table Fixture
-
 This synthetic fixture exercises the structural-overlap filter: the comparison table below is rendered with per-cell background rectangles and no inter-column spanning rules, the canonical false-positive shape for vector extraction. Each column would naively cluster as its own vector image; the filter must drop them when the table detector identifies the region as a TABLE section.
 
 | Platform | Mode | Time (ms) | Score |
