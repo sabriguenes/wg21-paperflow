@@ -178,12 +178,195 @@ def _fix_misnested_table_cells(soup: BeautifulSoup) -> None:
                         changed = True
 
 
+_EELIS_MARGIN_CLASS = "marginalizedparent"
+_EELIS_CHROME_DIV_CLASSES = (_EELIS_MARGIN_CLASS, "sourceLinkParent")
+
+
+_EELIS_WORDING_DIV_CLASSES = ["wording", "hana_wording"]
+_EELIS_HEADING_DEMOTION = 2
+
+
+def _remove_class_token(tag: Tag, token: str) -> None:
+    """Drop one class token, keeping co-occurring classes intact."""
+    classes = tag.get("class", [])
+    if token in classes:
+        classes.remove(token)
+    if not classes and "class" in tag.attrs:
+        del tag["class"]
+
+
+def _texpara_number_index(target: Tag) -> int:
+    """Index in ``target.contents`` where a folded paragraph number lands.
+
+    A texpara can start with block children (a table, a nested sub-para);
+    prepending the number there would strand it in its own wrapper when
+    _fix_misnested_blocks later promotes the block out. Anchor the number
+    before the first prose child instead: a non-empty text node, an inline
+    tag, or a ``div.sentence`` (still a div at fold time, renamed to span
+    later in this pass).
+    """
+    for i, child in enumerate(target.contents):
+        if isinstance(child, NavigableString):
+            if str(child).strip():
+                return i
+        elif isinstance(child, Tag):
+            if child.name not in _BLOCK_TAGS:
+                return i
+            if "sentence" in (child.get("class") or []):
+                return i
+    return 0
+
+
+def _normalize_eelis_wording(soup: BeautifulSoup) -> None:
+    """Normalize eel.is-style standardese markup into renderable structure.
+
+    Papers that paste wording from eel.is (or hana_wording derivatives) carry
+    a div-per-sentence structure with navigation chrome that the generic div
+    walk shreds into one paragraph per inline node. This pass rewrites that
+    markup in place:
+
+    - Headings inside ``div.wording``/``div.hana_wording`` demote by two
+      levels (h1 -> h3, capped at h6) so clause titles nest under the
+      paper's own section heading instead of colliding with the H1 title.
+    - ``span.texttt`` (TeX monospace, e.g. header names like ``<memory>``)
+      becomes ``<code>`` so the angle brackets survive as Markdown code
+      spans instead of leaking as raw HTML tags.
+    - ``span.codeblock`` (multi-line synopses) becomes ``<pre>`` with a
+      ``<code class="cpp">`` child so the code renders as a highlighted
+      fenced block instead of collapsing into prose.
+    - Paragraph numbers from ``a.marginalized`` fold inline as a text prefix
+      of their paragraph.
+    - Navigation chrome (``div.marginalizedparent`` paragraph-number/link
+      columns, ``div.sourceLinkParent`` GitHub ``#`` anchors) is dropped.
+      This also removes the ``a.itemDeclLink`` link glyphs inside table cells.
+    - ``div.sentence`` becomes ``<span>`` and ``div.texpara`` becomes ``<p>``
+      so each prose paragraph renders as one coherent line.
+    - The caption nodes of ``div.numberedTable`` ("Table 47 -- ...") wrap in
+      one ``<p>`` instead of fragmenting per inline node.
+
+    Gated on the presence of ``div.marginalizedparent``, which only this
+    markup family produces. Documents without it are left untouched. The
+    gate is document-wide on purpose: the renamed class names do not occur
+    outside this family in the corpus, and region-scoping would miss
+    wording fragments pasted outside a wording container.
+    """
+    margins = soup.find_all("div", class_=_EELIS_MARGIN_CLASS)
+    if not margins:
+        return
+
+    # Demote wording-internal headings below the paper's own section
+    # structure. The id-set guards against double demotion when
+    # div.hana_wording nests inside div.wording.
+    demoted: set[int] = set()
+    for wording in soup.find_all("div", class_=_EELIS_WORDING_DIV_CLASSES):
+        for heading in wording.find_all(_HEADING_TAGS):
+            if id(heading) in demoted:
+                continue
+            demoted.add(id(heading))
+            level = min(int(heading.name[1]) + _EELIS_HEADING_DEMOTION, 6)
+            heading.name = f"h{level}"
+
+    # Multi-line code synopses live in <span class='codeblock'> under
+    # div.texpara, sometimes inside anonymous <span> wrappers. Rename to
+    # <pre> with a code.cpp child so they render as highlighted fenced
+    # blocks; _fix_misnested_blocks later promotes them out of the
+    # paragraph that the texpara rename below creates.
+    for span in soup.find_all("span", class_="codeblock"):
+        if not span.get_text(strip=True) and span.find(True) is None:
+            continue
+        span.name = "pre"
+        _remove_class_token(span, "codeblock")
+        # _render_pre reads the code child via get_text(), which drops
+        # <br> elements; materialize them as newlines first.
+        for br in span.find_all("br"):
+            br.replace_with("\n")
+        code = soup.new_tag("code")
+        code["class"] = ["cpp"]
+        for child in list(span.children):
+            code.append(child.extract())
+        span.append(code)
+
+    # Skip texttt runs inside the renamed <pre> blocks (their text is
+    # already covered by the pre's code child) and texttt runs wrapping
+    # a <pre> (a <code> ancestor would backtick-flatten the fence; the
+    # span stays inline and the misnested-blocks repair promotes the
+    # pre out of it).
+    for span in soup.find_all("span", class_="texttt"):
+        if span.find_parent("pre") is not None or span.find("pre") is not None:
+            continue
+        span.name = "code"
+        _remove_class_token(span, "texttt")
+
+    # Fidelity guard, before the number fold: content trapped inside a
+    # chrome div (stray text, a misnested texpara) is rescued to siblings
+    # after the div, where the fold below can still find and number it.
+    for cls in _EELIS_CHROME_DIV_CLASSES:
+        for div in soup.find_all("div", class_=cls):
+            rescued = [
+                child for child in list(div.contents)
+                if (isinstance(child, Tag) and child.name != "a")
+                or (isinstance(child, NavigableString) and str(child).strip())
+            ]
+            for child in reversed(rescued):
+                div.insert_after(child.extract())
+
+    # Fold paragraph and list-item numbers ("1", "(1.1)") into the content
+    # they belong to. Prefer the sibling texpara (sibling-scoped on purpose:
+    # a margin must not number a texpara nested in a following table or
+    # sub-para, and a texpara takes at most one number). List items carry
+    # their text as bare siblings of the margin, so margins inside a
+    # content container (li, div.para) drop the number inline instead.
+    # Margins with neither target lose their number along with the chrome.
+    numbered: set[int] = set()
+    for margin in margins:
+        num_anchor = margin.find("a", class_="marginalized")
+        number = num_anchor.get_text(strip=True) if num_anchor else ""
+        if not number:
+            continue
+        parent = margin.parent
+        in_content_container = isinstance(parent, Tag) and (
+            parent.name == "li"
+            or "para" in (parent.get("class") or [])
+        )
+        target = margin.find_next_sibling("div", class_="texpara")
+        if target is not None and id(target) not in numbered:
+            numbered.add(id(target))
+            target.insert(_texpara_number_index(target), f"{number} ")
+        elif in_content_container:
+            # Padded on both sides: the margin can follow its content
+            # (number as trailing marker), and whitespace collapse swallows
+            # the extra space in the leading case.
+            margin.insert_after(f" {number} ")
+
+    for cls in _EELIS_CHROME_DIV_CLASSES:
+        for div in soup.find_all("div", class_=cls):
+            div.decompose()
+
+    for div in soup.find_all("div", class_="sentence"):
+        div.name = "span"
+    for div in soup.find_all("div", class_="texpara"):
+        div.name = "p"
+
+    for div in soup.find_all("div", class_="numberedTable"):
+        caption = soup.new_tag("p")
+        for node in list(div.children):
+            if isinstance(node, Tag) and node.name == "table":
+                break
+            caption.append(node.extract())
+        if caption.get_text(strip=True) or caption.find(True) is not None:
+            div.insert(0, caption)
+
+
 def render_body(soup: BeautifulSoup, generator: str) -> str:
     """Render the HTML body to Markdown.
 
     Warning: this function may mutate the soup tree (extracting nested
     list elements). Do not reuse the soup object after calling this.
     """
+    # Must run before _fix_misnested_blocks: the rename of div.texpara to
+    # <p> can leave block children (tables, nested divs) inside the new
+    # paragraph, which _fix_misnested_blocks then promotes to siblings.
+    _normalize_eelis_wording(soup)
     _fix_misnested_blocks(soup)
     _fix_misnested_list_items(soup)
     _fix_misnested_table_cells(soup)

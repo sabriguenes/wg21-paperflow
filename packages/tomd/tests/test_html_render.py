@@ -985,3 +985,339 @@ class TestMisnestedBlockCascade:
         assert "1. first item" in md
         assert "2. second item" in md
         assert "trailing text" in md
+
+
+# Empty margin div: trips the eel.is gate without contributing content.
+_MARGIN_GATE = "<div class='marginalizedparent'></div>"
+
+# Minimal eel.is-style paragraph: number column + source link + sentence div.
+_EELIS_PARA = (
+    "<div class='para' id='general-1'>"
+    "<div class='marginalizedparent'>"
+    "<a class='marginalized' href='#general-1'>1</a></div>"
+    "<div class='sourceLinkParent'>"
+    "<a class='sourceLink' href='http://github.com/x/y#L6'>#</a></div>"
+    "<div class='texpara'><div class='sentence'>"
+    "This Clause describes components for memory management"
+    "<a class='hidden_link' href='#general-1.sentence-1'>.</a>"
+    "</div></div>"
+    "</div>"
+)
+
+
+def _render_eelis(html: str) -> str:
+    """Parse and render an eel.is-style HTML fragment."""
+    return render_body(parse_html(html), "unknown")
+
+
+class TestEelisWording:
+    """eel.is-style standardese markup normalizes to coherent paragraphs."""
+
+    def test_para_renders_as_one_numbered_paragraph(self):
+        md = _render_eelis(_EELIS_PARA)
+        assert (
+            "1 This Clause describes components for memory management."
+            in md
+        )
+
+    def test_source_link_glyph_suppressed(self):
+        md = _render_eelis(_EELIS_PARA)
+        assert "#" not in md
+
+    def test_sentence_with_inline_span_does_not_fragment(self):
+        md = _render_eelis(
+            "<div class='para'><div class='marginalizedparent'>"
+            "<a class='marginalized' href='#g-2'>2</a></div>"
+            "<div class='texpara'><div class='sentence'>"
+            "smart pointers, <span class='added'>pointer tagging, </span>"
+            "memory resources, as summarized in Table <a href='#tab'>47</a>"
+            "<a class='hidden_link' href='#s'>.</a>"
+            "</div></div></div>"
+        )
+        assert (
+            "2 smart pointers, pointer tagging, memory resources, "
+            "as summarized in Table 47." in md
+        )
+
+    def test_texttt_becomes_code_span(self):
+        md = _render_eelis(
+            _MARGIN_GATE
+            + "<p><span class='texttt'>"
+            "<span class='anglebracket'>&lt;</span>memory"
+            "<span class='anglebracket'>&gt;</span></span></p>"
+        )
+        assert "`<memory>`" in md
+
+    def test_texttt_keeps_cooccurring_classes(self):
+        # Only the matched class token is removed; other tokens stay on
+        # the renamed element.
+        md = _render_eelis(
+            _MARGIN_GATE
+            + "<p><span class='texttt special'>free</span></p>"
+        )
+        assert "`free`" in md
+
+    def test_table_cell_link_glyph_suppressed_and_texttt_coded(self):
+        md = _render_eelis(
+            "<table><tr><td>"
+            "<div class='marginalizedparent'>"
+            "<a class='itemDeclLink' href='#r1'>\U0001f517</a></div>"
+            "<div class='texpara'><div class='sentence'>"
+            "<a href='#memory'>[memory]</a></div></div>"
+            "</td><td><div class='texpara'><div class='sentence'>"
+            "<span class='texttt'><span class='anglebracket'>&lt;</span>"
+            "cstdlib<span class='anglebracket'>&gt;</span></span>"
+            "</div></div></td></tr></table>"
+        )
+        assert "\U0001f517" not in md
+        assert "| [memory] | `<cstdlib>` |" in md
+
+    def test_numbered_table_caption_is_one_paragraph(self):
+        md = _render_eelis(
+            _MARGIN_GATE
+            + "<div class='numberedTable' id='tab:x'>"
+            "Table <a href='#tab:x'>47</a> &mdash; Summary"
+            "&emsp;<a href='./tab:x'>[tab:x]</a><br>"
+            "<table><tr><th>A</th></tr><tr><td>b</td></tr></table>"
+            "</div>"
+        )
+        assert "Table 47 \u2014 Summary [tab:x]" in md
+        assert "| A |" in md
+
+    def test_table_inside_texpara_survives_as_pipe_table(self):
+        # Regression: renaming texpara to <p> must not let _inline_text
+        # flatten a block table that lives inside it.
+        md = _render_eelis(
+            _MARGIN_GATE
+            + "<div class='texpara'>"
+            "<table><tr><th>H</th></tr><tr><td>v</td></tr></table>"
+            "</div>"
+        )
+        assert "| H |" in md
+        assert "| v |" in md
+
+    def test_gate_document_without_marginalizedparent_untouched(self):
+        md = _render_eelis(
+            "<p><span class='texttt'>&lt;memory&gt;</span></p>"
+            "<div class='para'><div class='texpara'>"
+            "<div class='sentence'>One</div><div class='sentence'>Two</div>"
+            "</div></div>"
+        )
+        assert "`" not in md
+
+    def test_codeblock_span_becomes_cpp_fenced_block(self):
+        md = _render_eelis(
+            _MARGIN_GATE
+            + "<div class='texpara'><span><span class='codeblock'>"
+            "<span class='keyword'>namespace</span> std {\n"
+            "  <span class='keyword'>class</span> exception;\n"
+            "}</span></span></div>"
+        )
+        assert "```cpp\nnamespace std {\n  class exception;\n}\n```" in md
+
+    def test_texttt_inside_codeblock_not_collapsed_to_code_fragment(self):
+        # The codeblock's content moves wholesale into one code.cpp child;
+        # texttt spans inside it must not become competing <code> elements
+        # or the synopsis shrinks to a single fragment.
+        md = _render_eelis(
+            _MARGIN_GATE
+            + "<div class='texpara'><span class='codeblock'>"
+            "using exception_ptr = <span class='texttt'>unspecified</span>;\n"
+            "void rethrow_exception(exception_ptr p);</span></div>"
+        )
+        assert "using exception_ptr = unspecified;" in md
+        assert "void rethrow_exception(exception_ptr p);" in md
+
+    def test_block_list_inside_sentence_survives(self):
+        # Cascade repair: <ol> sits two inline levels deep
+        # (p <- span.sentence <- ol) after the renames and must still be
+        # promoted out instead of being flattened to prose.
+        md = _render_eelis(
+            "<div class='para'><div class='marginalizedparent'>"
+            "<a class='marginalized' href='#g-1'>1</a></div>"
+            "<div class='texpara'><div class='sentence'>"
+            "does not find any"
+            "<ol><li>declaration of a class member, or</li>"
+            "<li>function declaration</li></ol>"
+            "then lookup proceeds"
+            "</div></div></div>"
+        )
+        assert "1 does not find any" in md
+        assert "1. declaration of a class member, or" in md
+        assert "then lookup proceeds" in md
+
+    def test_para_without_margin_child_gets_no_number_prefix(self):
+        # A top-level margin (outside li / div.para) loses its number with
+        # the chrome; no phantom number-only paragraph appears.
+        md = _render_eelis(
+            "<div class='marginalizedparent'>"
+            "<a class='marginalized' href='#g-1'>1</a></div>"
+            "<div class='para'><div class='texpara'>"
+            "<div class='sentence'>Standalone text</div>"
+            "</div></div>"
+        )
+        assert "Standalone text" in md
+        assert "1 Standalone text" not in md
+        assert not any(
+            line.strip() == "1" for line in md.splitlines()
+        )
+
+    def test_list_item_sub_number_folds_inline(self):
+        # Real eel.is shape (p4167r0): the li text is a bare sibling of
+        # the margin div, not wrapped in a texpara.
+        md = _render_eelis(
+            "<div class='para'><div class='marginalizedparent'>"
+            "<a class='marginalized' href='#g-1'>1</a></div>"
+            "<div class='texpara'><div class='sentence'>does not find any"
+            "<ul class='itemize'>"
+            "<li id='1.1'><div class='marginalizedparent'>"
+            "<a class='marginalized' href='#1.1'>(1.1)</a></div>"
+            "declaration of a class member, or</li>"
+            "</ul></div></div></div>"
+        )
+        assert "(1.1) declaration of a class member, or" in md
+
+    def test_margin_does_not_number_texpara_inside_following_table(self):
+        # The fold is sibling-scoped: a paragraph number must not land in
+        # a texpara nested inside a table that precedes the body text.
+        md = _render_eelis(
+            "<div class='para'><div class='marginalizedparent'>"
+            "<a class='marginalized'>3</a></div>"
+            "<table><tr><td><div class='texpara'>"
+            "<div class='sentence'>cell</div></div></td></tr></table>"
+            "<div class='texpara'><div class='sentence'>Body text</div>"
+            "</div></div>"
+        )
+        assert "3 Body text" in md
+        assert "3 cell" not in md
+
+    def test_double_margin_same_texpara_keeps_numbers_in_order(self):
+        # Two numbered margins before one texpara (split sub-paragraph):
+        # the texpara takes the first number once, the second falls back
+        # inline instead of producing a reversed "2 1 text" prefix.
+        md = _render_eelis(
+            "<div class='para'>"
+            "<div class='marginalizedparent'>"
+            "<a class='marginalized'>1</a></div>"
+            "<div class='marginalizedparent'>"
+            "<a class='marginalized'>2</a></div>"
+            "<div class='texpara'><div class='sentence'>text</div></div>"
+            "</div>"
+        )
+        assert "1 text" in md
+        assert "2 1 text" not in md
+        assert "1 2 text" not in md
+
+    def test_wording_headings_demote_two_levels(self):
+        md = _render_eelis(
+            "<div class='wording'>"
+            + _MARGIN_GATE
+            + "<h1>20 Memory management library <span>[mem]</span></h1>"
+            "<h2>20.1 General <span>[mem.general]</span></h2>"
+            "<h5>Deep heading</h5>"
+            "<div class='texpara'><div class='sentence'>Body</div></div>"
+            "</div>"
+        )
+        assert "### 20 Memory management library [mem]" in md
+        assert "#### 20.1 General [mem.general]" in md
+        assert "###### Deep heading" in md
+        assert "####### " not in md
+
+    def test_heading_outside_wording_div_not_demoted(self):
+        md = _render_eelis(
+            _MARGIN_GATE
+            + "<h2>Proposed changes to wording</h2>"
+            "<div class='wording'><h1>Clause</h1></div>"
+        )
+        assert "## Proposed changes to wording" in md
+        assert "### Clause" in md
+
+    def test_nested_hana_wording_heading_demotes_once(self):
+        # div.hana_wording inside div.wording: the heading matches both
+        # containers but must demote only once (h2 -> h4, not h6).
+        md = _render_eelis(
+            "<div class='wording'>"
+            + _MARGIN_GATE
+            + "<div class='hana_wording'><h2>Sub clause</h2></div>"
+            "</div>"
+        )
+        assert "#### Sub clause" in md
+
+    def test_chrome_div_rescues_non_anchor_content(self):
+        # Fidelity guard: a texpara trapped inside a chrome div is rescued
+        # to a following sibling before the chrome drops, where the number
+        # fold picks it up as a regular target.
+        md = _render_eelis(
+            "<div class='para'>"
+            "<div class='marginalizedparent'>"
+            "<a class='marginalized'>1</a>"
+            "<div class='texpara'><div class='sentence'>Trapped</div></div>"
+            "</div>"
+            "</div>"
+        )
+        assert "1 Trapped" in md
+
+    def test_chrome_div_rescues_bare_text(self):
+        # The rescue covers text nodes, not only elements: stray prose
+        # inside a chrome div must not vanish with the chrome.
+        md = _render_eelis(
+            "<div class='para'><div class='marginalizedparent'>"
+            "stray note <a class='marginalized'>1</a></div>"
+            "<div class='texpara'><div class='sentence'>Body</div></div>"
+            "</div>"
+        )
+        assert "stray note" in md
+        assert "1 Body" in md
+
+    def test_number_anchors_after_leading_block_in_texpara(self):
+        # A texpara that opens with a table: the number must attach to the
+        # prose sentence, not strand in its own wrapper before the table.
+        md = _render_eelis(
+            "<div class='para'><div class='marginalizedparent'>"
+            "<a class='marginalized'>3</a></div>"
+            "<div class='texpara'>"
+            "<table><tr><th>H</th></tr><tr><td>v</td></tr></table>"
+            "<div class='sentence'>Body text</div></div></div>"
+        )
+        assert "3 Body text" in md
+        assert not any(line.strip() == "3" for line in md.splitlines())
+
+    def test_codeblock_br_becomes_newline(self):
+        # _render_pre reads the fence content via get_text(), which drops
+        # <br>; the rename must materialize them as newlines first.
+        md = _render_eelis(
+            _MARGIN_GATE
+            + "<div class='texpara'><span class='codeblock'>"
+            "int a;<br>int b;</span></div>"
+        )
+        assert "int a;\nint b;" in md
+
+    def test_empty_codeblock_span_emits_no_fence(self):
+        md = _render_eelis(
+            _MARGIN_GATE
+            + "<div class='texpara'><span class='codeblock'></span>"
+            "<div class='sentence'>After</div></div>"
+        )
+        assert "```" not in md
+        assert "After" in md
+
+    def test_texttt_wrapping_codeblock_keeps_fence(self):
+        # The texttt rename must not produce a <code> ancestor around a
+        # renamed pre, or the fence flattens into nested backticks.
+        md = _render_eelis(
+            _MARGIN_GATE
+            + "<p><span class='texttt'>prefix <span class='codeblock'>"
+            "int a;\nint b;</span></span></p>"
+        )
+        assert "```cpp\nint a;\nint b;\n```" in md
+
+    def test_trailing_margin_number_keeps_separating_space(self):
+        # eel.is places margins first, but a margin after its content must
+        # not glue the number to the last word.
+        md = _render_eelis(
+            _MARGIN_GATE
+            + "<ul><li>declaration of a class member"
+            "<div class='marginalizedparent'>"
+            "<a class='marginalized'>(1.1)</a></div></li></ul>"
+        )
+        assert "declaration of a class member (1.1)" in md
