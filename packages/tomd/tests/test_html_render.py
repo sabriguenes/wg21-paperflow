@@ -967,3 +967,21 @@ class TestCodeParagraphDetection:
         html = "<p>   </p>"
         md = render_body(parse_html(html), "dascandy/fiets")
         assert md.strip() == "" or "```" not in md
+
+
+class TestMisnestedBlockCascade:
+    """Block elements nested multiple inline levels deep are promoted out."""
+
+    def test_block_two_inline_levels_deep_promotes_to_sibling(self):
+        # p <- span <- ol: the first repair promotes the ol into the span's
+        # wrapper context; the cascade must re-queue the enclosing p so the
+        # list reaches block level instead of flattening to prose.
+        md = render_body(parse_html(
+            "<p><span>intro text"
+            "<ol><li>first item</li><li>second item</li></ol>"
+            "trailing text</span></p>"
+        ), "unknown")
+        assert "intro text" in md
+        assert "1. first item" in md
+        assert "2. second item" in md
+        assert "trailing text" in md

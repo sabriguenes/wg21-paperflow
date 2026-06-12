@@ -49,7 +49,9 @@ def _fix_misnested_blocks(soup: BeautifulSoup) -> None:
 
     while worklist:
         parent_tag = worklist.popleft()
-        if parent_tag.parent is None:
+        # A container can be queued twice (two children promoting blocks
+        # into it); the second pop sees it already decomposed.
+        if parent_tag.decomposed or parent_tag.parent is None:
             continue
         if not _has_block_child(parent_tag):
             continue
@@ -72,8 +74,6 @@ def _fix_misnested_blocks(soup: BeautifulSoup) -> None:
             for node in collected_inline:
                 wrapper.append(node.extract())
             parent_tag.insert_before(wrapper)
-            if wrapper.name in _INLINE_PARENT_TAGS and _has_block_child(wrapper):
-                worklist.append(wrapper)
             collected_inline.clear()
 
         children = list(parent_tag.children)
@@ -84,7 +84,17 @@ def _fix_misnested_blocks(soup: BeautifulSoup) -> None:
             else:
                 collected_inline.append(child)
         _flush_inline()
+        container = parent_tag.parent
         parent_tag.decompose()
+        # The promoted blocks now live in the enclosing element. If that
+        # is itself an inline parent (block nested two or more inline
+        # levels deep), re-queue it so the repair cascades upward.
+        if (
+            isinstance(container, Tag)
+            and container.name in _INLINE_PARENT_TAGS
+            and _has_block_child(container)
+        ):
+            worklist.append(container)
 
 
 
