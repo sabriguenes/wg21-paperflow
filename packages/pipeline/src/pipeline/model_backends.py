@@ -61,6 +61,18 @@ latency. Lower it per-step via StepHooks.request_limit when the tool-call
 shape is known.
 """
 
+_RETRY_MAX_TOKENS_GROWTH = 1.5
+"""Factor by which to grow max_tokens when a raw-JSON attempt was truncated.
+
+A ``finish_reason == "length"`` means the model ran out of output budget
+mid-object (for thinking models the <think> reasoning shares this budget),
+so the failure is length, not comprehension. Re-issuing with a larger
+budget is the fix; nudging the model about "invalid JSON" is not. Capped at
+the context window as an approximate ceiling (the window is total input +
+output, so this slightly over-caps; fine for the current 1.5x / 2-attempt
+budget, which lands well under the window).
+"""
+
 
 def _clean_bpe(text: str) -> str:
     """Replace leaked BPE token markers with the characters they represent.
@@ -286,8 +298,9 @@ class VllmThinkingBackend(ModelBackend):
                 extra["extra_body"] = {"thinking_token_budget": thinking_budget}
 
         max_attempts = min(2, request_limit)
+        effective_max = max_tokens
         for attempt in range(max_attempts):
-            effective_max = max_tokens
+            finish_reason: str | None = None
 
             try:
                 if self._stream:
@@ -303,9 +316,15 @@ class VllmThinkingBackend(ModelBackend):
                     )
                     parts: list[str] = []
                     async for chunk in stream:
-                        delta = chunk.choices[0].delta.content
+                        if not chunk.choices:
+                            continue
+                        choice = chunk.choices[0]
+                        delta = choice.delta.content
                         if delta:
                             parts.append(delta)
+                        # finish_reason is non-null only on the terminal chunk;
+                        # keep the last truthy value seen.
+                        finish_reason = getattr(choice, "finish_reason", None) or finish_reason
                     raw_content = "".join(parts)
                 else:
                     response = await client.chat.completions.create(
@@ -318,6 +337,7 @@ class VllmThinkingBackend(ModelBackend):
                         **extra,
                     )
                     raw_content = response.choices[0].message.content or ""
+                    finish_reason = getattr(response.choices[0], "finish_reason", None)
             except (openai.NotFoundError, openai.APIConnectionError,
                     openai.InternalServerError, openai.APITimeoutError) as exc:
                 if attempt < max_attempts - 1:
@@ -354,6 +374,23 @@ class VllmThinkingBackend(ModelBackend):
                 ValidationError,
             ) as exc:
                 if attempt < max_attempts - 1:
+                    if finish_reason == "length":
+                        # Truncated, not malformed: the model ran out of output
+                        # budget mid-object. Grow the budget and re-issue the
+                        # original request. Do NOT append the (huge, truncated)
+                        # output plus an "invalid JSON" nudge: that bloats the
+                        # context into the same ceiling and misattributes the
+                        # cause, so the retry truncates again.
+                        effective_max = min(
+                            int(effective_max * _RETRY_MAX_TOKENS_GROWTH),
+                            self._max_context_window or effective_max,
+                        )
+                        logger.warning(
+                            "Raw JSON output truncated at max_tokens (attempt %d), "
+                            "retrying with max_tokens=%d: %s",
+                            attempt + 1, effective_max, exc,
+                        )
+                        continue
                     logger.warning(
                         "Raw JSON parse failed (attempt %d), retrying: %s",
                         attempt + 1, exc,
